@@ -63,10 +63,13 @@ class TrafficLights(QWidget):
 
     def _paint_symbol(self, painter: QPainter, index: int,
                       center: QPointF) -> None:
+        # 注意：setBrush(Qt.NoPen) 在 PySide6 6.10 下会抛 ValueError，
+        # paintEvent 内异常会泄漏 painter 并损坏 backing store（闪退），
+        # 画线只用画笔，画刷用 NoBrush 置空即可
         pen = QPen(self._SYMBOL, 1.3)
         pen.setCapStyle(Qt.RoundCap)
         painter.setPen(pen)
-        painter.setBrush(Qt.NoPen)
+        painter.setBrush(Qt.NoBrush)
         if index == 0:      # 关闭 ✕
             painter.drawLine(center + QPointF(-2.2, -2.2),
                              center + QPointF(2.2, 2.2))
