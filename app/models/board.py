@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 LOCAL_TZ = datetime.now().astimezone().tzinfo
@@ -38,6 +38,10 @@ class Card:
     due_date: str | None = None         # ISO 日期 YYYY-MM-DD，None 表示未设置
     done: bool = False                  # 勾选完成
     created_at: str = field(default_factory=_now_iso)
+    starred: bool = False               # ⭐ 加入今日聚焦
+    pomodoros: int = 0                  # 完成的番茄钟数
+    done_at: str | None = None          # 勾选完成的时刻（周统计用）
+    archived: bool = False              # 归档（不出现在看板）
 
     def to_dict(self) -> dict:
         return {
@@ -48,6 +52,10 @@ class Card:
             "due_date": self.due_date,
             "done": self.done,
             "created_at": self.created_at,
+            "starred": self.starred,
+            "pomodoros": self.pomodoros,
+            "done_at": self.done_at,
+            "archived": self.archived,
         }
 
     @classmethod
@@ -61,6 +69,11 @@ class Card:
         due = data.get("due_date")
         if not isinstance(due, str) or not due:
             due = None
+        try:
+            pomodoros = int(data.get("pomodoros", 0) or 0)
+        except (TypeError, ValueError):
+            pomodoros = 0
+        done_at = data.get("done_at")
         return cls(
             title=title,
             id=str(data.get("id") or _new_id()),
@@ -69,6 +82,10 @@ class Card:
             due_date=due,
             done=bool(data.get("done", False)),
             created_at=str(data.get("created_at") or _now_iso()),
+            starred=bool(data.get("starred", False)),
+            pomodoros=max(0, pomodoros),
+            done_at=str(done_at) if done_at else None,
+            archived=bool(data.get("archived", False)),
         )
 
     def apply(self, data: dict) -> None:
@@ -78,6 +95,12 @@ class Card:
         self.labels = list(data.get("labels", self.labels))
         self.due_date = data.get("due_date", self.due_date)
         self.done = bool(data.get("done", self.done))
+        self.starred = bool(data.get("starred", self.starred))
+        # 完成时刻自动维护（周统计用）
+        if self.done and not self.done_at:
+            self.done_at = _now_iso()
+        elif not self.done:
+            self.done_at = None
 
 
 @dataclass
@@ -171,20 +194,22 @@ class Board:
         return None
 
     def total_cards(self) -> int:
-        return sum(len(lst.cards) for lst in self.lists)
+        return sum(1 for lst in self.lists for c in lst.cards
+                   if not c.archived)
 
     def done_cards(self) -> int:
-        return sum(1 for lst in self.lists for c in lst.cards if c.done)
+        return sum(1 for lst in self.lists for c in lst.cards
+                   if c.done and not c.archived)
 
     def due_counts(self, today: date) -> tuple[int, int]:
         """截止提醒统计：返回 (已逾期未完成数, 今日截止未完成数)
 
-        只统计未完成卡片；无效日期字符串忽略。
+        只统计未归档且未完成卡片；无效日期字符串忽略。
         """
         overdue = due_today = 0
         for lst in self.lists:
             for c in lst.cards:
-                if c.done or not c.due_date:
+                if c.done or c.archived or not c.due_date:
                     continue
                 try:
                     d = date.fromisoformat(c.due_date)
@@ -195,6 +220,47 @@ class Board:
                 elif d == today:
                     due_today += 1
         return overdue, due_today
+
+    def today_focus_cards(self, today: date) -> list[Card]:
+        """今日聚焦集合：未归档、未完成，且（星标 或 截止日<=today）"""
+        out: list[Card] = []
+        for lst in self.lists:
+            for c in lst.cards:
+                if c.done or c.archived:
+                    continue
+                if c.starred:
+                    out.append(c)
+                    continue
+                if c.due_date:
+                    try:
+                        if date.fromisoformat(c.due_date) <= today:
+                            out.append(c)
+                    except ValueError:
+                        continue
+        return out
+
+    def archived_cards(self) -> list[tuple["BoardList", Card]]:
+        """归档卡片及其所属列表"""
+        return [(lst, c) for lst in self.lists for c in lst.cards
+                if c.archived]
+
+    def weekly_done_count(self, now: datetime | None = None) -> int:
+        """最近 7 天内勾选完成的卡片数（含归档）"""
+        now = now or datetime.now(LOCAL_TZ)
+        if now.tzinfo is None:
+            now = now.astimezone()      # 统一为带时区，避免与 done_at 比较出错
+        cutoff = now - timedelta(days=7)
+        n = 0
+        for lst in self.lists:
+            for c in lst.cards:
+                if not c.done or not c.done_at:
+                    continue
+                try:
+                    if datetime.fromisoformat(c.done_at) >= cutoff:
+                        n += 1
+                except ValueError:
+                    continue
+        return n
 
 
 class BoardStore:

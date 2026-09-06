@@ -18,7 +18,7 @@ os.environ["PET_BOARD_DATA_DIR"] = tempfile.mkdtemp()
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 _qapp = QApplication.instance() or QApplication([])
 
@@ -114,7 +114,95 @@ class ControllerFeatureTest(unittest.TestCase):
         self.c._check_due_dates()
         self.assertEqual(self.c._due_signature, (0, 1))
 
-    # ── 系统深浅色跟随 ────────────────────────────────────
+    # ── 归档 ──────────────────────────────────────────────
+
+    def test_archive_and_restore_with_undo(self):
+        self._reset()
+        self.c._on_card_add(self._list().id, "要归档的卡")
+        card_id = self._list().cards[0].id
+        self.c._on_card_archive(card_id)
+        board = self.c._store.load()
+        self.assertTrue(board.find_card(card_id)[1].archived)
+        # 归档卡片仍在模型里，但看板视图不再显示
+        self.assertEqual(self.c._board_view._columns[0]._card_widgets, [])
+        self.c._on_undo_requested(False)                             # 撤销归档
+        board = self.c._store.load()
+        self.assertFalse(board.find_card(card_id)[1].archived)
+
+    def test_archive_dialog_refresh(self):
+        self._reset()
+        self.c._on_card_add(self._list().id, "归档对话框测试")
+        card_id = self._list().cards[0].id
+        self.c._on_card_archive(card_id)
+        self.c._on_archive_open()
+        dlg = self.c._archive_dialog
+        self.assertIsNotNone(dlg)
+        texts = "\n".join(w.text() for w in dlg.findChildren(QLabel))
+        self.assertIn("归档对话框测试", texts)
+        self.assertIn("本周完成", texts)
+        dlg.close()
+        self._reset()
+
+    # ── 导出 ──────────────────────────────────────────────
+
+    def test_export_markdown_and_csv(self):
+        self._reset()
+        board = self.c._store.load()
+        lst0 = board.lists[0]
+        lst0.cards.append(Card(title="写周报", notes="含项目进度",
+                               due_date="2026-09-10", labels=["blue"]))
+        lst0.cards.append(Card(title="已完成项", done=True, pomodoros=2))
+        self.c._after_data_change(None)
+
+        tmp = Path(tempfile.mkdtemp())
+        md = tmp / "out.md"
+        self.c._write_export_md(md, board)
+        text = md.read_text(encoding="utf-8")
+        self.assertIn("## " + lst0.title, text)
+        self.assertIn("- [ ] 写周报 📅 2026-09-10", text)
+        self.assertIn("- [x] 已完成项 🍅×2", text)
+        self.assertIn("含项目进度", text)
+
+        csv_path = tmp / "out.csv"
+        self.c._write_export_csv(csv_path, board)
+        content = csv_path.read_text(encoding="utf-8-sig")
+        self.assertIn("写周报", content)
+        self.assertIn("blue", content)
+
+    # ── 番茄钟 ────────────────────────────────────────────
+
+    def test_pomodoro_finish_increments_and_wakes(self):
+        self._reset()
+        self.c._on_card_add(self._list().id, "专注目标")
+        card_id = self._list().cards[0].id
+        with patch.object(AppConfig, "POMODORO_MINUTES", 0):
+            self.c._on_card_pomo(card_id)   # 时长 0
+            self.c._pomo_tick()             # 手动触发一跳 → 立即完成
+        board = self.c._store.load()
+        self.assertEqual(board.find_card(card_id)[1].pomodoros, 1)
+        self.assertIsNone(self.c._pomo_card_id)
+        self.assertIsNone(self.c._pet_view._badge_override)
+
+    def test_pomodoro_stop_keeps_count(self):
+        self._reset()
+        self.c._on_card_add(self._list().id, "专注中断")
+        card_id = self._list().cards[0].id
+        self.c._on_card_pomo(card_id)
+        self.assertEqual(self.c._pomo_card_id, card_id)
+        self.assertIsNotNone(self.c._pet_view._badge_override)  # 倒计时覆盖角标
+        self.c._on_card_pomo(card_id)      # 再次触发 = 停止
+        self.assertIsNone(self.c._pomo_card_id)
+        self.assertIsNone(self.c._pet_view._badge_override)
+        board = self.c._store.load()
+        self.assertEqual(board.find_card(card_id)[1].pomodoros, 0)
+
+    def test_archive_focusing_card_stops_pomodoro(self):
+        self._reset()
+        self.c._on_card_add(self._list().id, "专注中被归档")
+        card_id = self._list().cards[0].id
+        self.c._on_card_pomo(card_id)
+        self.c._on_card_archive(card_id)
+        self.assertIsNone(self.c._pomo_card_id)
 
     def test_system_scheme_follow_and_manual_priority(self):
         AppTheme.set_mode("light")

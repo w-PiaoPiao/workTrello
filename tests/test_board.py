@@ -10,7 +10,7 @@ import json
 import sys
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -56,6 +56,30 @@ class CardTest(unittest.TestCase):
         self.assertEqual(card.title, "新标题")
         self.assertEqual(card.due_date, None)
         self.assertTrue(card.done)
+
+    def test_new_fields_roundtrip(self):
+        card = Card(title="全字段", starred=True, pomodoros=3,
+                    done_at="2026-09-06T10:00:00+08:00", archived=True)
+        card2 = Card.from_dict(card.to_dict())
+        self.assertTrue(card2.starred)
+        self.assertEqual(card2.pomodoros, 3)
+        self.assertEqual(card2.done_at, "2026-09-06T10:00:00+08:00")
+        self.assertTrue(card2.archived)
+
+    def test_apply_sets_done_at(self):
+        card = Card(title="任务")
+        self.assertIsNone(card.done_at)
+        card.apply({"done": True})
+        self.assertIsNotNone(card.done_at)      # 完成时刻自动记录
+        card.apply({"done": False})
+        self.assertIsNone(card.done_at)          # 取消完成则清除
+        card.apply({})                           # 未涉及 done：保持原状
+        self.assertIsNone(card.done_at)
+
+    def test_apply_updates_starred(self):
+        card = Card(title="任务")
+        card.apply({"starred": True})
+        self.assertTrue(card.starred)
 
 
 class BoardListTest(unittest.TestCase):
@@ -125,6 +149,47 @@ class BoardTest(unittest.TestCase):
         lst.cards.append(Card(title="无日期"))
         # 只统计未完成：逾期 1（"逾期"）、今日截止 1（"今天"）
         self.assertEqual(self.board.due_counts(date(2026, 9, 6)), (1, 1))
+
+    def test_due_counts_excludes_archived(self):
+        lst = self.board.lists[0]
+        lst.cards.append(Card(title="逾期归档", due_date="2026-09-01",
+                              archived=True))
+        self.assertEqual(self.board.due_counts(date(2026, 9, 6)), (0, 0))
+
+    def test_today_focus_cards(self):
+        lst = self.board.lists[0]
+        lst.cards.append(Card(title="星标", starred=True, done=True))
+        lst.cards.append(Card(title="星标未完成", starred=True))
+        lst.cards.append(Card(title="逾期未完成", due_date="2026-09-01"))
+        lst.cards.append(Card(title="未来截止", due_date="2026-12-01"))
+        lst.cards.append(Card(title="逾期归档", due_date="2026-09-01",
+                              archived=True))
+        lst.cards.append(Card(title="普通"))
+        focus = [c.title for c in self.board.today_focus_cards(date(2026, 9, 6))]
+        # 已完成、未来截止、归档、普通卡片都不算今日聚焦
+        self.assertEqual(sorted(focus), ["星标未完成", "逾期未完成"])
+
+    def test_totals_exclude_archived(self):
+        lst = self.board.lists[0]
+        lst.cards.append(Card(title="A", done=True))
+        lst.cards.append(Card(title="B", archived=True))
+        # setUp 已有 card_a(未完成) + card_b(未完成)；归档的 B 不计入
+        self.assertEqual(self.board.total_cards(), 3)
+        self.assertEqual(self.board.done_cards(), 1)
+
+    def test_archived_cards_and_weekly_done(self):
+        now = datetime(2026, 9, 6, 12, 0, 0)
+        lst = self.board.lists[0]
+        lst.cards.append(Card(title="归档A", archived=True))
+        lst.cards.append(Card(title="本周完成", done=True,
+                              done_at="2026-09-04T10:00:00+08:00"))
+        lst.cards.append(Card(title="上周完成", done=True,
+                              done_at="2026-08-20T10:00:00+08:00"))
+        archived = self.board.archived_cards()
+        self.assertEqual(len(archived), 1)
+        self.assertIs(archived[0][0], self.board.lists[0])   # 所属列表
+        self.assertEqual(archived[0][1].title, "归档A")
+        self.assertEqual(self.board.weekly_done_count(now), 1)
 
     def test_to_from_dict_roundtrip(self):
         data = self.board.to_dict()

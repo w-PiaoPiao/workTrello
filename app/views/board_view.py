@@ -95,6 +95,8 @@ class CardWidget(QFrame):
     signal_edit_requested = Signal(object)      # card
     signal_done_toggled = Signal(str, bool)     # card_id, done
     signal_delete_requested = Signal(str)       # card_id
+    signal_card_pomo = Signal(str)              # card_id
+    signal_card_archive = Signal(str)           # card_id
 
     def __init__(self, card: Card, parent=None):
         super().__init__(parent)
@@ -107,8 +109,28 @@ class CardWidget(QFrame):
         self._title_label: QLabel | None = None
         self._meta_badges: list[tuple[QLabel, str]] = []
         self._fingerprint: tuple = ()
+        self._focusing_id: str | None = None    # 当前正在专注的卡片 id
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_card_menu)
         self.setCursor(Qt.PointingHandCursor)
         self.rebuild()
+
+    def set_focusing(self, card_id: str | None) -> None:
+        self._focusing_id = card_id
+
+    def _show_card_menu(self, pos) -> None:
+        menu = QMenu(self)
+        if self._card.id == self._focusing_id:
+            act_pomo = menu.addAction("⏹ 停止专注")
+        else:
+            act_pomo = menu.addAction("▶ 开始专注 25 分钟")
+        menu.addSeparator()
+        act_archive = menu.addAction("归档")
+        chosen = menu.exec(self.mapToGlobal(pos))
+        if chosen is act_pomo:
+            self.signal_card_pomo.emit(self._card.id)
+        elif chosen is act_archive:
+            self.signal_card_archive.emit(self._card.id)
 
     def card(self) -> Card:
         return self._card
@@ -305,6 +327,8 @@ class CardWidget(QFrame):
             meta_items.append((text, "danger" if overdue else "accent"))
         if card.notes:
             meta_items.append(("≡ 有备注", "text_secondary"))
+        if card.pomodoros:
+            meta_items.append((f"🍅 ×{card.pomodoros}", "text_secondary"))
 
         if meta_items:
             meta_row = QHBoxLayout()
@@ -655,6 +679,8 @@ class ListColumn(QFrame):
     signal_add_card = Signal(str)              # list_id
     signal_title_changed = Signal(str, str)
     signal_delete_list = Signal(str)
+    signal_card_pomo = Signal(str)             # card_id
+    signal_card_archive = Signal(str)          # card_id
 
     def __init__(self, board_list: BoardList, parent=None):
         super().__init__(parent)
@@ -731,12 +757,19 @@ class ListColumn(QFrame):
         cw.signal_edit_requested.connect(self.signal_card_edit)
         cw.signal_done_toggled.connect(self.signal_card_done)
         cw.signal_delete_requested.connect(self.signal_card_delete)
+        cw.signal_card_pomo.connect(self.signal_card_pomo)
+        cw.signal_card_archive.connect(self.signal_card_archive)
         return cw
+
+    def set_focusing_card(self, card_id: str | None) -> None:
+        for cw in self._card_widgets:
+            cw.set_focusing(card_id)
 
     def refresh_cards(self) -> None:
         """按可见卡片增量同步卡片控件（按 card.id 复用，滚动位置自然保留）"""
-        cards = (self._lst.cards if self._visible_cards is None
-                 else self._visible_cards)
+        source = (self._lst.cards if self._visible_cards is None
+                  else self._visible_cards)
+        cards = [c for c in source if not c.archived]   # 归档卡片不出现在看板
         reusable: dict[str, CardWidget] = {
             cw.card().id: cw for cw in self._card_widgets}
         ordered: list[CardWidget] = []
@@ -866,6 +899,10 @@ class BoardView(QWidget):
     signal_list_delete = Signal(str)
     signal_quit_requested = Signal()
     signal_zoom_requested = Signal()
+    signal_card_pomo = Signal(str)              # card_id
+    signal_card_archive = Signal(str)           # card_id
+    signal_archive_open = Signal()
+    signal_export = Signal(str)                 # "md" | "csv"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -890,6 +927,13 @@ class BoardView(QWidget):
         self._toolbar_layout.addWidget(self._stats_label)
         self._toolbar_layout.addStretch(1)
 
+        self._today_btn = QPushButton("⭐ 今日")
+        self._today_btn.setCheckable(True)
+        self._today_btn.setCursor(Qt.PointingHandCursor)
+        self._today_btn.setToolTip("只显示未完成的：星标 / 已逾期 / 今天截止")
+        self._today_btn.toggled.connect(self._apply_filter)
+        self._toolbar_layout.addWidget(self._today_btn)
+
         self._search_edit = QLineEdit()
         self._search_edit.setPlaceholderText("搜索卡片…")
         self._search_edit.setClearButtonEnabled(True)
@@ -902,6 +946,18 @@ class BoardView(QWidget):
         self._add_list_btn.setFixedWidth(96)
         self._add_list_btn.clicked.connect(self.signal_list_add.emit)
         self._toolbar_layout.addWidget(self._add_list_btn)
+
+        self._archive_btn = QPushButton("归档")
+        self._archive_btn.setCursor(Qt.PointingHandCursor)
+        self._archive_btn.setToolTip("查看已归档卡片并恢复")
+        self._archive_btn.clicked.connect(self.signal_archive_open.emit)
+        self._toolbar_layout.addWidget(self._archive_btn)
+
+        self._export_btn = QPushButton("导出")
+        self._export_btn.setCursor(Qt.PointingHandCursor)
+        self._export_btn.setToolTip("导出为 Markdown / CSV")
+        self._export_btn.clicked.connect(self._show_export_menu)
+        self._toolbar_layout.addWidget(self._export_btn)
 
         self._theme_btn = _ThemeToggleButton()
         self._theme_btn.setCursor(Qt.PointingHandCursor)
@@ -1012,6 +1068,17 @@ class BoardView(QWidget):
             }}
             QPushButton:hover {{ background: rgba(128, 128, 128, 0.30); }}
         """)
+        self._today_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(128, 128, 128, 0.15);
+                border: none;
+                border-radius: 9px;
+                padding: 5px 10px;
+                color: {c['text_primary']};
+            }}
+            QPushButton:hover {{ background: rgba(128, 128, 128, 0.30); }}
+            QPushButton:checked {{ background: {c['accent']}; color: white; }}
+        """)
         self._add_list_btn.reapply()
         for col in self._columns:
             col.reapply_frame_style()
@@ -1045,7 +1112,6 @@ class BoardView(QWidget):
         scroll_pos = sb.value()
 
         self._lists = lists
-        q = self._search_query()
 
         by_id = {col.list_id(): col for col in self._columns}
         kept: set[str] = set()
@@ -1054,7 +1120,7 @@ class BoardView(QWidget):
             if col is None:
                 col = self._make_column(lst)
             else:
-                col.set_list(lst, self._filter_cards(lst, q))
+                col.set_list(lst, self._visible_cards_for(lst))
                 kept.add(lst.id)
             self._lists_layout.removeWidget(col)
             self._lists_layout.insertWidget(i, col)
@@ -1065,6 +1131,7 @@ class BoardView(QWidget):
                 col.deleteLater()
 
         self.update_stats(lists)
+        self._update_today_count()
         sb.setValue(scroll_pos)
 
     def _search_query(self) -> str:
@@ -1078,11 +1145,57 @@ class BoardView(QWidget):
         return [c for c in lst.cards
                 if q in c.title.lower() or q in c.notes.lower()]
 
-    def _apply_filter(self, *_args) -> None:
-        """搜索框内容变化：按当前关键词刷新各列可见卡片"""
+    @staticmethod
+    def _is_focus_card(c: Card, today) -> bool:
+        """今日聚焦：未完成且（星标 或 截止日<=today）"""
+        if c.done or c.archived:
+            return False
+        if c.starred:
+            return True
+        if c.due_date:
+            try:
+                return date.fromisoformat(c.due_date) <= today
+            except ValueError:
+                return False
+        return False
+
+    def _visible_cards_for(self, lst: BoardList) -> list[Card] | None:
+        """列的可见卡片：今日聚焦模式与搜索过滤组合；无任何过滤返回 None"""
         q = self._search_query()
+        if self._today_btn.isChecked():
+            today = date.today()
+            cards = [c for c in lst.cards if self._is_focus_card(c, today)]
+            if q:
+                cards = [c for c in cards
+                         if q in c.title.lower() or q in c.notes.lower()]
+            return cards
+        return self._filter_cards(lst, q)
+
+    def _apply_filter(self, *_args) -> None:
+        """今日开关/搜索框变化：刷新各列可见卡片与角标统计"""
         for lst, col in zip(self._lists, self._columns):
-            col.set_visible_cards(self._filter_cards(lst, q))
+            col.set_visible_cards(self._visible_cards_for(lst))
+        self._update_today_count()
+
+    def _update_today_count(self) -> None:
+        n = sum(len(self._visible_cards_for(lst) or []) for lst in self._lists)
+        self._today_btn.setText(f"⭐ 今日 {n}")
+
+    def set_focusing_card(self, card_id: str | None) -> None:
+        """同步"正在专注"的卡片 id 到各列卡片控件（右键菜单文案）"""
+        for col in self._columns:
+            col.set_focusing_card(card_id)
+
+    def _show_export_menu(self) -> None:
+        menu = QMenu(self)
+        act_md = menu.addAction("Markdown（.md）")
+        act_csv = menu.addAction("CSV（.csv）")
+        chosen = menu.exec(self.mapToGlobal(
+            QPoint(self._export_btn.x(), self._export_btn.height())))
+        if chosen is act_md:
+            self.signal_export.emit("md")
+        elif chosen is act_csv:
+            self.signal_export.emit("csv")
 
     def clear_search_if_active(self) -> bool:
         """Esc 优先清空搜索（有内容时）；返回是否清空了搜索"""
@@ -1106,6 +1219,8 @@ class BoardView(QWidget):
         col.signal_add_card.connect(self.signal_card_add)
         col.signal_title_changed.connect(self.signal_list_title_changed)
         col.signal_delete_list.connect(self.signal_list_delete)
+        col.signal_card_pomo.connect(self.signal_card_pomo)
+        col.signal_card_archive.connect(self.signal_card_archive)
         self._columns.append(col)
         return col
 

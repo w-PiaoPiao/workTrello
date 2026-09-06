@@ -131,6 +131,12 @@ class CardDialog(QDialog):
         if card:
             self._done_check.setChecked(card.done)
         row.addWidget(self._done_check, 1, 1)
+
+        self._star_check = QCheckBox("⭐ 加入今日聚焦")
+        self._star_check.setToolTip("星标后卡片会出现在「今日聚焦」视图和桌宠角标中")
+        if card:
+            self._star_check.setChecked(card.starred)
+        row.addWidget(self._star_check, 1, 2)
         root.addLayout(row)
 
         # 清除日期（点击后提交时 due_date 为 None，不再回填今天）
@@ -196,4 +202,5 @@ class CardDialog(QDialog):
             "due_date": None if self._due_cleared
             else self._due_edit.date().toString("yyyy-MM-dd"),
             "done": self._done_check.isChecked(),
+            "starred": self._star_check.isChecked(),
         }

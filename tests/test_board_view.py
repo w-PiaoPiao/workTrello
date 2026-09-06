@@ -220,6 +220,46 @@ class BoardViewRefreshTest(unittest.TestCase):
         self.assertEqual([cw.card().title for cw in col0._card_widgets],
                          ["A", "Papaya"])   # 新数据仍按当前关键词过滤
 
+    # ── 今日聚焦 ──────────────────────────────────────────
+
+    def test_today_filter(self):
+        today = __import__("datetime").date.today()
+        self.lists[0].cards.append(Card(title="星标卡", starred=True))
+        self.lists[0].cards.append(Card(title="今天到期", due_date=today.isoformat()))
+        self.lists[0].cards.append(Card(title="普通卡"))
+        done_card = Card(title="已完成星标", starred=True, done=True)
+        self.lists[0].cards.append(done_card)
+        self.view.refresh(self.lists)
+        self.view._today_btn.setChecked(True)
+        col0, col1 = self.view._columns
+        self.assertEqual([cw.card().title for cw in col0._card_widgets],
+                         ["星标卡", "今天到期"])
+        self.assertFalse(col0.acceptDrops())          # 过滤态禁用拖放
+        self.assertIn("⭐ 今日 2", self.view._today_btn.text())
+
+    def test_today_composes_with_search(self):
+        today = __import__("datetime").date.today()
+        self.lists[0].cards.append(Card(title="星标甲", starred=True))
+        self.lists[0].cards.append(Card(title="星标乙", starred=True))
+        self.view.refresh(self.lists)
+        self.view._today_btn.setChecked(True)
+        self.view._search_edit.setText("甲")
+        col0 = self.view._columns[0]
+        self.assertEqual([cw.card().title for cw in col0._card_widgets],
+                         ["星标甲"])
+
+    def test_pomo_archive_signals_forward(self):
+        received = {"pomo": None, "archive": None}
+        self.view.signal_card_pomo.connect(
+            lambda cid: received.__setitem__("pomo", cid))
+        self.view.signal_card_archive.connect(
+            lambda cid: received.__setitem__("archive", cid))
+        cw = self.view._columns[0]._card_widgets[0]
+        cw.signal_card_pomo.emit(cw.card().id)
+        cw.signal_card_archive.emit(cw.card().id)
+        self.assertEqual(received["pomo"], cw.card().id)
+        self.assertEqual(received["archive"], cw.card().id)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

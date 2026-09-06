@@ -53,6 +53,8 @@ class PetCanvas(QWidget):
         self._angle = 0.0
         self._blink_until = 0.0     # 眨眼截止时间戳（time.monotonic 秒）
         self._squash = 0.0          # 落地压扁量 0..1（小动作落地弹性）
+        self._focus_mode = False    # 专注模式：闭眼打瞌睡
+        self._mood = "happy"        # happy / sad（有逾期卡片时难过）
         self.setAttribute(Qt.WA_TranslucentBackground, True)
 
         # 眨眼定时器
@@ -117,6 +119,16 @@ class PetCanvas(QWidget):
         self._squash = 0.0
         self.update()
 
+    def set_focus_mode(self, on: bool) -> None:
+        if self._focus_mode != on:
+            self._focus_mode = on
+            self.update()
+
+    def set_mood(self, mood: str) -> None:
+        if self._mood != mood:
+            self._mood = mood
+            self.update()
+
     # ── 绘制 ──────────────────────────────────────────────
 
     def paintEvent(self, event) -> None:
@@ -152,7 +164,7 @@ class PetCanvas(QWidget):
         eye_color = QColor("#3B2A1A")
         accent = QColor("#FFB84D")
 
-        blinking = time.monotonic() < self._blink_until
+        blinking = self._focus_mode or time.monotonic() < self._blink_until
 
         # ── 影子（脚下椭圆） ──
         shadow = QColor(60, 40, 20, 28)
@@ -251,17 +263,21 @@ class PetCanvas(QWidget):
                     int(side * eye_dx - eye_r * 0.15), int(eye_y - eye_r * 0.55),
                     int(eye_r * 0.55), int(eye_r * 0.55))
 
-        # ── 嘴巴（小 w 形） ──
+        # ── 嘴巴（小 w 形；难过时下弯） ──
         pen = QPen(eye_color, max(1.8, s * 0.022))
         pen.setCapStyle(Qt.RoundCap)
         painter.setPen(pen)
         painter.setBrush(Qt.NoBrush)
         mouth_y = half * 0.02
         w = half * 0.09
-        painter.drawArc(
-            int(-w), int(mouth_y - w * 0.5), int(w), int(w), 180 * 16, 180 * 16)
-        painter.drawArc(
-            int(0), int(mouth_y - w * 0.5), int(w), int(w), 180 * 16, 180 * 16)
+        if self._mood == "sad":
+            painter.drawArc(int(-w * 1.4), int(mouth_y), int(w * 2.8),
+                            int(w * 1.6), 0, 180 * 16)
+        else:
+            painter.drawArc(
+                int(-w), int(mouth_y - w * 0.5), int(w), int(w), 180 * 16, 180 * 16)
+            painter.drawArc(
+                int(0), int(mouth_y - w * 0.5), int(w), int(w), 180 * 16, 180 * 16)
 
         # ── 脚（两个小半圆） ──
         painter.setPen(QPen(outline, max(2.0, s * 0.022)))
@@ -288,6 +304,8 @@ class PetView(QWidget):
         self._press_global = QPoint()
         self._count = 0
         self._animations_enabled = True
+        self._badge_override: str | None = None   # 番茄钟倒计时等临时文本
+        self._celebrating = None                  # 庆祝动画组
 
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
@@ -497,7 +515,48 @@ class PetView(QWidget):
         if self._hover_anim is not None:
             self._hover_anim.stop()
             self._hover_anim = None
+        if self._celebrating is not None:
+            # 断开 finished 再停，避免回调里重新拉起待机动画
+            self._celebrating.finished.disconnect(self._on_celebrate_finished)
+            self._celebrating.stop()
+            self._celebrating.deleteLater()
+            self._celebrating = None
         self._pet_canvas.reset_transform()
+
+    # ── 状态联动 ──────────────────────────────────────────
+
+    def set_badge_override(self, text: str | None) -> None:
+        """临时覆盖角标文本（番茄钟倒计时）；None 恢复计数显示"""
+        self._badge_override = text
+        self._layout_badge()
+
+    def set_focus_mode(self, on: bool) -> None:
+        """专注模式：桌宠打瞌睡（闭眼），暂停空闲小动作"""
+        if on:
+            self.stop_idle()
+        self._pet_canvas.set_focus_mode(on)
+
+    def set_mood(self, mood: str) -> None:
+        self._pet_canvas.set_mood(mood)
+
+    def celebrate(self) -> None:
+        """全部完成庆祝：连跳两次后恢复待机"""
+        if not self._animations_enabled:
+            return
+        self.stop_idle()
+        group = QSequentialAnimationGroup(self)
+        group.addAnimation(self._make_jump_action())
+        group.addAnimation(self._make_jump_action())
+        group.finished.connect(self._on_celebrate_finished)
+        self._celebrating = group
+        group.start()
+
+    def _on_celebrate_finished(self) -> None:
+        group = self._celebrating
+        self._celebrating = None
+        if group is not None:
+            group.deleteLater()
+        self.start_idle()
 
     # ── 更新 ──────────────────────────────────────────────
 
@@ -508,15 +567,17 @@ class PetView(QWidget):
         self._layout_badge()
 
     def _layout_badge(self) -> None:
-        """按当前计数排版角标（尺寸未定时调用也安全）"""
+        """按当前计数/覆盖文本排版角标（尺寸未定时调用也安全）"""
         badge = self._badge
         if badge is None:
             return
-        count = self._count
-        if count <= 0:
+        if self._badge_override is not None:
+            text = self._badge_override        # 番茄钟倒计时等
+        elif self._count > 0:
+            text = "99+" if self._count > 99 else str(self._count)
+        else:
             badge.hide()
             return
-        text = "99+" if count > 99 else str(count)
         badge.setText(text)
         badge.adjustSize()
         width = max(badge.sizeHint().width(), AppConfig.PET_BADGE_SIZE)

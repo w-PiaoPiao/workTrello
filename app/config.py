@@ -143,6 +143,7 @@ class AppConfig:
     SAVE_DEBOUNCE_MS = 500
     DUE_CHECK_INTERVAL_MS = 60 * 60 * 1000   # 截止提醒检查间隔（1 小时）
     UNDO_LIMIT = 20                          # 撤销快照保留步数
+    POMODORO_MINUTES = 25                    # 番茄钟时长（分钟）
 
     # ── 颜色（浅色）──────────────────────────────────────────
     COLORS = {

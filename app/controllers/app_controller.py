@@ -4,17 +4,25 @@
 
 from __future__ import annotations
 
+import csv
 import logging
 from datetime import date
+from pathlib import Path
 
 from PySide6.QtCore import QObject, QTimer
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
+from PySide6.QtWidgets import (
+    QApplication,
+    QFileDialog,
+    QInputDialog,
+    QMessageBox,
+)
 
 from app.config import AppConfig
 from app.models import json_io
 from app.models.board import Board, BoardList, BoardStore, Card
 from app.services.tray_service import TrayService
+from app.views.archive_dialog import ArchiveDialog
 from app.views.board_view import BoardView
 from app.views.card_dialog import CardDialog
 from app.views.main_window import MainWindow
@@ -57,13 +65,19 @@ class AppController(QObject):
         if app is not None:
             app.aboutToQuit.connect(self._flush_store)
 
-        # ── 撤销 / 截止提醒 / 系统主题跟随 ─────────────────
+        # ── 撤销 / 截止提醒 / 系统主题跟随 / 番茄钟 ────────
         self._undo_stack: list[dict] = []
         self._due_signature: tuple[int, int] | None = None
         self._due_timer = QTimer(self)
         self._due_timer.setInterval(AppConfig.DUE_CHECK_INTERVAL_MS)
         self._due_timer.timeout.connect(self._check_due_dates)
         self._due_timer.start()
+        self._pomo_card_id: str | None = None
+        self._pomo_left = 0
+        self._pomo_timer = QTimer(self)
+        self._pomo_timer.setInterval(1000)
+        self._pomo_timer.timeout.connect(self._pomo_tick)
+        self._archive_dialog: ArchiveDialog | None = None
         if app is not None:
             QGuiApplication.styleHints().colorSchemeChanged.connect(
                 self._on_system_scheme_changed)
@@ -176,7 +190,7 @@ class AppController(QObject):
 
     def _apply_board_to_ui(self, board) -> None:
         self._board_view.refresh(board.lists)
-        self._update_pet_count()
+        self._refresh_pet_state()
 
     def _schedule_save(self) -> None:
         self._save_timer.start()
@@ -186,9 +200,6 @@ class AppController(QObject):
             self._store.flush()
         except Exception as e:
             logger.error("保存数据失败: %s", e)
-
-    def _update_pet_count(self) -> None:
-        self._pet_view.update_count(self._store.load().total_cards())
 
     # ── 信号 ──────────────────────────────────────────────
 
@@ -202,6 +213,10 @@ class AppController(QObject):
         self._pet_view.signal_always_top_toggled.connect(
             self._on_always_top_toggled)
         self._window.signal_undo_requested.connect(self._on_undo_requested)
+        self._board_view.signal_card_pomo.connect(self._on_card_pomo)
+        self._board_view.signal_card_archive.connect(self._on_card_archive)
+        self._board_view.signal_archive_open.connect(self._on_archive_open)
+        self._board_view.signal_export.connect(self._on_export)
 
         # 看板 → 折叠 / 主题
         self._board_view.signal_collapse_clicked.connect(self._window.collapse)
@@ -278,6 +293,8 @@ class AppController(QObject):
         done = board.done_cards()
         if total > 0 and done == total:
             self._tray.show_notification("全部完成！桌宠为你鼓掌 🎉")
+            if self._window.mode == "collapsed":
+                self._pet_view.celebrate()
         elif done > 0 and done % 5 == 0:
             self._tray.show_notification(f"已完成 {done} 张卡片，继续加油！")
 
@@ -294,6 +311,8 @@ class AppController(QObject):
         if reply != QMessageBox.Yes:
             return
         self._push_undo()
+        if card_id == self._pomo_card_id:
+            self._pomo_stop()          # 删除正专注的卡片时先结束番茄钟
         if self._store.load().remove_card(card_id) is None:
             return
         self._after_data_change("已删除")
@@ -362,10 +381,22 @@ class AppController(QObject):
     def _after_data_change(self, notify: str | None) -> None:
         board = self._store.load()
         self._board_view.refresh(board.lists)
-        self._update_pet_count()
+        self._refresh_pet_state()
+        self._refresh_archive()
         self._schedule_save()
         if notify:
             self._tray.show_notification(notify)
+
+    # ── 桌宠状态联动 ──────────────────────────────────────
+
+    def _refresh_pet_state(self) -> None:
+        """角标=今日聚焦量（专注时显示倒计时）；有逾期则桌宠难过"""
+        board = self._store.load()
+        if self._pomo_card_id is None:
+            n = len(board.today_focus_cards(date.today()))
+            self._pet_view.update_count(n)
+        self._pet_view.set_mood(
+            "sad" if board.due_counts(date.today())[0] else "happy")
 
     # ── 主题 / 动画 ───────────────────────────────────────
 
@@ -419,12 +450,165 @@ class AppController(QObject):
             parts.append(f"{due_today} 张今天截止")
         self._tray.show_notification("截止提醒：" + "，".join(parts))
 
+    # ── 番茄钟 ────────────────────────────────────────────
+
+    def _on_card_pomo(self, card_id: str) -> None:
+        board = self._store.load()
+        _lst, card = board.find_card(card_id)
+        if card is None:
+            return
+        if self._pomo_card_id == card_id:
+            self._pomo_stop()          # 再次触发同一张卡 = 停止
+            return
+        self._pomo_start(card)
+
+    def _pomo_start(self, card: Card) -> None:
+        self._pomo_card_id = card.id
+        self._pomo_left = AppConfig.POMODORO_MINUTES * 60
+        self._pomo_timer.start()
+        self._board_view.set_focusing_card(card.id)
+        self._pet_view.set_focus_mode(True)
+        m, s = divmod(self._pomo_left, 60)
+        self._pet_view.set_badge_override(f"{m:02d}:{s:02d}")
+        self._tray.set_tooltip(f"专注中 {m:02d}:{s:02d} · {card.title[:16]}")
+
+    def _pomo_stop(self, finished: bool = False) -> None:
+        card_id, self._pomo_card_id = self._pomo_card_id, None
+        self._pomo_timer.stop()
+        self._board_view.set_focusing_card(None)
+        self._pet_view.set_focus_mode(False)
+        self._pet_view.set_badge_override(None)
+        self._tray.set_tooltip(AppConfig.APP_NAME)
+        self._refresh_pet_state()
+        if finished:
+            board = self._store.load()
+            _lst, card = board.find_card(card_id)
+            if card is not None:
+                card.pomodoros += 1
+                self._after_data_change("专注完成！休息一下 🎉")
+            else:
+                self._tray.show_notification("专注完成！休息一下 🎉")
+        else:
+            self._tray.show_notification("已结束专注")
+
+    def _pomo_tick(self) -> None:
+        if self._pomo_card_id is None:
+            return
+        self._pomo_left -= 1
+        if self._pomo_left <= 0:
+            self._pomo_stop(finished=True)
+            return
+        m, s = divmod(self._pomo_left, 60)
+        self._pet_view.set_badge_override(f"{m:02d}:{s:02d}")
+        board = self._store.load()
+        _lst, card = board.find_card(self._pomo_card_id)
+        title = card.title[:16] if card else ""
+        self._tray.set_tooltip(f"专注中 {m:02d}:{s:02d} · {title}")
+
+    # ── 归档 ──────────────────────────────────────────────
+
+    def _on_card_archive(self, card_id: str) -> None:
+        board = self._store.load()
+        _lst, card = board.find_card(card_id)
+        if card is None or card.archived:
+            return
+        self._push_undo()
+        if card_id == self._pomo_card_id:
+            self._pomo_stop()          # 归档正专注的卡片时先结束番茄钟
+        card.archived = True
+        self._after_data_change("已归档")
+
+    def _on_archive_open(self) -> None:
+        if self._archive_dialog is None:
+            self._archive_dialog = ArchiveDialog(self._window)
+            self._archive_dialog.signal_restore_requested.connect(
+                lambda card_id: self._on_card_restore(card_id))
+        self._archive_dialog.show()
+        self._archive_dialog.raise_()
+        self._archive_dialog.activateWindow()
+        self._refresh_archive()
+
+    def _refresh_archive(self) -> None:
+        if self._archive_dialog is None or not self._archive_dialog.isVisible():
+            return
+        board = self._store.load()
+        self._archive_dialog.set_items(
+            board.archived_cards(), board.weekly_done_count())
+
+    def _on_card_restore(self, card_id: str) -> None:
+        board = self._store.load()
+        _lst, card = board.find_card(card_id)
+        if card is None or not card.archived:
+            return
+        self._push_undo()
+        card.archived = False
+        self._after_data_change("已恢复")
+
     # ── 系统主题跟随 ──────────────────────────────────────
 
     def _on_system_scheme_changed(self, *_args) -> None:
         """系统深浅色切换：仅当用户未手动固定主题（mode=system）时跟随"""
         if AppConfig.get_theme_mode() == "system":
             AppTheme.set_mode("system")
+
+    # ── 导出 ──────────────────────────────────────────────
+
+    def _on_export(self, fmt: str) -> None:
+        board = self._store.load()
+        default = Path(str(AppConfig.DATA_DIR)) / \
+            f"桌宠看板导出_{date.today():%Y%m%d}.{fmt}"
+        path, _ = QFileDialog.getSaveFileName(
+            self._window, "导出看板", str(default),
+            "Markdown (*.md)" if fmt == "md" else "CSV (*.csv)")
+        if not path:
+            return
+        try:
+            if fmt == "md":
+                self._write_export_md(Path(path), board)
+            else:
+                self._write_export_csv(Path(path), board)
+        except OSError as e:
+            self._show_error(f"导出失败：{e}")
+            return
+        self._tray.show_notification(f"已导出到 {path}")
+
+    @staticmethod
+    def _write_export_md(path: Path, board) -> None:
+        lines = [f"# 看板导出（{date.today():%Y-%m-%d}）", ""]
+        for lst in board.lists:
+            cards = [c for c in lst.cards if not c.archived]
+            lines.append(f"## {lst.title}")
+            lines.append("")
+            if not cards:
+                lines.append("_（空）_")
+                lines.append("")
+                continue
+            for c in cards:
+                mark = "x" if c.done else " "
+                extra = f" 📅 {c.due_date}" if c.due_date else ""
+                if c.pomodoros:
+                    extra += f" 🍅×{c.pomodoros}"
+                lines.append(f"- [{mark}] {c.title}{extra}")
+                for ln in c.notes.splitlines():
+                    lines.append(f"      {ln}")
+            lines.append("")
+        path.write_text("\n".join(lines), encoding="utf-8")
+
+    @staticmethod
+    def _write_export_csv(path: Path, board) -> None:
+        with path.open("w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["列表", "标题", "备注", "标签", "截止日期",
+                             "完成", "番茄数", "创建时间"])
+            for lst in board.lists:
+                for c in lst.cards:
+                    if c.archived:
+                        continue
+                    writer.writerow([
+                        lst.title, c.title, c.notes,
+                        ";".join(c.labels), c.due_date or "",
+                        "是" if c.done else "否", c.pomodoros, c.created_at,
+                    ])
 
     # ── 托盘 / 显隐 / 退出 ────────────────────────────────
 

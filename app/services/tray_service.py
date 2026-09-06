@@ -57,6 +57,10 @@ class TrayService(QObject):
             self._always_top_action.setChecked(on)
             self._always_top_action.blockSignals(False)
 
+    def set_tooltip(self, text: str) -> None:
+        """更新托盘悬浮提示（番茄钟倒计时用）"""
+        self._tray.setToolTip(text)
+
     def set_window_visible(self, visible: bool) -> None:
         """窗口显隐变化后同步菜单文案（显示 ↔ 隐藏）"""
         self._toggle_action.setText("隐藏" if visible else "显示")
