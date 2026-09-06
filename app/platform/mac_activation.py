@@ -93,6 +93,31 @@ def activate_app() -> None:
     set_activation_policy(_REGULAR, activate=True)
 
 
+def set_native_appearance(dark: bool) -> bool:
+    """让原生窗口部件（对话框标题栏/文件对话框）跟随应用主题深浅色"""
+    try:
+        lib = _objc()
+        name = b"NSAppearanceNameDarkAqua" if dark else b"NSAppearanceNameAqua"
+        ns_str = _send(lib.objc_getClass(b"NSString"), "stringWithUTF8String:",
+                       ctypes.c_char_p(name), argtypes=[ctypes.c_char_p])
+        if not ns_str:
+            return False
+        appearance = _send(lib.objc_getClass(b"NSAppearance"),
+                           "appearanceNamed:", ns_str,
+                           argtypes=[ctypes.c_void_p])
+        if not appearance:
+            return False
+        nsapp = _nsapp()
+        if not nsapp:
+            return False
+        _send(nsapp, "setAppearance:", appearance,
+              argtypes=[ctypes.c_void_p], restype=None)
+        return True
+    except Exception:
+        logger.exception("设置原生外观失败")
+        return False
+
+
 class _ActivationFilter(QObject):
     """任何鼠标按下都视为用户要与本应用交互 → 接管菜单栏"""
 

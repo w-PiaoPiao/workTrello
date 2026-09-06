@@ -56,7 +56,7 @@ def main():
 
     # ── 全局样式 ──────────────────────────────────────────
     from app.views.theme import AppTheme
-    app.setStyleSheet(AppTheme.global_qss())
+    AppTheme.apply()   # 调色板 + QSS + 原生外观一并应用
 
     # ── 启动控制器 ────────────────────────────────────────
     from app.controllers.app_controller import AppController

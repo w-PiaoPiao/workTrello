@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 
+from PySide6.QtGui import QColor, QPalette
 from PySide6.QtCore import QObject, Signal
 
 from app.config import AppConfig
@@ -77,13 +78,50 @@ class _Theme(QObject):
         from PySide6.QtWidgets import QApplication
         app = QApplication.instance()
         if app is not None:
+            # 调色板先行：未走样式表的控件（日期框/勾选框指示器等）
+            # 由系统调色板驱动，不设置会跟随系统深色、与浅色主题错乱
+            app.setPalette(self._build_palette())
             app.setStyleSheet(self.global_qss())
+        self._sync_native_appearance()
         for cb in list(self._listeners):
             try:
                 cb()
             except Exception:
                 logger.exception("主题监听回调执行失败: %r", cb)
         self.signal_theme_applied.emit(self._mode)
+
+    def _build_palette(self) -> QPalette:
+        """构建与主题一致的调色板"""
+        c = self.colors()
+        pal = QPalette()
+        pal.setColor(QPalette.ColorRole.Window, QColor(c["bg_primary"]))
+        pal.setColor(QPalette.ColorRole.WindowText, QColor(c["text_primary"]))
+        pal.setColor(QPalette.ColorRole.Base, QColor(c["bg_card"]))
+        pal.setColor(QPalette.ColorRole.AlternateBase, QColor(c["bg_hover"]))
+        pal.setColor(QPalette.ColorRole.Text, QColor(c["text_primary"]))
+        pal.setColor(QPalette.ColorRole.Button, QColor(c["bg_card"]))
+        pal.setColor(QPalette.ColorRole.ButtonText, QColor(c["text_primary"]))
+        pal.setColor(QPalette.ColorRole.Highlight, QColor(c["accent"]))
+        pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#FFFFFF"))
+        pal.setColor(QPalette.ColorRole.ToolTipBase, QColor(c["bg_card"]))
+        pal.setColor(QPalette.ColorRole.ToolTipText, QColor(c["text_primary"]))
+        pal.setColor(QPalette.ColorRole.PlaceholderText,
+                     QColor(c["text_disabled"]))
+        for role in (QPalette.ColorRole.Text, QPalette.ColorRole.ButtonText,
+                     QPalette.ColorRole.WindowText):
+            pal.setColor(QPalette.ColorGroup.Disabled, role,
+                         QColor(c["text_disabled"]))
+        return pal
+
+    def _sync_native_appearance(self) -> None:
+        """macOS：原生窗口部件（对话框标题栏/文件对话框）跟随应用主题"""
+        if not AppConfig.IS_MACOS:
+            return
+        try:
+            from app.platform.mac_activation import set_native_appearance
+            set_native_appearance(self._mode == "dark")
+        except Exception:
+            logger.exception("同步原生外观失败")
 
     def register(self, callback) -> None:
         self._listeners.append(callback)
@@ -132,6 +170,23 @@ class _Theme(QObject):
             QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus {{
                 border: 1.5px solid {c['accent']};
             }}
+            QDateEdit, QTimeEdit, QDateTimeEdit, QSpinBox {{
+                background: {c['bg_card']};
+                color: {c['text_primary']};
+                border: 1px solid {c['border']};
+                border-radius: 8px;
+                padding: 4px 8px;
+                selection-background-color: {c['accent']};
+            }}
+            QDateEdit::drop-down, QDateTimeEdit::drop-down {{
+                border: none;
+                width: 18px;
+            }}
+            QCheckBox {{
+                color: {c['text_primary']};
+                spacing: 6px;
+            }}
+            QCheckBox:disabled {{ color: {c['text_disabled']}; }}
             QPushButton {{
                 background: {c['bg_card']};
                 border: 1px solid {c['border']};
