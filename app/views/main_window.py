@@ -81,6 +81,23 @@ class MainWindow(QWidget):
 
         self._move_to_default_position()
 
+    # ── 置顶切换 ──────────────────────────────────────────
+
+    def is_always_on_top(self) -> bool:
+        return bool(self.windowFlags() & Qt.WindowStaysOnTopHint)
+
+    def set_always_on_top(self, on: bool) -> None:
+        """切换窗口置顶；setWindowFlags 会隐藏并重建原生窗口，需补 show"""
+        if self.is_always_on_top() == on:
+            return
+        was_visible = self.isVisible()
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, on)
+        if was_visible:
+            self.show()
+            if on:
+                self.raise_()
+                self.activateWindow()
+
     # ── 视图注入 ──────────────────────────────────────────
 
     def set_views(self, collapsed_view: QWidget, expanded_view: QWidget) -> None:

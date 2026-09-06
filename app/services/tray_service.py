@@ -17,6 +17,7 @@ class TrayService(QObject):
     signal_show_requested = Signal()
     signal_hide_requested = Signal()
     signal_quit_requested = Signal()
+    signal_always_top_toggled = Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -30,6 +31,12 @@ class TrayService(QObject):
         self._toggle_action = QAction("隐藏", menu)
         self._toggle_action.triggered.connect(self._on_toggle)
         menu.addAction(self._toggle_action)
+        self._always_top_action = QAction("窗口置顶", menu)
+        self._always_top_action.setCheckable(True)
+        self._always_top_action.setChecked(True)
+        self._always_top_action.toggled.connect(
+            self.signal_always_top_toggled.emit)
+        menu.addAction(self._always_top_action)
         menu.addSeparator()
         quit_action = QAction("退出", menu)
         quit_action.triggered.connect(self.signal_quit_requested)
@@ -38,6 +45,13 @@ class TrayService(QObject):
         self._tray.setContextMenu(menu)
         self._tray.activated.connect(self._on_activated)
         self._tray.show()
+
+    def set_always_top_checked(self, on: bool) -> None:
+        """由控制器同步勾选态（blockSignals 防止 toggled 回环）"""
+        if self._always_top_action.isChecked() != on:
+            self._always_top_action.blockSignals(True)
+            self._always_top_action.setChecked(on)
+            self._always_top_action.blockSignals(False)
 
     def set_window_visible(self, visible: bool) -> None:
         """窗口显隐变化后同步菜单文案（显示 ↔ 隐藏）"""

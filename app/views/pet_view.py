@@ -279,6 +279,7 @@ class PetView(QWidget):
     signal_quick_add_clicked = Signal()
     signal_quit_requested = Signal()
     signal_animation_toggled = Signal(bool)  # 空闲动画启用状态
+    signal_always_top_toggled = Signal(bool)  # 窗口置顶开关
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -321,16 +322,22 @@ class PetView(QWidget):
         self._act_quit = QAction("退出", self._context_menu)
         self._act_animation = QAction("暂停动画", self._context_menu)
         self._act_animation.setCheckable(True)
+        self._act_always_top = QAction("窗口置顶", self._context_menu)
+        self._act_always_top.setCheckable(True)
+        self._act_always_top.setChecked(True)
         self._context_menu.addAction(self._act_expand)
         self._context_menu.addAction(self._act_quick_add)
         self._context_menu.addSeparator()
         self._context_menu.addAction(self._act_animation)
+        self._context_menu.addAction(self._act_always_top)
         self._context_menu.addAction(self._act_quit)
         self._act_expand.triggered.connect(self.signal_expand_clicked.emit)
         self._act_quick_add.triggered.connect(self.signal_quick_add_clicked.emit)
         self._act_quit.triggered.connect(self.signal_quit_requested.emit)
         # checkable 动作：点击后 checked 翻转 → toggled → 切换动画
         self._act_animation.toggled.connect(self._on_animation_toggled)
+        self._act_always_top.toggled.connect(
+            self.signal_always_top_toggled.emit)
 
         AppTheme.register(self.reapply_theme)
 
@@ -461,6 +468,13 @@ class PetView(QWidget):
         self._act_animation.setChecked(not enabled)
         if not enabled:
             self.stop_idle()
+
+    def set_always_top_checked(self, on: bool) -> None:
+        """由控制器同步勾选态（blockSignals 防止 toggled 回环）"""
+        if self._act_always_top.isChecked() != on:
+            self._act_always_top.blockSignals(True)
+            self._act_always_top.setChecked(on)
+            self._act_always_top.blockSignals(False)
 
     def _on_animation_toggled(self, paused: bool) -> None:
         self.set_animation_enabled(not paused)

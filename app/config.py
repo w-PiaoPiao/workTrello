@@ -33,6 +33,7 @@ class AppConfig:
     KEY_WINDOW_POS = "window/pos"
     KEY_THEME_MODE = "theme/mode"
     KEY_ANIMATION_ENABLED = "window/pet_animation"
+    KEY_ALWAYS_ON_TOP = "window/always_on_top"
 
     @classmethod
     def get_expanded_size(cls):
@@ -69,6 +70,15 @@ class AppConfig:
     @classmethod
     def save_animation_enabled(cls, enabled: bool) -> None:
         _settings().setValue(cls.KEY_ANIMATION_ENABLED, enabled)
+
+    @classmethod
+    def get_always_on_top(cls) -> bool:
+        """窗口置顶开关（默认开启；桌宠右键/托盘菜单可切换）"""
+        return _settings().value(cls.KEY_ALWAYS_ON_TOP, True, type=bool)
+
+    @classmethod
+    def save_always_on_top(cls, on: bool) -> None:
+        _settings().setValue(cls.KEY_ALWAYS_ON_TOP, on)
 
     # ── 数据路径 ──────────────────────────────────────────────
     _env_override = os.environ.get("PET_BOARD_DATA_DIR")

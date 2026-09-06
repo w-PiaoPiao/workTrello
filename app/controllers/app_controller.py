@@ -66,6 +66,12 @@ class AppController(QObject):
         if not AppConfig.get_animation_enabled():
             self._pet_view.set_animation_enabled(False)
 
+        # ── 窗口置顶偏好（show 之前应用，避免闪烁）────────
+        on_top = AppConfig.get_always_on_top()
+        self._window.set_always_on_top(on_top)
+        self._pet_view.set_always_top_checked(on_top)
+        self._tray.set_always_top_checked(on_top)
+
         # ── 显示 ──────────────────────────────────────────
         self._window.show()
         self._window.start_collapsed_idle()
@@ -179,12 +185,18 @@ class AppController(QObject):
         self._pet_view.signal_quit_requested.connect(self._on_quit)
         self._pet_view.signal_animation_toggled.connect(
             self._on_pet_animation_toggled)
+        self._pet_view.signal_always_top_toggled.connect(
+            self._on_always_top_toggled)
 
         # 看板 → 折叠 / 主题
         self._board_view.signal_collapse_clicked.connect(self._window.collapse)
         self._board_view.signal_theme_selected.connect(self._on_theme_selected)
         self._board_view.signal_quit_requested.connect(self._on_quit)
         self._board_view.signal_zoom_requested.connect(self._window.toggle_zoom)
+
+        # 托盘
+        self._tray.signal_always_top_toggled.connect(
+            self._on_always_top_toggled)
 
         # 看板数据操作
         self._board_view.signal_card_add.connect(self._on_card_add)
@@ -339,6 +351,13 @@ class AppController(QObject):
         AppConfig.save_animation_enabled(enabled)
         if enabled:
             self._window.start_collapsed_idle()
+
+    def _on_always_top_toggled(self, on: bool) -> None:
+        self._window.set_always_on_top(on)
+        AppConfig.save_always_on_top(on)
+        # 两处入口（桌宠右键 / 托盘菜单）勾选态保持一致
+        self._pet_view.set_always_top_checked(on)
+        self._tray.set_always_top_checked(on)
 
     # ── 托盘 / 显隐 / 退出 ────────────────────────────────
 
