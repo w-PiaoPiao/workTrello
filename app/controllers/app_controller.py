@@ -93,10 +93,18 @@ class AppController(QObject):
                 + "；".join("已损坏并隔离" if k == "corrupted" else "暂时无法读取"
                             for k in kinds)
                 + "），本次以默认看板启动。")
+            self._apply_board_to_ui(board)
+            # 异常路径必须把默认看板落盘，覆盖掉损坏或不可读的旧文件
+            self._store.mark_dirty()
+            self._schedule_save()
+            return
+
         self._apply_board_to_ui(board)
-        # 首次启动生成的默认看板也落盘（否则用户未做修改就退出时数据不保存）
-        self._store.mark_dirty()
-        self._schedule_save()
+        # 仅首次启动（数据文件尚不存在、生成默认看板）主动落盘；
+        # 正常加载不重写磁盘，避免每次启动轮转 .prev、刷新 saved_at
+        if not self._store.path.exists():
+            self._store.mark_dirty()
+            self._schedule_save()
 
     def _preserve_good_copy(self) -> None:
         """把最近好副本（.prev）复制为带时间戳的保留文件，防止被后续落盘轮转覆盖"""
@@ -105,7 +113,7 @@ class AppController(QObject):
         prev = json_io.good_prev_copy(self._store.path)
         if prev is None:
             return
-        keep = prev.with_name(prev.name + json_io._backup_ext())
+        keep = prev.with_name(prev.name + json_io.backup_ext("good"))
         try:
             shutil.copy2(prev, keep)
         except OSError as e:
@@ -114,19 +122,20 @@ class AppController(QObject):
             logger.info("已保留最近好数据副本: %s", keep)
 
     def _offer_restore(self, kinds: list[str]) -> bool:
-        """数据文件异常时询问是否从备份恢复；成功恢复返回 True"""
+        """数据文件异常时询问是否从最近好副本（.prev）恢复；成功恢复返回 True"""
         bak = json_io.good_prev_copy(self._store.path)
         if bak is None:
-            bak = json_io.latest_backup(self._store.path)
-        if bak is None:
             return False
-        detail = "已损坏并隔离" if "corrupted" in kinds else "暂时无法读取"
+        corrupted = "corrupted" in kinds
+        detail = "已损坏并隔离" if corrupted else "暂时无法读取"
+        origin_note = ("原文件已自动隔离备份。\n" if corrupted
+                       else "原文件仍保留在原位置。\n")
         reply = QMessageBox.question(
             self._window,
             "看板数据异常",
-            f"看板数据文件{detail}，已自动备份原文件。\n"
-            f"检测到可用备份（{bak.name}），是否恢复数据？\n"
-            "选择「否」则以默认看板启动，原数据保留在备份文件中。",
+            f"看板数据文件{detail}，{origin_note}"
+            f"检测到最近一次成功保存的副本（{bak.name}），是否用它恢复数据？\n"
+            "选择「否」则以默认看板启动。",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.Yes,
         )
@@ -256,16 +265,24 @@ class AppController(QObject):
         self._after_data_change("已删除")
 
     def _on_card_move(self, card_id: str, target_list_id: str, index: int) -> None:
-        """拖拽移动卡片（跨列表 / 列表内重排）"""
+        """拖拽移动卡片（跨列表 / 列表内重排）
+
+        index 按拖拽时的原始控件顺序计算（"插到第 i 张之前"）；
+        同列表向下移动时先移除卡片会使后续元素前移，插入点需左移一位。
+        """
         board = self._store.load()
-        moved = board.remove_card(card_id)
+        src_list, moved = board.find_card(card_id)
         if moved is None:
             return
+        src_index = src_list.cards.index(moved)
+        board.remove_card(card_id)
         target = board.find_list(target_list_id)
         if target is None:
             target = board.lists[0]
             target.cards.append(moved)
         else:
+            if target is src_list and src_index < index:
+                index -= 1
             index = max(0, min(index, len(target.cards)))
             target.cards.insert(index, moved)
         self._after_data_change(None)

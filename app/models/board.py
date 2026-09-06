@@ -16,11 +16,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-CST = datetime.now().astimezone().tzinfo
+LOCAL_TZ = datetime.now().astimezone().tzinfo
 
 
 def _now_iso() -> str:
-    return datetime.now(CST).isoformat(timespec="seconds")
+    return datetime.now(LOCAL_TZ).isoformat(timespec="seconds")
 
 
 def _new_id() -> str:

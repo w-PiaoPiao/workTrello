@@ -28,6 +28,7 @@ class TrafficLights(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._hover = -1
+        self._pressed = -1
         self.setMouseTracking(True)
         d = self._RADIUS * 2
         self.setFixedSize(int(d * 3 + self._GAP * 2) + 2, int(d) + 2)
@@ -100,10 +101,18 @@ class TrafficLights(QWidget):
     def mousePressEvent(self, event) -> None:
         if event.button() != Qt.LeftButton:
             return
+        # 对齐原生红绿灯：release 仍在同一键上才触发，按住拖出可反悔
+        self._pressed = self._index_at(event.position())
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() != Qt.LeftButton:
+            return
         idx = self._index_at(event.position())
-        if idx == 0:
-            self.signal_close.emit()
-        elif idx == 1:
-            self.signal_minimize.emit()
-        elif idx == 2:
-            self.signal_zoom.emit()
+        if idx != -1 and idx == self._pressed:
+            if idx == 0:
+                self.signal_close.emit()
+            elif idx == 1:
+                self.signal_minimize.emit()
+            else:
+                self.signal_zoom.emit()
+        self._pressed = -1

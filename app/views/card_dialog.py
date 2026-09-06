@@ -27,8 +27,8 @@ class LabelChip(QPushButton):
     """可勾选的标签色块"""
 
     def __init__(self, key: str, parent=None):
-        self._key = key
         super().__init__(parent)
+        self._key = key
         self.setCheckable(True)
         self.setFixedSize(34, 22)
         self.setCursor(Qt.PointingHandCursor)

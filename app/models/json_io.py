@@ -21,8 +21,12 @@ logger = logging.getLogger(__name__)
 CORRUPT_BACKUP_KEEP = 5
 
 
-def _backup_ext() -> str:
-    return ".corrupt." + datetime.now().strftime("%Y%m%d_%H%M%S_%f") + ".bak"
+def backup_ext(tag: str = "corrupt") -> str:
+    """带时间戳的备份文件后缀。
+
+    tag 标记备份类型：corrupt=损坏隔离副本，good=好副本固化保留。
+    """
+    return f".{tag}." + datetime.now().strftime("%Y%m%d_%H%M%S_%f") + ".bak"
 
 
 class StoreError(Exception):
@@ -106,7 +110,7 @@ def atomic_write_json(path: Path, data, *, indent: int = 2,
 
 def backup_corrupted(path: Path) -> Path | None:
     """备份损坏文件为带时间戳的隔离副本（保留最近 N 份）"""
-    bak_path = path.with_name(path.name + _backup_ext())
+    bak_path = path.with_name(path.name + backup_ext())
     try:
         shutil.copy2(path, bak_path)
     except OSError as e:

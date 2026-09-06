@@ -53,7 +53,6 @@ class PetCanvas(QWidget):
         self._angle = 0.0
         self._blink_until = 0.0     # 眨眼截止时间戳（time.monotonic 秒）
         self._squash = 0.0          # 落地压扁量 0..1（小动作落地弹性）
-        self._ear_wiggle = 0.0      # 耳朵摆动角度
         self.setAttribute(Qt.WA_TranslucentBackground, True)
 
         # 眨眼定时器
@@ -163,8 +162,7 @@ class PetCanvas(QWidget):
             int(-half * 0.62), int(half * 0.80),
             int(half * 1.24), int(half * 0.26))
 
-        # ── 耳朵（两只三角圆耳，带 wiggle） ──
-        wig = self._ear_wiggle
+        # ── 耳朵（两只三角圆耳） ──
         painter.setPen(QPen(outline, max(2.0, s * 0.022)))
         painter.setBrush(QBrush(body_bottom))
         for side in (-1, 1):
@@ -173,10 +171,10 @@ class PetCanvas(QWidget):
             ear_y = -half * 0.62
             ear.moveTo(ear_x - half * 0.16, ear_y + half * 0.18)
             ear.quadTo(
-                ear_x + side * wig * 2 - half * 0.02, ear_y - half * 0.42,
+                ear_x - half * 0.02, ear_y - half * 0.42,
                 ear_x + half * 0.18, ear_y + half * 0.14)
             ear.quadTo(
-                ear_x + side * wig * 2, ear_y + half * 0.24,
+                ear_x, ear_y + half * 0.24,
                 ear_x - half * 0.16, ear_y + half * 0.18)
             painter.drawPath(ear)
             # 耳内
@@ -185,7 +183,7 @@ class PetCanvas(QWidget):
             inner = QPainterPath()
             inner.moveTo(ear_x - half * 0.08, ear_y + half * 0.16)
             inner.quadTo(
-                ear_x + side * wig * 2 + side * half * 0.02, ear_y - half * 0.24,
+                ear_x + side * half * 0.02, ear_y - half * 0.24,
                 ear_x + half * 0.09, ear_y + half * 0.12)
             painter.drawPath(inner)
             painter.setPen(QPen(outline, max(2.0, s * 0.022)))
@@ -419,9 +417,15 @@ class PetView(QWidget):
         self._active_action.start()
 
     def _on_action_finished(self) -> None:
-        self._float_anim.resume()
+        group = self._active_action
         self._active_action = None
-        self._schedule_random_action()
+        if group is not None:
+            group.deleteLater()
+        self._float_anim.resume()
+        # 仅空闲动画仍在播放时才排下一次小动作；
+        # stop_idle 触发本回调时 float 已停止，不应再拉起定时器
+        if self._float_anim.state() == QAbstractAnimation.Running:
+            self._schedule_random_action()
 
     # ── 悬停反馈 ──────────────────────────────────────────
 
@@ -445,7 +449,10 @@ class PetView(QWidget):
 
     def _on_hover_finished(self) -> None:
         self._breath_anim.resume()
+        group = self._hover_anim
         self._hover_anim = None
+        if group is not None:
+            group.deleteLater()
 
     # ── 动画开关 ──────────────────────────────────────────
 

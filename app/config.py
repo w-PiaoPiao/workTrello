@@ -54,8 +54,8 @@ class AppConfig:
 
     @classmethod
     def get_theme_mode(cls) -> str:
-        """上次主题模式（默认跟随系统）"""
-        return _settings().value(cls.KEY_THEME_MODE, "light")
+        """上次主题模式；缺省 "system" 表示跟随系统深浅色"""
+        return _settings().value(cls.KEY_THEME_MODE, "system")
 
     @classmethod
     def save_theme_mode(cls, mode: str) -> None:
@@ -63,7 +63,7 @@ class AppConfig:
 
     @classmethod
     def get_animation_enabled(cls) -> bool:
-        """桌宠空闲动画开关（默认开启；缺省返回 None 表示未设置过）"""
+        """桌宠空闲动画开关（默认开启）"""
         return _settings().value(cls.KEY_ANIMATION_ENABLED, True, type=bool)
 
     @classmethod
