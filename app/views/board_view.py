@@ -13,6 +13,7 @@ from __future__ import annotations
 import math
 from datetime import date
 
+import shiboken6
 from PySide6.QtCore import (
     QEvent,
     QMimeData,
@@ -40,7 +41,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMenu,
     QScrollArea,
-    QSizePolicy,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -106,15 +106,23 @@ class CardWidget(QFrame):
         self._check_btn: QPushButton | None = None
         self._title_label: QLabel | None = None
         self._meta_badges: list[tuple[QLabel, str]] = []
+        self._fingerprint: tuple = ()
         self.setCursor(Qt.PointingHandCursor)
         self.rebuild()
 
     def card(self) -> Card:
         return self._card
 
-    def set_card(self, card: Card) -> None:
+    def update_from_model(self, card: Card) -> None:
+        """增量刷新：重指向模型对象；内容指纹未变则跳过重建"""
         self._card = card
-        self.rebuild()
+        if self._fingerprint != self._content_fingerprint():
+            self.rebuild()
+
+    def _content_fingerprint(self) -> tuple:
+        """卡片内容指纹，用于跳过未变化卡片的重建"""
+        c = self._card
+        return (c.title, c.done, c.due_date, bool(c.notes), tuple(c.labels))
 
     def reapply_style(self) -> None:
         """主题切换后轻量刷新卡片背景/边框（不重建子控件，保留悬停状态）"""
@@ -204,6 +212,11 @@ class CardWidget(QFrame):
         if old is not None:
             _clear_layout_recursive(old)
             QWidget().setLayout(old)  # type: ignore[arg-type]
+
+        # 绝对定位的删除按钮不在布局里，需显式销毁，避免重复 rebuild 时叠加残留
+        if self._delete_btn is not None:
+            self._delete_btn.setParent(None)
+            self._delete_btn.deleteLater()
 
         self._check_btn = None
         self._title_label = None
@@ -306,6 +319,12 @@ class CardWidget(QFrame):
 
         # 底部弹性：防止上面的控件（如徽章）被布局纵向拉伸满整个卡片
         root.addStretch(1)
+
+        self._fingerprint = self._content_fingerprint()
+        # 重建后删除按钮默认隐藏；悬停中则恢复显示
+        if self._hovered and self._delete_btn is not None:
+            self._delete_btn.show()
+            self._delete_btn.raise_()
 
     def resizeEvent(self, event) -> None:
         """跟随卡片把删除按钮钉在右上角"""
@@ -437,6 +456,11 @@ class ListHeader(QWidget):
     def update_count(self, n: int) -> None:
         self._count_label.setText(str(n))
 
+    def set_list(self, board_list: BoardList) -> None:
+        """增量刷新：重指向模型对象并同步标题文本"""
+        self._lst = board_list
+        self._title_label.setText(board_list.title)
+
     def reapply_theme(self) -> None:
         """主题切换后刷新头部颜色（标题/计数随主题变化）"""
         c = AppTheme.colors()
@@ -536,6 +560,11 @@ def finish_active_rename(cancel: bool = False) -> bool:
     edit = _ACTIVE_RENAME
     if edit is None:
         return False
+    if not shiboken6.isValid(edit):
+        # 编辑器随旧列被 deleteLater 销毁（refresh 未先经过提交路径时），
+        # 只清理悬空引用，不再触碰底层对象
+        _ACTIVE_RENAME = None
+        return False
     if cancel:
         edit.cancel()
     else:
@@ -630,6 +659,7 @@ class ListColumn(QFrame):
         super().__init__(parent)
         self._lst = board_list
         self._card_widgets: list[CardWidget] = []
+        self._hint: QLabel | None = None
         self.setAcceptDrops(True)
 
         self.setObjectName("listColumn")
@@ -666,7 +696,62 @@ class ListColumn(QFrame):
             lambda: self.signal_add_card.emit(self._lst.id))
         root.addWidget(self._add_btn)
 
-        self.refresh()
+        self.refresh_cards()
+
+    # ── 数据刷新 ──────────────────────────────────────────
+
+    def list_id(self) -> str:
+        return self._lst.id
+
+    def set_list(self, board_list: BoardList) -> None:
+        """增量刷新：重指向模型对象并同步整列内容"""
+        self._lst = board_list
+        self._header.set_list(board_list)
+        self.refresh_cards()
+
+    def _make_card_widget(self, card: Card) -> CardWidget:
+        cw = CardWidget(card)
+        cw.signal_edit_requested.connect(self.signal_card_edit)
+        cw.signal_done_toggled.connect(self.signal_card_done)
+        cw.signal_delete_requested.connect(self.signal_card_delete)
+        return cw
+
+    def refresh_cards(self) -> None:
+        """按 _lst.cards 增量同步卡片控件（按 card.id 复用，滚动位置自然保留）"""
+        reusable: dict[str, CardWidget] = {
+            cw.card().id: cw for cw in self._card_widgets}
+        ordered: list[CardWidget] = []
+        for i, card in enumerate(self._lst.cards):
+            cw = reusable.pop(card.id, None)
+            if cw is None:
+                cw = self._make_card_widget(card)
+            else:
+                cw.update_from_model(card)
+            ordered.append(cw)
+            self._cards_layout.removeWidget(cw)
+            self._cards_layout.insertWidget(i, cw)
+        for gone in reusable.values():
+            gone.setParent(None)
+            gone.deleteLater()
+        self._card_widgets = ordered
+
+        # 空列提示
+        if not self._lst.cards:
+            if self._hint is None:
+                hint = QLabel("还没有卡片，点击下方添加")
+                hint.setAlignment(Qt.AlignCenter)
+                hint.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+                hint.setStyleSheet(
+                    f"color: {AppTheme.colors()['text_disabled']};"
+                    "font-size: 12px; background: transparent;")
+                self._hint = hint
+                self._cards_layout.insertWidget(0, hint)
+        elif self._hint is not None:
+            self._cards_layout.removeWidget(self._hint)
+            self._hint.deleteLater()
+            self._hint = None
+
+        self._header.update_count(len(self._lst.cards))
 
     # ── 样式 ──────────────────────────────────────────────
 
@@ -688,51 +773,6 @@ class ListColumn(QFrame):
 
     def sizeHint(self):
         return QSize(AppConfig.LIST_WIDTH, 400)
-
-    # ── 数据刷新 ──────────────────────────────────────────
-
-    def list_id(self) -> str:
-        return self._lst.id
-
-    def refresh(self) -> None:
-        """按 board_list.cards 重建卡片控件（保持滚动位置）"""
-        sb = self._scroll.verticalScrollBar()
-        scroll_pos = sb.value()
-
-        # 清空旧控件
-        for w in self._card_widgets:
-            w.setParent(None)
-            w.deleteLater()
-        self._card_widgets = []
-
-        # 去掉旧项（含 stretch；旧控件先脱离父级再延迟删除）
-        while self._cards_layout.count() > 0:
-            item = self._cards_layout.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.setParent(None)
-                w.deleteLater()
-
-        for card in self._lst.cards:
-            cw = CardWidget(card)
-            cw.signal_edit_requested.connect(self.signal_card_edit)
-            cw.signal_done_toggled.connect(self.signal_card_done)
-            cw.signal_delete_requested.connect(self.signal_card_delete)
-            self._cards_layout.addWidget(cw)
-            self._card_widgets.append(cw)
-
-        if not self._lst.cards:
-            hint = QLabel("还没有卡片，点击下方添加")
-            hint.setAlignment(Qt.AlignCenter)
-            hint.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-            hint.setStyleSheet(
-                f"color: {AppTheme.colors()['text_disabled']};"
-                "font-size: 12px; background: transparent;")
-            self._cards_layout.addWidget(hint)
-        self._cards_layout.addStretch(1)
-        self._header.update_count(len(self._lst.cards))
-
-        sb.setValue(scroll_pos)
 
     # ── 拖放 ──────────────────────────────────────────────
 
@@ -968,40 +1008,45 @@ class BoardView(QWidget):
     # ── 数据刷新 ──────────────────────────────────────────
 
     def refresh(self, lists: list[BoardList]) -> None:
-        """按看板数据重建列"""
-        # 记录看板横向滚动位置，重建后恢复
+        """按看板数据增量同步列（按 list.id 复用列与卡片控件）"""
+        # 记录看板横向滚动位置，增删列后恢复
         sb = self._scroll.horizontalScrollBar()
         scroll_pos = sb.value()
 
         self._lists = lists
 
-        for col in self._columns:
-            col.setParent(None)
-            col.deleteLater()
-        self._columns = []
+        by_id = {col.list_id(): col for col in self._columns}
+        kept: set[str] = set()
+        for i, lst in enumerate(lists):
+            col = by_id.get(lst.id)
+            if col is None:
+                col = self._make_column(lst)
+            else:
+                col.set_list(lst)
+                kept.add(lst.id)
+            self._lists_layout.removeWidget(col)
+            self._lists_layout.insertWidget(i, col)
+        for list_id, col in by_id.items():
+            if list_id not in kept:
+                self._columns.remove(col)
+                col.setParent(None)
+                col.deleteLater()
 
-        while self._lists_layout.count() > 0:
-            item = self._lists_layout.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.deleteLater()
-
-        for lst in lists:
-            col = ListColumn(lst)
-            col.signal_card_edit.connect(self._on_card_edit)
-            col.signal_card_done.connect(self._on_card_done)
-            col.signal_card_delete.connect(self._on_card_delete)
-            col.signal_card_move.connect(self.signal_card_move)
-            col.signal_add_card.connect(self.signal_card_add)
-            col.signal_title_changed.connect(self.signal_list_title_changed)
-            col.signal_delete_list.connect(self.signal_list_delete)
-            self._lists_layout.addWidget(col)
-            self._columns.append(col)
-
-        self._lists_layout.addStretch(1)
         self.update_stats(lists)
-        self.reapply_theme()
         sb.setValue(scroll_pos)
+
+    def _make_column(self, board_list: BoardList) -> ListColumn:
+        """创建列表列并连接信号（每个列生命周期内只连一次）"""
+        col = ListColumn(board_list)
+        col.signal_card_edit.connect(self._on_card_edit)
+        col.signal_card_done.connect(self._on_card_done)
+        col.signal_card_delete.connect(self._on_card_delete)
+        col.signal_card_move.connect(self.signal_card_move)
+        col.signal_add_card.connect(self.signal_card_add)
+        col.signal_title_changed.connect(self.signal_list_title_changed)
+        col.signal_delete_list.connect(self.signal_list_delete)
+        self._columns.append(col)
+        return col
 
     def update_stats(self, lists: list[BoardList]) -> None:
         total = sum(len(l.cards) for l in lists)
