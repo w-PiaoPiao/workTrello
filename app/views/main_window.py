@@ -418,5 +418,9 @@ class MainWindow(QWidget):
         self.show()
         self.raise_()
         self.activateWindow()
+        if AppConfig.IS_MACOS:
+            # accessory 面板被点击/托盘唤起时不会自动激活应用，需显式接管菜单栏
+            from app.platform.mac_activation import activate_app
+            activate_app()
         if self._mode == "collapsed":
             self._set_pet_idle(True)

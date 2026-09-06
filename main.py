@@ -29,6 +29,12 @@ def main():
 
     app.setStyle("Fusion")
 
+    # macOS：动态激活策略——交互时接管菜单栏（切到 regular），
+    # 失活后回到 accessory（不占 Dock，桌宠/看板继续悬浮）
+    if sys.platform == "darwin":
+        from app.platform.mac_activation import enable_dynamic_activation
+        enable_dynamic_activation(app)
+
     # ── 单实例锁 ──────────────────────────────────────────
     from pathlib import Path
 
