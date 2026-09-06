@@ -18,6 +18,7 @@ from PySide6.QtCore import (
     QRect,
     QSize,
     Qt,
+    Signal,
 )
 from PySide6.QtGui import QKeySequence, QMouseEvent, QScreen, QShortcut
 from PySide6.QtWidgets import QApplication, QStackedWidget, QVBoxLayout, QWidget
@@ -30,6 +31,8 @@ logger = logging.getLogger(__name__)
 
 class MainWindow(QWidget):
     """无边框置顶主窗口"""
+
+    signal_undo_requested = Signal(bool)   # notify_empty: 托盘入口要求反馈空栈
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -78,6 +81,15 @@ class MainWindow(QWidget):
         self._esc_shortcut = QShortcut(QKeySequence(Qt.Key_Escape), self)
         self._esc_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
         self._esc_shortcut.activated.connect(self._on_esc_pressed)
+        # 撤销（macOS Cmd+Z / Windows Ctrl+Z）：具体撤销逻辑由控制器实现
+        self._undo_shortcut = QShortcut(QKeySequence.Undo, self)
+        self._undo_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+        self._undo_shortcut.activated.connect(
+            lambda: self.signal_undo_requested.emit(False))
+        # Cmd+F / Ctrl+F 聚焦搜索框
+        self._find_shortcut = QShortcut(QKeySequence.Find, self)
+        self._find_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+        self._find_shortcut.activated.connect(self._focus_board_search)
 
         self._move_to_default_position()
 
@@ -170,7 +182,13 @@ class MainWindow(QWidget):
             return
         if self._finish_board_rename(cancel=True):
             return    # Esc 先取消重命名，再按一次才折叠
+        if self._expanded_view.clear_search_if_active():
+            return    # Esc 先清空搜索，再按一次才折叠
         self.collapse()
+
+    def _focus_board_search(self) -> None:
+        if self._mode == "expanded" and self._expanded_view is not None:
+            self._expanded_view.focus_search()
 
     def _finish_board_rename(self, cancel: bool = False) -> bool:
         """关闭看板里可能打开的列表重命名编辑器；返回是否有关闭"""

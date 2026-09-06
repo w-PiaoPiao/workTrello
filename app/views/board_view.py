@@ -661,6 +661,7 @@ class ListColumn(QFrame):
         self._lst = board_list
         self._card_widgets: list[CardWidget] = []
         self._hint: QLabel | None = None
+        self._visible_cards: list[Card] | None = None   # None=显示全部（过滤态为子集）
         self.setAcceptDrops(True)
 
         self.setObjectName("listColumn")
@@ -708,10 +709,21 @@ class ListColumn(QFrame):
     def list_id(self) -> str:
         return self._lst.id
 
-    def set_list(self, board_list: BoardList) -> None:
-        """增量刷新：重指向模型对象并同步整列内容"""
+    def set_list(self, board_list: BoardList,
+                 visible_cards: list[Card] | None = None) -> None:
+        """增量刷新：重指向模型对象并同步整列内容（可带过滤子集）"""
         self._lst = board_list
+        self._visible_cards = visible_cards
+        self.setAcceptDrops(visible_cards is None)   # 过滤态拖放落点不可靠，禁用
         self._header.set_list(board_list)
+        self.refresh_cards()
+
+    def set_visible_cards(self, visible_cards: list[Card] | None) -> None:
+        """搜索过滤：只更新可见卡片子集（内容相同则跳过，避免逐键刷新）"""
+        if self._visible_cards == visible_cards:
+            return
+        self._visible_cards = visible_cards
+        self.setAcceptDrops(visible_cards is None)
         self.refresh_cards()
 
     def _make_card_widget(self, card: Card) -> CardWidget:
@@ -722,11 +734,13 @@ class ListColumn(QFrame):
         return cw
 
     def refresh_cards(self) -> None:
-        """按 _lst.cards 增量同步卡片控件（按 card.id 复用，滚动位置自然保留）"""
+        """按可见卡片增量同步卡片控件（按 card.id 复用，滚动位置自然保留）"""
+        cards = (self._lst.cards if self._visible_cards is None
+                 else self._visible_cards)
         reusable: dict[str, CardWidget] = {
             cw.card().id: cw for cw in self._card_widgets}
         ordered: list[CardWidget] = []
-        for i, card in enumerate(self._lst.cards):
+        for i, card in enumerate(cards):
             cw = reusable.pop(card.id, None)
             if cw is None:
                 cw = self._make_card_widget(card)
@@ -741,9 +755,11 @@ class ListColumn(QFrame):
         self._card_widgets = ordered
 
         # 空列提示
-        if not self._lst.cards:
+        if not cards:
             if self._hint is None:
-                hint = QLabel("还没有卡片，点击下方添加")
+                hint_text = ("没有匹配的卡片" if self._visible_cards is not None
+                             else "还没有卡片，点击下方添加")
+                hint = QLabel(hint_text)
                 hint.setAlignment(Qt.AlignCenter)
                 hint.setAttribute(Qt.WA_TransparentForMouseEvents, True)
                 hint.setStyleSheet(
@@ -756,7 +772,7 @@ class ListColumn(QFrame):
             self._hint.deleteLater()
             self._hint = None
 
-        self._header.update_count(len(self._lst.cards))
+        self._header.update_count(len(cards))
 
     # ── 样式 ──────────────────────────────────────────────
 
@@ -873,6 +889,14 @@ class BoardView(QWidget):
         self._stats_label = QLabel()
         self._toolbar_layout.addWidget(self._stats_label)
         self._toolbar_layout.addStretch(1)
+
+        self._search_edit = QLineEdit()
+        self._search_edit.setPlaceholderText("搜索卡片…")
+        self._search_edit.setClearButtonEnabled(True)
+        self._search_edit.setFixedWidth(190)
+        self._search_edit.setAccessibleName("搜索卡片")
+        self._search_edit.textChanged.connect(self._apply_filter)
+        self._toolbar_layout.addWidget(self._search_edit)
 
         self._add_list_btn = AddCardButton("+ 添加列表")
         self._add_list_btn.setFixedWidth(96)
@@ -1021,6 +1045,7 @@ class BoardView(QWidget):
         scroll_pos = sb.value()
 
         self._lists = lists
+        q = self._search_query()
 
         by_id = {col.list_id(): col for col in self._columns}
         kept: set[str] = set()
@@ -1029,7 +1054,7 @@ class BoardView(QWidget):
             if col is None:
                 col = self._make_column(lst)
             else:
-                col.set_list(lst)
+                col.set_list(lst, self._filter_cards(lst, q))
                 kept.add(lst.id)
             self._lists_layout.removeWidget(col)
             self._lists_layout.insertWidget(i, col)
@@ -1041,6 +1066,35 @@ class BoardView(QWidget):
 
         self.update_stats(lists)
         sb.setValue(scroll_pos)
+
+    def _search_query(self) -> str:
+        return self._search_edit.text().strip().lower()
+
+    @staticmethod
+    def _filter_cards(lst: BoardList, q: str) -> list[Card] | None:
+        """按关键词过滤卡片（标题/备注，不区分大小写）；空关键词返回 None=全部"""
+        if not q:
+            return None
+        return [c for c in lst.cards
+                if q in c.title.lower() or q in c.notes.lower()]
+
+    def _apply_filter(self, *_args) -> None:
+        """搜索框内容变化：按当前关键词刷新各列可见卡片"""
+        q = self._search_query()
+        for lst, col in zip(self._lists, self._columns):
+            col.set_visible_cards(self._filter_cards(lst, q))
+
+    def clear_search_if_active(self) -> bool:
+        """Esc 优先清空搜索（有内容时）；返回是否清空了搜索"""
+        if self._search_edit.text():
+            self._search_edit.clear()
+            return True
+        return False
+
+    def focus_search(self) -> None:
+        """Cmd+F 聚焦搜索框并全选"""
+        self._search_edit.setFocus()
+        self._search_edit.selectAll()
 
     def _make_column(self, board_list: BoardList) -> ListColumn:
         """创建列表列并连接信号（每个列生命周期内只连一次）"""

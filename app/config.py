@@ -141,6 +141,8 @@ class AppConfig:
     # ── 行为选项 ──────────────────────────────────────────────
     NOTIFICATION_DURATION_MS = 2000
     SAVE_DEBOUNCE_MS = 500
+    DUE_CHECK_INTERVAL_MS = 60 * 60 * 1000   # 截止提醒检查间隔（1 小时）
+    UNDO_LIMIT = 20                          # 撤销快照保留步数
 
     # ── 颜色（浅色）──────────────────────────────────────────
     COLORS = {

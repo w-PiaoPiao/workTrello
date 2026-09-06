@@ -5,13 +5,15 @@
 from __future__ import annotations
 
 import logging
+from datetime import date
 
 from PySide6.QtCore import QObject, QTimer
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
 
 from app.config import AppConfig
 from app.models import json_io
-from app.models.board import BoardList, BoardStore, Card
+from app.models.board import Board, BoardList, BoardStore, Card
 from app.services.tray_service import TrayService
 from app.views.board_view import BoardView
 from app.views.card_dialog import CardDialog
@@ -55,8 +57,20 @@ class AppController(QObject):
         if app is not None:
             app.aboutToQuit.connect(self._flush_store)
 
+        # ── 撤销 / 截止提醒 / 系统主题跟随 ─────────────────
+        self._undo_stack: list[dict] = []
+        self._due_signature: tuple[int, int] | None = None
+        self._due_timer = QTimer(self)
+        self._due_timer.setInterval(AppConfig.DUE_CHECK_INTERVAL_MS)
+        self._due_timer.timeout.connect(self._check_due_dates)
+        self._due_timer.start()
+        if app is not None:
+            QGuiApplication.styleHints().colorSchemeChanged.connect(
+                self._on_system_scheme_changed)
+
         # ── 加载数据（含损坏恢复询问） ─────────────────────
         self._load_data()
+        self._check_due_dates()
 
         # ── 连接信号 ──────────────────────────────────────
         self._connect_signals()
@@ -187,6 +201,7 @@ class AppController(QObject):
             self._on_pet_animation_toggled)
         self._pet_view.signal_always_top_toggled.connect(
             self._on_always_top_toggled)
+        self._window.signal_undo_requested.connect(self._on_undo_requested)
 
         # 看板 → 折叠 / 主题
         self._board_view.signal_collapse_clicked.connect(self._window.collapse)
@@ -197,6 +212,8 @@ class AppController(QObject):
         # 托盘
         self._tray.signal_always_top_toggled.connect(
             self._on_always_top_toggled)
+        self._tray.signal_undo_requested.connect(
+            lambda: self._on_undo_requested(True))
 
         # 看板数据操作
         self._board_view.signal_card_add.connect(self._on_card_add)
@@ -227,8 +244,10 @@ class AppController(QObject):
             dialog = CardDialog(None, self._window)
             if dialog.exec() != CardDialog.Accepted:
                 return
+            self._push_undo()
             card = Card(**dialog.result_card())
         else:
+            self._push_undo()
             card = Card(title=title)
         lst.cards.insert(0, card)
         self._after_data_change("已添加卡片")
@@ -240,6 +259,7 @@ class AppController(QObject):
         dialog = CardDialog(card, self._window)
         if dialog.exec() != CardDialog.Accepted:
             return
+        self._push_undo()
         card.apply(dialog.result_card())
         self._after_data_change("已保存")
 
@@ -247,6 +267,7 @@ class AppController(QObject):
         _lst, card = self._store.load().find_card(card_id)
         if card is None:
             return
+        self._push_undo()
         card.done = done
         self._after_data_change(None)
         self._notify_done(card)
@@ -272,6 +293,7 @@ class AppController(QObject):
         )
         if reply != QMessageBox.Yes:
             return
+        self._push_undo()
         if self._store.load().remove_card(card_id) is None:
             return
         self._after_data_change("已删除")
@@ -286,6 +308,7 @@ class AppController(QObject):
         src_list, moved = board.find_card(card_id)
         if moved is None:
             return
+        self._push_undo()
         src_index = src_list.cards.index(moved)
         board.remove_card(card_id)
         target = board.find_list(target_list_id)
@@ -305,6 +328,7 @@ class AppController(QObject):
         title, ok = QInputDialog.getText(self._window, "添加列表", "列表名称：")
         if not (ok and title.strip()):
             return
+        self._push_undo()
         self._store.load().lists.append(BoardList(title=title.strip()))
         self._after_data_change("已添加列表")
 
@@ -312,6 +336,7 @@ class AppController(QObject):
         lst = self._store.load().find_list(list_id)
         if lst is None:
             return
+        self._push_undo()
         lst.title = new_title
         self._after_data_change(None)
 
@@ -325,9 +350,10 @@ class AppController(QObject):
             reply = QMessageBox.question(
                 self._window, "确认删除",
                 f"列表「{lst.title}」还有 {n} 张卡片，删除后不可恢复。\n继续？",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if reply != QMessageBox.Yes:
-                return
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+        self._push_undo()
         board.remove_list(list_id)
         self._after_data_change("已删除列表")
 
@@ -358,6 +384,47 @@ class AppController(QObject):
         # 两处入口（桌宠右键 / 托盘菜单）勾选态保持一致
         self._pet_view.set_always_top_checked(on)
         self._tray.set_always_top_checked(on)
+
+    # ── 撤销 ──────────────────────────────────────────────
+
+    def _push_undo(self) -> None:
+        """在变更前保存看板快照（撤销恢复用）"""
+        self._undo_stack.append(self._store.load().to_dict())
+        del self._undo_stack[:-AppConfig.UNDO_LIMIT]
+
+    def _on_undo_requested(self, notify_empty: bool = False) -> None:
+        if not self._undo_stack:
+            if notify_empty:
+                self._tray.show_notification("没有可撤销的操作")
+            return
+        doc = self._undo_stack.pop()
+        self._store.replace_board(Board.from_dict(doc))
+        self._after_data_change(None)
+
+    # ── 截止提醒 ──────────────────────────────────────────
+
+    def _check_due_dates(self) -> None:
+        """逾期/今日截止统计变化时经托盘提醒（签名去重，避免重复轰炸）"""
+        counts = self._store.load().due_counts(date.today())
+        if counts == self._due_signature:
+            return
+        self._due_signature = counts
+        overdue, due_today = counts
+        if overdue == 0 and due_today == 0:
+            return
+        parts = []
+        if overdue:
+            parts.append(f"{overdue} 张已逾期")
+        if due_today:
+            parts.append(f"{due_today} 张今天截止")
+        self._tray.show_notification("截止提醒：" + "，".join(parts))
+
+    # ── 系统主题跟随 ──────────────────────────────────────
+
+    def _on_system_scheme_changed(self, *_args) -> None:
+        """系统深浅色切换：仅当用户未手动固定主题（mode=system）时跟随"""
+        if AppConfig.get_theme_mode() == "system":
+            AppTheme.set_mode("system")
 
     # ── 托盘 / 显隐 / 退出 ────────────────────────────────
 

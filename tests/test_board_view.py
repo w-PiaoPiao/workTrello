@@ -179,6 +179,47 @@ class BoardViewRefreshTest(unittest.TestCase):
         self.assertEqual(self.view._stats_label.text(),
                          "3 张卡片 · 完成 1")
 
+    # ── 搜索过滤 ──────────────────────────────────────────
+
+    def test_search_filters_columns_and_disables_drops(self):
+        self.lists[0].cards.append(Card(title="ApplePie", notes="甜甜圈"))
+        self.view.refresh(self.lists)
+        self.view._search_edit.setText("apple")
+        col0, col1 = self.view._columns
+        self.assertEqual([cw.card().title for cw in col0._card_widgets],
+                         ["ApplePie"])
+        self.assertFalse(col0.acceptDrops())      # 过滤态禁用拖放
+        self.assertFalse(col1.acceptDrops())
+        self.assertIsNotNone(col1._hint)
+        self.assertIn("没有匹配", col1._hint.text())
+        self.assertEqual(col0._header._count_label.text(), "1")
+
+    def test_search_matches_notes_case_insensitive(self):
+        self.lists[1].cards.append(Card(title="购物", notes="Buy Milk"))
+        self.view.refresh(self.lists)
+        self.view._search_edit.setText("MILK")
+        col1 = self.view._columns[1]
+        self.assertEqual([cw.card().title for cw in col1._card_widgets],
+                         ["购物"])
+
+    def test_search_clear_restores_all(self):
+        self.view._search_edit.setText("apple")
+        self.view._search_edit.clear()
+        col0, col1 = self.view._columns
+        self.assertEqual([cw.card().title for cw in col0._card_widgets],
+                         ["A", "B"])
+        self.assertEqual([cw.card().title for cw in col1._card_widgets], ["C"])
+        self.assertTrue(col0.acceptDrops())
+        self.assertIsNone(col0._hint)
+
+    def test_search_survives_data_refresh(self):
+        self.view._search_edit.setText("a")
+        self.lists[0].cards.append(Card(title="Papaya"))
+        self.view.refresh(self.lists)
+        col0 = self.view._columns[0]
+        self.assertEqual([cw.card().title for cw in col0._card_widgets],
+                         ["A", "Papaya"])   # 新数据仍按当前关键词过滤
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

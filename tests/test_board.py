@@ -10,6 +10,7 @@ import json
 import sys
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -112,6 +113,18 @@ class BoardTest(unittest.TestCase):
         self.card_b.done = True
         self.assertEqual(self.board.total_cards(), 2)
         self.assertEqual(self.board.done_cards(), 1)
+
+    def test_due_counts(self):
+        lst = self.board.lists[0]
+        lst.cards.append(Card(title="逾期", due_date="2026-09-01"))
+        lst.cards.append(Card(title="今天", due_date="2026-09-06"))
+        lst.cards.append(Card(title="未来", due_date="2026-12-01"))
+        lst.cards.append(Card(title="无效日期", due_date="不是日期"))
+        lst.cards.append(Card(title="已完成逾期", due_date="2026-09-01",
+                              done=True))
+        lst.cards.append(Card(title="无日期"))
+        # 只统计未完成：逾期 1（"逾期"）、今日截止 1（"今天"）
+        self.assertEqual(self.board.due_counts(date(2026, 9, 6)), (1, 1))
 
     def test_to_from_dict_roundtrip(self):
         data = self.board.to_dict()

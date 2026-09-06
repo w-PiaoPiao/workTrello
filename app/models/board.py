@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 LOCAL_TZ = datetime.now().astimezone().tzinfo
@@ -176,6 +176,26 @@ class Board:
     def done_cards(self) -> int:
         return sum(1 for lst in self.lists for c in lst.cards if c.done)
 
+    def due_counts(self, today: date) -> tuple[int, int]:
+        """截止提醒统计：返回 (已逾期未完成数, 今日截止未完成数)
+
+        只统计未完成卡片；无效日期字符串忽略。
+        """
+        overdue = due_today = 0
+        for lst in self.lists:
+            for c in lst.cards:
+                if c.done or not c.due_date:
+                    continue
+                try:
+                    d = date.fromisoformat(c.due_date)
+                except ValueError:
+                    continue
+                if d < today:
+                    overdue += 1
+                elif d == today:
+                    due_today += 1
+        return overdue, due_today
+
 
 class BoardStore:
     """看板数据存储（内存缓存 + 落盘；防抖调度由控制器负责）"""
@@ -213,6 +233,11 @@ class BoardStore:
     # ── 写入 ──────────────────────────────────────────────
 
     def mark_dirty(self) -> None:
+        self._dirty = True
+
+    def replace_board(self, board: Board) -> None:
+        """整体替换内存看板并置脏（撤销恢复用）"""
+        self._board = board
         self._dirty = True
 
     def flush(self) -> None:

@@ -18,6 +18,7 @@ class TrayService(QObject):
     signal_hide_requested = Signal()
     signal_quit_requested = Signal()
     signal_always_top_toggled = Signal(bool)
+    signal_undo_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -38,6 +39,9 @@ class TrayService(QObject):
             self.signal_always_top_toggled.emit)
         menu.addAction(self._always_top_action)
         menu.addSeparator()
+        undo_action = QAction("撤销", menu)
+        undo_action.triggered.connect(self.signal_undo_requested.emit)
+        menu.addAction(undo_action)
         quit_action = QAction("退出", menu)
         quit_action.triggered.connect(self.signal_quit_requested)
         menu.addAction(quit_action)
