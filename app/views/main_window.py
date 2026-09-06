@@ -48,6 +48,8 @@ class MainWindow(QWidget):
         self._expanding = False
         self._expand_delta = QPoint()
         self._visible_cb = None
+        self._zoomed = False
+        self._zoom_restore_geo = QRect()
 
         # 子视图占位（外部注入）
         self._collapsed_view: QWidget | None = None
@@ -110,6 +112,7 @@ class MainWindow(QWidget):
         if not self.isVisible():
             self.show()  # 展开前确保窗口可见（单击桌面宠物时）
         self._set_pet_idle(False)
+        self._zoomed = False
         target = self._effective_expanded_size()
         screen = self._current_screen()
         base_geo = self.geometry()
@@ -128,6 +131,8 @@ class MainWindow(QWidget):
     def collapse(self) -> None:
         if self._mode == "collapsed" or self._animation_running:
             return
+        self._finish_board_rename()    # 提交未完成的重命名
+        self._zoomed = False
         base_geo = self.geometry()
         self._mode = "collapsed"
 
@@ -139,8 +144,40 @@ class MainWindow(QWidget):
             delta=-self._expand_delta, base_geo=base_geo)
 
     def _on_esc_pressed(self) -> None:
-        if self._mode == "expanded":
-            self.collapse()
+        if self._mode != "expanded":
+            return
+        if self._finish_board_rename(cancel=True):
+            return    # Esc 先取消重命名，再按一次才折叠
+        self.collapse()
+
+    def _finish_board_rename(self, cancel: bool = False) -> bool:
+        """关闭看板里可能打开的列表重命名编辑器；返回是否有关闭"""
+        closer = getattr(self._expanded_view, "finish_rename", None)
+        return bool(closer is not None and closer(cancel=cancel))
+
+    def toggle_zoom(self) -> None:
+        """红绿灯绿键：最大化 ⇆ 还原（仅看板态有效）"""
+        if self._mode != "expanded" or self._animation_running:
+            return
+        if self._zoomed:
+            geo = self._zoom_restore_geo
+            self._zoomed = False
+        else:
+            self._zoom_restore_geo = self.geometry()
+            screen = self._current_screen()
+            margin = AppConfig.SCREEN_MARGIN
+            geo = (screen.availableGeometry().adjusted(
+                       margin, margin, -margin, -margin)
+                   if screen is not None else self.geometry())
+            self._zoomed = True
+        self.setMinimumSize(0, 0)
+        self.setMaximumSize(16777215, 16777215)
+        self.setGeometry(geo)
+        if not self._zoomed:
+            self.setMinimumSize(AppConfig.BOARD_MIN_WIDTH,
+                                AppConfig.BOARD_MIN_HEIGHT)
+            self.setMaximumSize(AppConfig.BOARD_MAX_WIDTH,
+                                AppConfig.BOARD_MAX_HEIGHT)
 
     # ── 拖拽 ──────────────────────────────────────────────
 
@@ -166,10 +203,11 @@ class MainWindow(QWidget):
             event.accept()
 
     def resizeEvent(self, event) -> None:
-        """看板态用户调整尺寸时即时持久化（排除动画/中间态）"""
+        """看板态用户调整尺寸时即时持久化（排除动画/中间态/最大化还原）"""
         if (self._mode == "expanded"
                 and not self._animation_running
-                and not self._expanding):
+                and not self._expanding
+                and not self._zoomed):
             self._expanded_size = self.size()
             AppConfig.save_expanded_size(self._expanded_size)
         super().resizeEvent(event)
@@ -187,6 +225,7 @@ class MainWindow(QWidget):
             self.anim.stop()
         self._animation_running = False
         self._expanding = False
+        self._finish_board_rename()    # 隐藏前提交未完成的重命名
         if self._collapsed_view is not None:
             self._set_pet_idle(False)
         if self._mode == "expanded":

@@ -1,6 +1,6 @@
 # 桌宠看板
 
-Windows 桌面悬浮小工具：**缩小时是一只卡通桌宠，展开是高颜值 Trello 风格看板**。
+Windows / macOS 桌面悬浮小工具：**缩小时是一只卡通桌宠，展开是高颜值 Trello 风格看板**。
 
 ## 功能
 
@@ -25,6 +25,8 @@ Windows 桌面悬浮小工具：**缩小时是一只卡通桌宠，展开是高�
 
 ## 运行
 
+### Windows
+
 ```bash
 pip install -r requirements.txt
 python main.py            # 正常启动
@@ -33,13 +35,35 @@ python main.py --debug    # 调试日志
 
 或直接双击 `run.bat`。
 
+### macOS
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python main.py            # 正常启动
+python main.py --debug    # 调试日志
+```
+
+或直接 `./run.sh`（自动优先使用项目内 `.venv`，出错时保留终端窗口看日志）。
+
 ## 打包
+
+### Windows
 
 ```bash
 powershell -ExecutionPolicy Bypass -File tools\build.ps1
 ```
 
 产物命名：`桌宠看板v{版本号}.exe`（版本号见 `app/config.py` 的 `APP_VERSION`）。
+
+### macOS
+
+```bash
+pip install pyinstaller   # 如未安装
+bash tools/build.sh
+```
+
+产物：`dist/桌宠看板v{版本号}.app`。已设置 `LSUIElement`，运行时不占 Dock，交互经由桌宠本体与菜单栏图标。
 
 ## 测试
 
@@ -71,5 +95,6 @@ app/
 
 ## 数据位置
 
-默认在系统用户数据目录（`appdirs`），可用环境变量 `PET_BOARD_DATA_DIR` 覆盖。
+默认在系统用户数据目录（`appdirs`）：Windows 为 `%APPDATA%\桌宠看板`，macOS 为
+`~/Library/Application Support/桌宠看板/`。可用环境变量 `PET_BOARD_DATA_DIR` 覆盖。
 开发调试时会在项目根目录生成 `data/board.json`。

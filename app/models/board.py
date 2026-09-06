@@ -206,16 +206,6 @@ class BoardStore:
         return self._board
 
     def reload(self) -> Board:
-        """丢弃内存缓存重新读盘（用于从备份恢复后取回磁盘内容）"""
-        self._board = None
-        return self.load()
-
-    def reload(self) -> Board:
-        """丢弃内存缓存重新读盘（用于从备份恢复后取回磁盘内容）"""
-        self._board = None
-        return self.load()
-
-    def reload(self) -> Board:
         """丢弃内存缓存，从磁盘重新加载（用于从备份恢复后）"""
         self._board = None
         return self.load()

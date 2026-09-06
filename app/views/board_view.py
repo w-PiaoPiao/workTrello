@@ -10,11 +10,14 @@
 
 from __future__ import annotations
 
+import math
 from datetime import date
 
 from PySide6.QtCore import (
+    QEvent,
     QMimeData,
     QPoint,
+    QPointF,
     QSize,
     Qt,
     Signal,
@@ -24,7 +27,9 @@ from PySide6.QtGui import (
     QDrag,
     QLinearGradient,
     QMouseEvent,
+    QPen,
     QPainter,
+    QPainterPath,
     QColor,
 )
 from PySide6.QtWidgets import (
@@ -98,6 +103,9 @@ class CardWidget(QFrame):
         self._pressing = False
         self._hovered = False
         self._delete_btn: QPushButton | None = None
+        self._check_btn: QPushButton | None = None
+        self._title_label: QLabel | None = None
+        self._meta_badges: list[tuple[QLabel, str]] = []
         self.setCursor(Qt.PointingHandCursor)
         self.rebuild()
 
@@ -137,6 +145,55 @@ class CardWidget(QFrame):
             """)
             if not self._hovered and not btn.underMouse():
                 btn.hide()
+        self._style_check()
+        self._style_title()
+        self._style_meta_badges()
+
+    def _style_check(self) -> None:
+        """勾选框样式（颜色随主题切换）"""
+        if self._check_btn is None:
+            return
+        c = AppTheme.colors()
+        self._check_btn.setStyleSheet(f"""
+            QPushButton {{
+                color: {c['success'] if self._card.done else c['text_disabled']};
+                font-size: 15px;
+                background: transparent;
+                border: none;
+                padding: 0;
+            }}
+            QPushButton:hover {{ color: {c['accent']}; }}
+        """)
+
+    def _style_title(self) -> None:
+        """标题样式（颜色随主题切换）"""
+        if self._title_label is None:
+            return
+        c = AppTheme.colors()
+        self._title_label.setStyleSheet(f"""
+            QLabel {{
+                font-size: 13px;
+                font-weight: 500;
+                color: {c['text_disabled'] if self._card.done else c['text_primary']};
+                text-decoration: {'line-through;' if self._card.done else 'none;'}
+                background: transparent;
+                border: none;
+            }}
+        """)
+
+    def _style_meta_badges(self) -> None:
+        """底部日期/备注徽章样式（颜色随主题切换）"""
+        c = AppTheme.colors()
+        for badge, key in self._meta_badges:
+            badge.setStyleSheet(f"""
+                QLabel {{
+                    background: {c['accent_soft']};
+                    color: {c[key]};
+                    border-radius: 5px;
+                    padding: 2px 7px;
+                    font-size: 11px;
+                }}
+            """)
 
     # ── 构建 UI ───────────────────────────────────────────
 
@@ -147,6 +204,10 @@ class CardWidget(QFrame):
         if old is not None:
             _clear_layout_recursive(old)
             QWidget().setLayout(old)  # type: ignore[arg-type]
+
+        self._check_btn = None
+        self._title_label = None
+        self._meta_badges = []
 
         c = AppTheme.colors()
         card = self._card
@@ -188,16 +249,8 @@ class CardWidget(QFrame):
         check.setFixedWidth(20)
         check.setCursor(Qt.PointingHandCursor)
         check.setToolTip("点击切换完成状态")
-        check.setStyleSheet(f"""
-            QPushButton {{
-                color: {c['success'] if card.done else c['text_disabled']};
-                font-size: 15px;
-                background: transparent;
-                border: none;
-                padding: 0;
-            }}
-            QPushButton:hover {{ color: {c['accent']}; }}
-        """)
+        self._check_btn = check
+        self._style_check()
         check.clicked.connect(
             lambda: self.signal_done_toggled.emit(self._card.id,
                                                   not self._card.done))
@@ -205,16 +258,8 @@ class CardWidget(QFrame):
 
         title = QLabel(card.title)
         title.setWordWrap(True)
-        title.setStyleSheet(f"""
-            QLabel {{
-                font-size: 13px;
-                font-weight: 500;
-                color: {c['text_disabled'] if card.done else c['text_primary']};
-                text-decoration: {'line-through;' if card.done else 'none;'}
-                background: transparent;
-                border: none;
-            }}
-        """)
+        self._title_label = title
+        self._style_title()
         title_row.addWidget(title, 1)
         root.addLayout(title_row)
 
@@ -241,29 +286,21 @@ class CardWidget(QFrame):
         self._delete_btn.hide()
 
         # 底部信息行（截止日期 / 备注图标）
-        meta_items = []
+        meta_items: list[tuple[str, str]] = []      # (文本, 主题色键)
         if card.due_date:
             text, overdue = _fmt_due(card.due_date)
-            color = c["danger"] if overdue else c["accent"]
-            meta_items.append((text, color))
+            meta_items.append((text, "danger" if overdue else "accent"))
         if card.notes:
-            meta_items.append(("≡ 有备注", c["text_secondary"]))
+            meta_items.append(("≡ 有备注", "text_secondary"))
 
         if meta_items:
             meta_row = QHBoxLayout()
             meta_row.setSpacing(8)
-            for text, color in meta_items:
+            for text, key in meta_items:
                 badge = QLabel(text)
-                badge.setStyleSheet(f"""
-                    QLabel {{
-                        background: {c['accent_soft']};
-                        color: {color};
-                        border-radius: 5px;
-                        padding: 2px 7px;
-                        font-size: 11px;
-                    }}
-                """)
+                self._meta_badges.append((badge, key))
                 meta_row.addWidget(badge)
+            self._style_meta_badges()
             meta_row.addStretch(1)
             root.addLayout(meta_row)
 
@@ -300,7 +337,7 @@ class CardWidget(QFrame):
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._pressing and event.buttons() == Qt.LeftButton:
-            if (event.position().toPoint() - self._drag_start
+            if ((event.position().toPoint() - self._drag_start)
                     .manhattanLength() > AppConfig.CARD_DRAG_THRESHOLD):
                 self._start_drag()
                 self._pressing = False
@@ -311,7 +348,7 @@ class CardWidget(QFrame):
         if event.button() == Qt.LeftButton and self._pressing:
             self._pressing = False
             # 单击（无明显位移）→ 打开编辑对话框
-            if (event.position().toPoint() - self._drag_start
+            if ((event.position().toPoint() - self._drag_start)
                     .manhattanLength() <= AppConfig.CARD_DRAG_THRESHOLD):
                 self.signal_edit_requested.emit(self._card)
         super().mouseReleaseEvent(event)
@@ -354,7 +391,7 @@ class ListHeader(QWidget):
         self._title_label = QLabel(board_list.title)
         self._title_label.setStyleSheet(f"""
             QLabel {{
-                font-size: 13px;
+                font-size: 14px;
                 font-weight: bold;
                 color: {c['text_primary']};
                 background: transparent;
@@ -405,7 +442,7 @@ class ListHeader(QWidget):
         c = AppTheme.colors()
         self._title_label.setStyleSheet(f"""
             QLabel {{
-                font-size: 13px;
+                font-size: 14px;
                 font-weight: bold;
                 color: {c['text_primary']};
                 background: transparent;
@@ -426,25 +463,84 @@ class ListHeader(QWidget):
         # 双击标题/按钮传入 QMouseEvent；QAction.triggered 传入 False(bool)
         if isinstance(event, QMouseEvent) and event.button() != Qt.LeftButton:
             return
-        edit = QLineEdit(self._lst.title, self)
+        finish_active_rename(cancel=True)   # 全局同时只有一个重命名编辑器
+        edit = _RenameEdit(self)
+        edit.setGeometry(self._title_label.rect())
         edit.selectAll()
-        edit.setFixedWidth(self._title_label.width() + 20)
-        edit.setStyleSheet("""
-            QLineEdit { font-size: 13px; font-weight: bold; }
-        """)
-
-        def commit() -> None:
-            new_title = edit.text().strip()
-            edit.deleteLater()
-            if new_title and new_title != self._lst.title:
-                self.signal_title_changed.emit(self._lst.id, new_title)
-
-        edit.returnPressed.connect(commit)
-        edit.editingFinished.connect(commit)
-        edit.setParent(self.parentWidget())
-        edit.move(self._title_label.mapTo(self.parentWidget(), QPoint(0, 0)))
+        edit.installEventFilter(self)
+        global _ACTIVE_RENAME
+        _ACTIVE_RENAME = edit
         edit.show()
         edit.setFocus()
+
+    def eventFilter(self, obj, event) -> bool:
+        # Esc 取消重命名（窗口级 QShortcut 命中前的兜底路径）
+        if (event.type() == QEvent.KeyPress and obj is _ACTIVE_RENAME
+                and event.key() == Qt.Key_Escape):
+            finish_active_rename(cancel=True)
+            return True
+        return super().eventFilter(obj, event)
+
+
+class _RenameEdit(QLineEdit):
+    """列表标题重命名编辑器（全局同时只存在一个，见 _ACTIVE_RENAME）"""
+
+    def __init__(self, header: "ListHeader"):
+        super().__init__(header._lst.title, header._title_label)
+        self._header = header
+        c = AppTheme.colors()
+        self.setStyleSheet(f"""
+            QLineEdit {{
+                font-size: 14px;
+                font-weight: bold;
+                color: {c['text_primary']};
+                padding: 0 4px;
+                border-radius: 6px;
+            }}
+        """)
+        self.returnPressed.connect(self.commit)
+        # 注意：不挂 editingFinished（失焦提交）——Qt.Tool 窗口焦点链不可靠，
+        # 关闭时机统一由点击过滤器 / Esc / 折叠 / 隐藏等显式路径驱动
+
+    def commit(self) -> None:
+        global _ACTIVE_RENAME
+        if _ACTIVE_RENAME is not self:
+            return
+        _ACTIVE_RENAME = None
+        new_title = self.text().strip()
+        self.deleteLater()
+        if new_title and new_title != self._header._lst.title:
+            self._header.signal_title_changed.emit(
+                self._header._lst.id, new_title)
+
+    def cancel(self) -> None:
+        global _ACTIVE_RENAME
+        if _ACTIVE_RENAME is not self:
+            return
+        _ACTIVE_RENAME = None
+        self.blockSignals(True)
+        self.deleteLater()
+
+
+_ACTIVE_RENAME: "_RenameEdit | None" = None
+
+
+def finish_active_rename(cancel: bool = False) -> bool:
+    """关闭当前重命名编辑器（默认提交，cancel=True 丢弃）；返回是否有关闭
+
+    macOS 上 Qt.Tool 窗口不参与常规焦点链，"失焦提交"可能不触发，
+    编辑器会残留堆叠（表现为列标题重影）。因此编辑器全局唯一，
+    并在折叠 / 隐藏 / Esc / 点击其他位置时显式关闭。
+    """
+    global _ACTIVE_RENAME
+    edit = _ACTIVE_RENAME
+    if edit is None:
+        return False
+    if cancel:
+        edit.cancel()
+    else:
+        edit.commit()
+    return True
 
 
 class _HeaderMenuButton(QPushButton):
@@ -472,6 +568,51 @@ class _HeaderMenuButton(QPushButton):
 
     def reapply(self) -> None:
         self.setStyleSheet("QPushButton { background: transparent; border: none; }")
+
+
+class _ThemeToggleButton(QPushButton):
+    """自绘 日/月 图标的主题切换按钮（🌙/☀️ emoji 在部分平台缺字形，改矢量绘制）"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._mode = "light"
+
+    def set_mode(self, mode: str) -> None:
+        if mode != self._mode:
+            self._mode = mode
+            self.update()
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        c = AppTheme.colors()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        center = QPointF(self.width() / 2, self.height() / 2)
+        glyph = QColor(c["text_primary"])
+        if self._mode == "light":
+            # 浅色态显示月亮（点击切深色）
+            full = QPainterPath()
+            full.addEllipse(center.x() - 5.5, center.y() - 5.5, 11.0, 11.0)
+            cut = QPainterPath()
+            cut.addEllipse(center.x() - 1.5, center.y() - 8.0, 11.0, 11.0)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(glyph)
+            painter.drawPath(full.subtracted(cut))
+        else:
+            # 深色态显示太阳（点击切浅色）
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(glyph)
+            painter.drawEllipse(center, 4.0, 4.0)
+            pen = QPen(glyph, 1.4)
+            pen.setCapStyle(Qt.RoundCap)
+            painter.setPen(pen)
+            for i in range(8):
+                angle = math.pi * i / 4
+                cos_a, sin_a = math.cos(angle), math.sin(angle)
+                painter.drawLine(
+                    center + QPointF(cos_a * 6.2, sin_a * 6.2),
+                    center + QPointF(cos_a * 8.4, sin_a * 8.4))
+        painter.end()
 
 
 class ListColumn(QFrame):
@@ -580,6 +721,14 @@ class ListColumn(QFrame):
             self._cards_layout.addWidget(cw)
             self._card_widgets.append(cw)
 
+        if not self._lst.cards:
+            hint = QLabel("还没有卡片，点击下方添加")
+            hint.setAlignment(Qt.AlignCenter)
+            hint.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            hint.setStyleSheet(
+                f"color: {AppTheme.colors()['text_disabled']};"
+                "font-size: 12px; background: transparent;")
+            self._cards_layout.addWidget(hint)
         self._cards_layout.addStretch(1)
         self._header.update_count(len(self._lst.cards))
 
@@ -654,6 +803,8 @@ class BoardView(QWidget):
     signal_list_add = Signal()
     signal_list_title_changed = Signal(str, str)
     signal_list_delete = Signal(str)
+    signal_quit_requested = Signal()
+    signal_zoom_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -683,7 +834,7 @@ class BoardView(QWidget):
         self._add_list_btn.clicked.connect(self.signal_list_add.emit)
         self._toolbar_layout.addWidget(self._add_list_btn)
 
-        self._theme_btn = QPushButton()
+        self._theme_btn = _ThemeToggleButton()
         self._theme_btn.setCursor(Qt.PointingHandCursor)
         self._theme_btn.setFixedSize(34, 34)
         self._theme_btn.setToolTip("切换浅色 / 深色主题")
@@ -696,6 +847,19 @@ class BoardView(QWidget):
         self._collapse_btn.setToolTip("折叠为桌宠")
         self._collapse_btn.clicked.connect(self.signal_collapse_clicked.emit)
         self._toolbar_layout.addWidget(self._collapse_btn)
+
+        # macOS 红绿灯（对齐 macOS 窗口范式）：红=退出 黄=折叠桌宠 绿=最大化/还原
+        if AppConfig.IS_MACOS:
+            from app.views.traffic_lights import TrafficLights
+            self._traffic_lights = TrafficLights()
+            self._traffic_lights.signal_close.connect(
+                self.signal_quit_requested.emit)
+            self._traffic_lights.signal_minimize.connect(
+                self.signal_collapse_clicked.emit)
+            self._traffic_lights.signal_zoom.connect(
+                self.signal_zoom_requested.emit)
+            self._toolbar_layout.insertWidget(0, self._traffic_lights)
+            self._collapse_btn.hide()   # 黄灯已承担折叠，避免重复控件
 
         root.addWidget(self._toolbar)
 
@@ -717,6 +881,21 @@ class BoardView(QWidget):
 
         self.reapply_theme()
         AppTheme.register(self.reapply_theme)
+        # 点击看板任意非编辑器位置 → 提交并关闭重命名编辑器
+        QApplication.instance().installEventFilter(self)
+
+    def eventFilter(self, obj, event) -> bool:
+        if (event.type() == QEvent.MouseButtonPress
+                and _ACTIVE_RENAME is not None
+                and isinstance(obj, QWidget)
+                and obj is not _ACTIVE_RENAME
+                and not _ACTIVE_RENAME.isAncestorOf(obj)):
+            finish_active_rename()
+        return super().eventFilter(obj, event)
+
+    def finish_rename(self, cancel: bool = False) -> bool:
+        """关闭当前列表重命名编辑器（cancel=True 丢弃修改）；返回是否有关闭"""
+        return finish_active_rename(cancel)
 
     # ── 主题 ──────────────────────────────────────────────
 
@@ -740,7 +919,7 @@ class BoardView(QWidget):
             }}
         """)
         icon_color = c["text_primary"]
-        self._theme_btn.setText("🌙" if AppTheme.mode() == "light" else "☀️")
+        self._theme_btn.set_mode(AppTheme.mode())
         self._theme_btn.setStyleSheet(f"""
             QPushButton {{
                 background: rgba(128, 128, 128, 0.15);

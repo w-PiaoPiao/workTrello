@@ -8,7 +8,10 @@ from pathlib import Path
 
 os.environ["PET_BOARD_DATA_DIR"] = str(Path(__file__).parent / "data")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
+if sys.platform == "win32":
+    os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
+elif sys.platform == "darwin":
+    os.environ.setdefault("QT_QPA_FONTDIR", "/System/Library/Fonts")
 
 sys.path.insert(0, str(Path(__file__).parent))
 

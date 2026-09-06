@@ -7,3 +7,5 @@ dist/
 data/
 smoke_*.png
 .pytest_cache/
+.DS_Store
+.zcode/

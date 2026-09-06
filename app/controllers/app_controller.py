@@ -174,6 +174,8 @@ class AppController(QObject):
         # 看板 → 折叠 / 主题
         self._board_view.signal_collapse_clicked.connect(self._window.collapse)
         self._board_view.signal_theme_selected.connect(self._on_theme_selected)
+        self._board_view.signal_quit_requested.connect(self._on_quit)
+        self._board_view.signal_zoom_requested.connect(self._window.toggle_zoom)
 
         # 看板数据操作
         self._board_view.signal_card_add.connect(self._on_card_add)

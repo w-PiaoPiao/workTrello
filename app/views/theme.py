@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import logging
-import platform
 
 from PySide6.QtCore import QObject, Signal
 
@@ -19,18 +18,27 @@ logger = logging.getLogger(__name__)
 
 
 def _default_dark() -> bool:
-    """探测系统是否深色模式（Windows 注册表 / 其他平台保守返回 False）"""
-    if platform.system() != "Windows":
-        return False
-    try:
-        import winreg
-        key = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
-        value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
-        return value == 0
-    except OSError:
-        return False
+    """探测系统是否深色模式（Windows 注册表 / macOS 系统外观 / 其他平台 False）"""
+    if AppConfig.IS_WINDOWS:
+        try:
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+            value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+            return value == 0
+        except OSError:
+            return False
+    if AppConfig.IS_MACOS:
+        try:
+            from PySide6.QtCore import Qt
+            from PySide6.QtGui import QGuiApplication
+            if QGuiApplication.instance() is None:
+                return False
+            return QGuiApplication.styleHints().colorScheme() == Qt.ColorScheme.Dark
+        except Exception:
+            return False
+    return False
 
 
 class _Theme(QObject):
@@ -97,9 +105,14 @@ class _Theme(QObject):
 
     def global_qss(self) -> str:
         c = self.colors()
+        # macOS 只用系统中文字体，避免 Qt 为不存在的字体族做别名探测
+        if AppConfig.IS_MACOS:
+            font_family = '"PingFang SC"'
+        else:
+            font_family = '"Microsoft YaHei UI", "PingFang SC", sans-serif'
         return f"""
             QWidget {{
-                font-family: "Microsoft YaHei UI", "PingFang SC", sans-serif;
+                font-family: {font_family};
                 color: {c['text_primary']};
             }}
             QToolTip {{
