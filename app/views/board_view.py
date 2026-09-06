@@ -515,6 +515,7 @@ class _RenameEdit(QLineEdit):
         c = AppTheme.colors()
         self.setStyleSheet(f"""
             QLineEdit {{
+                background: {c['bg_card']};
                 font-size: 14px;
                 font-weight: bold;
                 color: {c['text_primary']};
@@ -682,7 +683,11 @@ class ListColumn(QFrame):
         self._scroll.setStyleSheet("QScrollArea { background: transparent; }")
         self._scroll.viewport().setAutoFillBackground(False)
         self._cards_host = QWidget()
-        self._cards_host.setStyleSheet("background: transparent;")
+        self._cards_host.setObjectName("cardsHost")
+        # 无选择器规则会级联到所有后代（曾把重命名编辑器的背景压成透明，
+        # 表现为列标题文字透过编辑器显示），必须用 #objectName 限定自身
+        self._cards_host.setStyleSheet(
+            "QWidget#cardsHost { background: transparent; }")
         self._cards_layout = QVBoxLayout(self._cards_host)
         self._cards_layout.setContentsMargins(2, 2, 2, 2)
         self._cards_layout.setSpacing(8)
@@ -911,7 +916,9 @@ class BoardView(QWidget):
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._scroll.viewport().setAutoFillBackground(False)
         self._lists_host = QWidget()
-        self._lists_host.setStyleSheet("background: transparent;")
+        self._lists_host.setObjectName("listsHost")
+        self._lists_host.setStyleSheet(
+            "QWidget#listsHost { background: transparent; }")
         self._lists_layout = QHBoxLayout(self._lists_host)
         self._lists_layout.setContentsMargins(16, 4, 16, 12)
         self._lists_layout.setSpacing(12)
