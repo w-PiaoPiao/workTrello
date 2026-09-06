@@ -18,6 +18,7 @@ os.environ["PET_BOARD_DATA_DIR"] = tempfile.mkdtemp()
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import QApplication, QLabel
 
 _qapp = QApplication.instance() or QApplication([])
@@ -216,6 +217,57 @@ class ControllerFeatureTest(unittest.TestCase):
             self.c._on_system_scheme_changed()
             self.assertEqual(AppTheme.mode(), "dark")    # 手动固定优先，不跟随
         AppTheme.set_mode("light")   # 还原全局单例
+
+
+@unittest.skipUnless(AppConfig.IS_MACOS, "全局菜单栏仅 macOS 构建")
+class MenuBarTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.c = AppController()
+
+    def test_menu_actions_exist(self):
+        self.assertTrue(self.c._menu_act_today.isCheckable())
+        self.assertTrue(self.c._menu_act_dark.isCheckable())
+        self.assertEqual(self.c._menu_act_always_top.isChecked(),
+                         self.c._window.is_always_on_top())
+        self.assertEqual(self.c._menu_act_dark.isChecked(),
+                         AppTheme.mode() == "dark")
+
+    def test_menu_today_syncs_board(self):
+        self.c._menu_act_today.setChecked(True)
+        self.assertTrue(self.c._board_view.is_today_mode())
+        self.c._menu_act_today.setChecked(False)
+        self.assertFalse(self.c._board_view.is_today_mode())
+
+    def test_board_today_syncs_menu(self):
+        self.c._board_view.set_today_mode(True)
+        self.assertTrue(self.c._menu_act_today.isChecked())
+        self.c._board_view.set_today_mode(False)
+        self.assertFalse(self.c._menu_act_today.isChecked())
+
+    def test_menu_always_top_syncs_all_entries(self):
+        self.c._menu_act_always_top.setChecked(False)
+        self.assertFalse(self.c._window.is_always_on_top())
+        self.assertFalse(self.c._pet_view._act_always_top.isChecked())
+        self.assertFalse(self.c._tray._always_top_action.isChecked())
+        self.c._menu_act_always_top.setChecked(True)
+        self.assertTrue(self.c._window.is_always_on_top())
+        self.assertTrue(self.c._pet_view._act_always_top.isChecked())
+        self.assertTrue(self.c._tray._always_top_action.isChecked())
+
+    def test_menu_dark_toggle_with_save_patched(self):
+        """菜单切换主题走 save_theme_mode（测试中打桩避免污染用户设置）"""
+        with patch.object(AppConfig, "save_theme_mode",
+                          classmethod(lambda cls, m: None)):
+            self.c._menu_act_dark.setChecked(True)
+            self.assertEqual(AppTheme.mode(), "dark")
+            self.c._menu_act_dark.setChecked(False)
+            self.assertEqual(AppTheme.mode(), "light")
+
+    def test_undo_menu_action_registered(self):
+        act = next(a for m in self.c._menu_bar.actions()
+                   for a in m.menu().actions() if a.text() == "撤销")
+        self.assertEqual(act.shortcut(), QKeySequence.Undo)
 
 
 if __name__ == "__main__":

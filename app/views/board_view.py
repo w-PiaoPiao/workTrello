@@ -903,6 +903,7 @@ class BoardView(QWidget):
     signal_card_archive = Signal(str)           # card_id
     signal_archive_open = Signal()
     signal_export = Signal(str)                 # "md" | "csv"
+    signal_today_toggled = Signal(bool)         # 今日聚焦开关变化（菜单栏同步）
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -932,6 +933,7 @@ class BoardView(QWidget):
         self._today_btn.setCursor(Qt.PointingHandCursor)
         self._today_btn.setToolTip("只显示未完成的：星标 / 已逾期 / 今天截止")
         self._today_btn.toggled.connect(self._apply_filter)
+        self._today_btn.toggled.connect(self.signal_today_toggled.emit)
         self._toolbar_layout.addWidget(self._today_btn)
 
         self._search_edit = QLineEdit()
@@ -1180,6 +1182,14 @@ class BoardView(QWidget):
     def _update_today_count(self) -> None:
         n = sum(len(self._visible_cards_for(lst) or []) for lst in self._lists)
         self._today_btn.setText(f"⭐ 今日 {n}")
+
+    def set_today_mode(self, on: bool) -> None:
+        """供菜单栏同步：切换今日聚焦模式（toggled 会触发过滤与信号）"""
+        if self._today_btn.isChecked() != on:
+            self._today_btn.setChecked(on)
+
+    def is_today_mode(self) -> bool:
+        return self._today_btn.isChecked()
 
     def set_focusing_card(self, card_id: str | None) -> None:
         """同步"正在专注"的卡片 id 到各列卡片控件（右键菜单文案）"""

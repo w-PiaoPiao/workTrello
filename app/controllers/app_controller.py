@@ -10,12 +10,15 @@ from datetime import date
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QTimer
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QAction, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
     QInputDialog,
+    QLineEdit,
+    QMenuBar,
     QMessageBox,
+    QPlainTextEdit,
 )
 
 from app.config import AppConfig
@@ -99,6 +102,10 @@ class AppController(QObject):
         self._window.set_always_on_top(on_top)
         self._pet_view.set_always_top_checked(on_top)
         self._tray.set_always_top_checked(on_top)
+
+        # ── 菜单栏（macOS：应用激活接管菜单栏时可见）───────
+        if AppConfig.IS_MACOS:
+            self._build_menu_bar()
 
         # ── 显示 ──────────────────────────────────────────
         self._window.show()
@@ -212,11 +219,12 @@ class AppController(QObject):
             self._on_pet_animation_toggled)
         self._pet_view.signal_always_top_toggled.connect(
             self._on_always_top_toggled)
-        self._window.signal_undo_requested.connect(self._on_undo_requested)
         self._board_view.signal_card_pomo.connect(self._on_card_pomo)
         self._board_view.signal_card_archive.connect(self._on_card_archive)
         self._board_view.signal_archive_open.connect(self._on_archive_open)
         self._board_view.signal_export.connect(self._on_export)
+        self._board_view.signal_today_toggled.connect(
+            self._on_today_mode_changed)
 
         # 看板 → 折叠 / 主题
         self._board_view.signal_collapse_clicked.connect(self._window.collapse)
@@ -412,9 +420,131 @@ class AppController(QObject):
     def _on_always_top_toggled(self, on: bool) -> None:
         self._window.set_always_on_top(on)
         AppConfig.save_always_on_top(on)
-        # 两处入口（桌宠右键 / 托盘菜单）勾选态保持一致
+        # 三处入口（桌宠右键 / 托盘菜单 / 菜单栏）勾选态保持一致
         self._pet_view.set_always_top_checked(on)
         self._tray.set_always_top_checked(on)
+        act = getattr(self, "_menu_act_always_top", None)
+        if act is not None and act.isChecked() != on:
+            act.blockSignals(True)
+            act.setChecked(on)
+            act.blockSignals(False)
+
+    # ── 菜单栏（macOS）────────────────────────────────────
+
+    def _build_menu_bar(self) -> None:
+        """构建全局菜单栏：应用激活（regular）时接管顶部菜单栏后可见"""
+        menu_bar = QMenuBar(None)          # 无父级 = 全局默认菜单栏
+        self._menu_bar = menu_bar
+
+        # 文件
+        m_file = menu_bar.addMenu("文件")
+        act_card = QAction("新建卡片", self)
+        act_card.setShortcut(QKeySequence.New)
+        act_card.triggered.connect(self._on_quick_add)
+        m_file.addAction(act_card)
+        act_list = QAction("新建列表", self)
+        act_list.triggered.connect(self._on_list_add)
+        m_file.addAction(act_list)
+        m_file.addSeparator()
+        act_md = QAction("导出 Markdown", self)
+        act_md.triggered.connect(lambda: self._on_export("md"))
+        m_file.addAction(act_md)
+        act_csv = QAction("导出 CSV", self)
+        act_csv.triggered.connect(lambda: self._on_export("csv"))
+        m_file.addAction(act_csv)
+        m_file.addSeparator()
+        act_archive = QAction("打开归档", self)
+        act_archive.triggered.connect(self._on_archive_open)
+        m_file.addAction(act_archive)
+
+        # 编辑
+        m_edit = menu_bar.addMenu("编辑")
+        act_undo = QAction("撤销", self)
+        act_undo.setShortcut(QKeySequence.Undo)
+        act_undo.triggered.connect(lambda: self._on_undo_requested(False))
+        m_edit.addAction(act_undo)
+        m_edit.addSeparator()
+        for label, seq, method in (("剪切", QKeySequence.Cut, "cut"),
+                                   ("复制", QKeySequence.Copy, "copy"),
+                                   ("粘贴", QKeySequence.Paste, "paste"),
+                                   ("全选", QKeySequence.SelectAll, "selectAll")):
+            act = QAction(label, self)
+            act.setShortcut(seq)
+            act.triggered.connect(
+                lambda _=False, m=method: self._edit_focus_widget(m))
+            m_edit.addAction(act)
+
+        # 视图
+        m_view = menu_bar.addMenu("视图")
+        self._menu_act_today = QAction("今日聚焦", self)
+        self._menu_act_today.setCheckable(True)
+        self._menu_act_today.setChecked(self._board_view.is_today_mode())
+        self._menu_act_today.toggled.connect(self._on_menu_today_toggled)
+        m_view.addAction(self._menu_act_today)
+        self._menu_act_dark = QAction("深色主题", self)
+        self._menu_act_dark.setCheckable(True)
+        self._menu_act_dark.setChecked(AppTheme.mode() == "dark")
+        self._menu_act_dark.toggled.connect(self._on_menu_dark_toggled)
+        m_view.addAction(self._menu_act_dark)
+        self._menu_act_always_top = QAction("窗口置顶", self)
+        self._menu_act_always_top.setCheckable(True)
+        self._menu_act_always_top.setChecked(self._window.is_always_on_top())
+        self._menu_act_always_top.toggled.connect(self._on_always_top_toggled)
+        m_view.addAction(self._menu_act_always_top)
+        m_view.addSeparator()
+        act_expand = QAction("展开看板", self)
+        act_expand.triggered.connect(self._window.expand)
+        m_view.addAction(act_expand)
+        act_collapse = QAction("收起为桌宠", self)
+        act_collapse.setShortcut(QKeySequence.Close)   # Cmd+W
+        act_collapse.triggered.connect(self._window.collapse)
+        m_view.addAction(act_collapse)
+
+        # 应用菜单项（macOS 按 role 自动归入应用名菜单）
+        act_about = QAction("关于桌宠看板", self)
+        act_about.setMenuRole(QAction.MenuRole.AboutRole)
+        act_about.triggered.connect(self._show_about)
+        m_file.addAction(act_about)
+        act_quit = QAction("退出", self)
+        act_quit.setMenuRole(QAction.MenuRole.QuitRole)
+        act_quit.setShortcut(QKeySequence.Quit)
+        act_quit.triggered.connect(self._on_quit)
+        m_file.addAction(act_quit)
+
+        # 主题被动变化（如跟随系统）时同步菜单勾选态
+        AppTheme.signal_theme_applied.connect(self._sync_menu_dark)
+
+    def _on_menu_today_toggled(self, on: bool) -> None:
+        self._board_view.set_today_mode(on)
+
+    def _on_today_mode_changed(self, on: bool) -> None:
+        act = getattr(self, "_menu_act_today", None)
+        if act is not None and act.isChecked() != on:
+            act.blockSignals(True)
+            act.setChecked(on)
+            act.blockSignals(False)
+
+    def _on_menu_dark_toggled(self, on: bool) -> None:
+        self._on_theme_selected("dark" if on else "light")
+
+    def _sync_menu_dark(self, mode: str) -> None:
+        act = getattr(self, "_menu_act_dark", None)
+        if act is not None and act.isChecked() != (mode == "dark"):
+            act.blockSignals(True)
+            act.setChecked(mode == "dark")
+            act.blockSignals(False)
+
+    def _edit_focus_widget(self, method: str) -> None:
+        """把标准编辑操作应用到当前聚焦的文本控件"""
+        fw = QApplication.focusWidget()
+        if isinstance(fw, (QLineEdit, QPlainTextEdit)):
+            getattr(fw, method)()
+
+    def _show_about(self) -> None:
+        QMessageBox.about(
+            self._window, "关于桌宠看板",
+            f"桌宠看板 v{AppConfig.APP_VERSION}\n"
+            "桌宠形态的轻量任务看板：今日聚焦、番茄钟、归档与导出。")
 
     # ── 撤销 ──────────────────────────────────────────────
 
