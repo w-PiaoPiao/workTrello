@@ -40,6 +40,11 @@ class MainWindow(QWidget):
             | Qt.Tool  # 不在任务栏显示
         )
         self.setAttribute(Qt.WA_TranslucentBackground, True)
+        if AppConfig.IS_MACOS:
+            # Qt.Tool 窗口默认是 hidesOnDeactivate 的 NSPanel：切到其他应用
+            # 时会被原生隐藏，且不发 hideEvent，托盘状态错乱、窗口"彻底消失"。
+            # 该属性让 Qt 创建面板时设 hidesOnDeactivate=NO，桌宠/看板常驻可见。
+            self.setAttribute(Qt.WA_MacAlwaysShowToolWindow, True)
 
         self._mode = "collapsed"
         self._drag_pos = QPoint()
