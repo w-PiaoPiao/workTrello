@@ -117,6 +117,14 @@ class WindowsEdgeResizeTest(unittest.TestCase):
         self.w._mode = "collapsed"
         self.assertIsNone(self.w._edge_at(QPoint(0, 0)))
 
+    def test_edge_at_zoomed_returns_none(self):
+        """最大化状态下不允许边缘缩放"""
+        self.w._zoomed = True
+        self.assertIsNone(self.w._edge_at(QPoint(0, 0)))
+        self.assertIsNone(self.w._edge_at(
+            QPoint(self.w.width() - 1, self.w.height() - 1)))
+        self.w._zoomed = False
+
     def test_mouse_in_expanded_guard(self):
         self.assertTrue(self.w._mouse_in_expanded())
         self.w._mode = "collapsed"
@@ -147,6 +155,39 @@ class WindowsZoomSignalTest(unittest.TestCase):
         self.assertEqual(states, [True])
         self.w.toggle_zoom()
         self.assertEqual(states, [True, False])
+
+    def test_toggle_zoom_fills_workarea_on_windows(self):
+        """Windows 最大化：铺满屏幕工作区（无 SCREEN_MARGIN 留边）"""
+        self.w.toggle_zoom()
+        self.assertTrue(self.w._zoomed)
+        screen = self.w._current_screen()
+        if screen is not None:
+            self.assertEqual(self.w.geometry(), screen.availableGeometry())
+        self.w.toggle_zoom()
+        self.assertFalse(self.w._zoomed)
+
+    def test_drag_maximized_restores_window(self):
+        """拖动最大化的窗口 = 还原（Windows 原生惯例）"""
+        from PySide6.QtCore import QEvent, QPointF
+        from PySide6.QtGui import QMouseEvent
+        self.w.toggle_zoom()
+        self.assertTrue(self.w._zoomed)
+        # 按下（非边缘处）开始拖动
+        press = QMouseEvent(QEvent.Type.MouseButtonPress,
+                            QPointF(400, 28), Qt.LeftButton,
+                            Qt.LeftButton, Qt.NoModifier)
+        self.w.mousePressEvent(press)
+        self.assertTrue(self.w._is_dragging)
+        # 移动 → 应先还原再跟随
+        move = QMouseEvent(QEvent.Type.MouseMove, QPointF(380, 20),
+                           Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        self.w.mouseMoveEvent(move)
+        self.assertFalse(self.w._zoomed)
+        release = QMouseEvent(QEvent.Type.MouseButtonRelease,
+                              QPointF(380, 20), Qt.LeftButton,
+                              Qt.NoButton, Qt.NoModifier)
+        self.w.mouseReleaseEvent(release)
+        self.assertFalse(self.w._is_dragging)
 
     def test_toggle_zoom_restores_geometry(self):
         before = self.w.geometry()

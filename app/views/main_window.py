@@ -203,7 +203,7 @@ class MainWindow(QWidget):
         return bool(closer is not None and closer(cancel=cancel))
 
     def toggle_zoom(self) -> None:
-        """红绿灯绿键：最大化 ⇆ 还原（仅看板态有效）"""
+        """红绿灯绿键 / Windows 最大化键：最大化 ⇆ 还原（仅看板态有效）"""
         if self._mode != "expanded" or self._animation_running:
             return
         if self._zoomed:
@@ -212,10 +212,16 @@ class MainWindow(QWidget):
         else:
             self._zoom_restore_geo = self.geometry()
             screen = self._current_screen()
-            margin = AppConfig.SCREEN_MARGIN
-            geo = (screen.availableGeometry().adjusted(
-                       margin, margin, -margin, -margin)
-                   if screen is not None else self.geometry())
+            if screen is None:
+                geo = self.geometry()
+            elif AppConfig.IS_WINDOWS:
+                # Windows 原生最大化：铺满工作区（任务栏除外），不留边
+                geo = screen.availableGeometry()
+            else:
+                # macOS 红绿灯绿灯语义：四边留 SCREEN_MARGIN
+                margin = AppConfig.SCREEN_MARGIN
+                geo = screen.availableGeometry().adjusted(
+                    margin, margin, -margin, -margin)
             self._zoomed = True
         self.setMinimumSize(0, 0)
         self.setMaximumSize(16777215, 16777215)
@@ -254,6 +260,15 @@ class MainWindow(QWidget):
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._is_dragging and event.buttons() == Qt.LeftButton:
+            if (AppConfig.IS_WINDOWS and self._zoomed
+                    and not self._animation_running):
+                # Windows 惯例：拖动最大化的窗口 = 还原，光标落回标题栏
+                self.toggle_zoom()
+                restored = self.geometry()
+                self._drag_pos = QPoint(restored.width() // 2, 28)
+                self.move(event.globalPosition().toPoint() - self._drag_pos)
+                event.accept()
+                return
             self.move(event.globalPosition().toPoint() - self._drag_pos)
             event.accept()
             return
@@ -445,7 +460,9 @@ class MainWindow(QWidget):
 
     def _edge_at(self, pos: QPoint) -> Qt.Edge | None:
         """pos（窗口内坐标）是否落在可缩放边缘/角；返回对应 Qt.Edge 组合或 None"""
-        if self._mode != "expanded" or self._animation_running:
+        if (self._mode != "expanded" or self._animation_running
+                or self._zoomed):
+            # 最大化状态下不允许边缘缩放（对齐原生窗口行为）
             return None
         m = AppConfig.RESIZE_MARGIN
         w, h = self.width(), self.height()
