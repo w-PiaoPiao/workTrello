@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -83,13 +85,35 @@ class CardDialog(QDialog):
             self._title_edit.setText(card.title)
         root.addWidget(self._title_edit)
 
-        # 备注
+        # 备注（标题行右侧：快速插入当前时间，便于在备注里记进度）
+        notes_header = QHBoxLayout()
         cap2 = QLabel("备注")
         cap2.setProperty("cap", True)
-        root.addWidget(cap2)
+        notes_header.addWidget(cap2)
+        notes_header.addStretch(1)
+        self._insert_time_btn = QPushButton("⏱ 插入当前时间")
+        self._insert_time_btn.setFlat(True)
+        self._insert_time_btn.setCursor(Qt.PointingHandCursor)
+        self._insert_time_btn.setToolTip("在备注光标处插入当前时间（如 09-08 14:30）")
+        self._insert_time_btn.setStyleSheet(f"""
+            QPushButton {{
+                color: {c['accent']};
+                font-size: 11px;
+                background: transparent;
+                border: none;
+                padding: 2px 6px;
+            }}
+            QPushButton:hover {{
+                background: {c['accent_soft']};
+                border-radius: 6px;
+            }}
+        """)
+        self._insert_time_btn.clicked.connect(self._on_insert_time)
+        notes_header.addWidget(self._insert_time_btn)
+        root.addLayout(notes_header)
         self._notes_edit = QPlainTextEdit()
         self._notes_edit.setFixedHeight(90)
-        self._notes_edit.setPlaceholderText("补充说明、链接、清单…")
+        self._notes_edit.setPlaceholderText("补充说明、链接、清单…\n（记进度时点右上角「⏱ 插入当前时间」）")
         if card:
             self._notes_edit.setPlainText(card.notes)
         root.addWidget(self._notes_edit)
@@ -121,11 +145,28 @@ class CardDialog(QDialog):
         self._due_edit.setCalendarPopup(True)
         self._due_edit.setDisplayFormat("yyyy-MM-dd")
         self._due_edit.setCurrentSection(QDateEdit.MonthSection)
-        if card and card.due_date:
+        # 截止日期可选：新建/无日期默认"未设置"，提交 due_date=None，不再默认今天。
+        # 未设置态显示灰色"未设置"文字（而非禁用的日期框），设置后才是日期选择框
+        has_due = card is not None and bool(card.due_date)
+        self._due_cleared = not has_due
+        if has_due:
             self._due_edit.setDate(QDate.fromString(card.due_date, "yyyy-MM-dd"))
         else:
-            self._due_edit.setDate(QDate.currentDate())
-        row.addWidget(self._due_edit, 1, 0)
+            self._due_edit.setDate(QDate.currentDate())  # 占位值，未设置态不显示
+        self._due_none_label = QLabel("未设置")
+        self._due_none_label.setStyleSheet(f"""
+            QLabel {{
+                color: {c['text_disabled']};
+                font-size: 13px;
+                font-style: italic;
+                background: transparent;
+            }}
+        """)
+        due_box = QHBoxLayout()
+        due_box.setContentsMargins(0, 0, 0, 0)
+        due_box.addWidget(self._due_none_label)
+        due_box.addWidget(self._due_edit)
+        row.addLayout(due_box, 1, 0)
 
         self._done_check = QCheckBox("标记为已完成")
         if card:
@@ -139,17 +180,16 @@ class CardDialog(QDialog):
         row.addWidget(self._star_check, 1, 2)
         root.addLayout(row)
 
-        # 清除日期（点击后提交时 due_date 为 None，不再回填今天）
-        self._due_cleared = False
-        self._clear_due = QPushButton("清除日期")
-        self._clear_due.setFlat(True)
-        self._clear_due.setCursor(Qt.PointingHandCursor)
-        self._clear_due.clicked.connect(self._on_clear_due)
-        # 占位：放右下
+        # 截止日期开关（清除 ⇄ 设置 双向；cleared 时提交 due_date 为 None）
+        self._due_toggle_btn = QPushButton()
+        self._due_toggle_btn.setFlat(True)
+        self._due_toggle_btn.setCursor(Qt.PointingHandCursor)
+        self._due_toggle_btn.clicked.connect(self._on_toggle_due)
         bottom = QHBoxLayout()
-        bottom.addWidget(self._clear_due)
+        bottom.addWidget(self._due_toggle_btn)
         bottom.addStretch(1)
         root.addLayout(bottom)
+        self._apply_due_state()
 
         # 按钮
         btns = QHBoxLayout()
@@ -178,10 +218,27 @@ class CardDialog(QDialog):
         for chip in self._label_chips:
             chip.reapply()
 
-    def _on_clear_due(self) -> None:
-        self._due_cleared = True
-        self._due_edit.setDate(QDate.currentDate())  # 控件必须有合法值，提交时忽略
-        self._clear_due.setEnabled(False)
+    def _apply_due_state(self) -> None:
+        """按当前 _due_cleared 切换：未设置=灰字标签，已设置=日期选择框"""
+        self._due_edit.setVisible(not self._due_cleared)
+        self._due_none_label.setVisible(self._due_cleared)
+        self._due_toggle_btn.setText(
+            "设置日期" if self._due_cleared else "清除日期")
+
+    def _on_toggle_due(self) -> None:
+        """截止日期 清除 ⇄ 设置 双向切换"""
+        self._due_cleared = not self._due_cleared
+        self._apply_due_state()
+        if not self._due_cleared:
+            self._due_edit.setFocus()
+
+    def _on_insert_time(self) -> None:
+        """在备注光标处插入紧凑时间戳 MM-DD HH:MM（不占位置）"""
+        stamp = datetime.now().strftime("%m-%d %H:%M")
+        cursor = self._notes_edit.textCursor()
+        cursor.insertText(stamp)
+        self._notes_edit.setTextCursor(cursor)
+        self._notes_edit.setFocus()
 
     def _on_save(self) -> None:
         title = self._title_edit.text().strip()

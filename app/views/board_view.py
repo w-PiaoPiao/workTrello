@@ -19,6 +19,7 @@ from PySide6.QtCore import (
     QMimeData,
     QPoint,
     QPointF,
+    QRect,
     QSize,
     Qt,
     Signal,
@@ -48,6 +49,7 @@ from PySide6.QtWidgets import (
 
 from app.config import AppConfig
 from app.models.board import BoardList, Card
+from app.views.notes_popover import hide_notes_popover, notes_popover
 from app.views.theme import AppTheme
 
 MIME_LIST = "application/x-petboard-list"
@@ -108,6 +110,7 @@ class CardWidget(QFrame):
         self._check_btn: QPushButton | None = None
         self._title_label: QLabel | None = None
         self._meta_badges: list[tuple[QLabel, str]] = []
+        self._notes_badge: QLabel | None = None    # "≡ 有备注"徽章（悬停弹备注预览）
         self._fingerprint: tuple = ()
         self._focusing_id: str | None = None    # 当前正在专注的卡片 id
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -243,6 +246,7 @@ class CardWidget(QFrame):
         self._check_btn = None
         self._title_label = None
         self._meta_badges = []
+        self._notes_badge = None
 
         c = AppTheme.colors()
         card = self._card
@@ -321,21 +325,27 @@ class CardWidget(QFrame):
         self._delete_btn.hide()
 
         # 底部信息行（截止日期 / 备注图标）
-        meta_items: list[tuple[str, str]] = []      # (文本, 主题色键)
+        meta_items: list[tuple[str, str, bool]] = []    # (文本, 主题色键, 是否备注徽章)
         if card.due_date:
             text, overdue = _fmt_due(card.due_date)
-            meta_items.append((text, "danger" if overdue else "accent"))
+            meta_items.append((text, "danger" if overdue else "accent", False))
         if card.notes:
-            meta_items.append(("≡ 有备注", "text_secondary"))
+            meta_items.append(("≡ 有备注", "text_secondary", True))
         if card.pomodoros:
-            meta_items.append((f"🍅 ×{card.pomodoros}", "text_secondary"))
+            meta_items.append((f"🍅 ×{card.pomodoros}", "text_secondary", False))
 
         if meta_items:
             meta_row = QHBoxLayout()
             meta_row.setSpacing(8)
-            for text, key in meta_items:
+            for text, key, is_notes in meta_items:
                 badge = QLabel(text)
                 self._meta_badges.append((badge, key))
+                if is_notes:
+                    # 备注徽章：悬停弹出备注全文预览（事件过滤由本卡处理）
+                    self._notes_badge = badge
+                    badge.setCursor(Qt.PointingHandCursor)
+                    badge.setToolTip("查看备注全文")
+                    badge.installEventFilter(self)
                 meta_row.addWidget(badge)
             self._style_meta_badges()
             meta_row.addStretch(1)
@@ -356,6 +366,26 @@ class CardWidget(QFrame):
         if self._delete_btn is not None:
             self._delete_btn.move(
                 self.width() - self._delete_btn.width() - 6, 6)
+
+    # ── 备注悬浮预览 ──────────────────────────────────────
+
+    def eventFilter(self, obj, event):
+        """备注徽章悬停：Enter 弹预览浮层，Leave 延迟关闭（可移入浮层续看）"""
+        if obj is self._notes_badge and event.type() == QEvent.Enter:
+            badge = self._notes_badge
+            global_rect = QRect(badge.mapToGlobal(QPoint(0, 0)),
+                                badge.size())
+            notes_popover().show_for(self._card.notes, global_rect)
+            return False
+        if obj is self._notes_badge and event.type() == QEvent.Leave:
+            notes_popover().schedule_hide()
+            return False
+        return super().eventFilter(obj, event)
+
+    def hideEvent(self, event) -> None:
+        """卡片被重建/隐藏时收起可能开着的备注浮层"""
+        hide_notes_popover()
+        super().hideEvent(event)
 
     def enterEvent(self, event) -> None:
         self._hovered = True
