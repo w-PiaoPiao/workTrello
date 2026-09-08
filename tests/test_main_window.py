@@ -15,11 +15,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtWidgets import QApplication
 
 _qapp = QApplication.instance() or QApplication([])
 
+from app.config import AppConfig
 from app.views.main_window import MainWindow
 from app.views.pet_view import PetView
 
@@ -80,6 +81,81 @@ class PetAlwaysTopMenuTest(unittest.TestCase):
         self.assertEqual(emitted, [])
 
         pet.deleteLater()
+
+
+@unittest.skipUnless(AppConfig.IS_WINDOWS, "仅 Windows 启用边缘缩放")
+class WindowsEdgeResizeTest(unittest.TestCase):
+    def setUp(self):
+        self.w = MainWindow()
+        self.w.show()
+        # 直接进入展开态（跳过动画），布局就绪后可测边缘
+        self.w._mode = "expanded"
+        self.w._expanding = False
+        self.w._animation_running = False
+        self.w.setFixedSize(AppConfig.BOARD_WIDTH, AppConfig.BOARD_HEIGHT)
+
+    def tearDown(self):
+        self.w.hide()
+        self.w.deleteLater()
+
+    def test_edge_at_returns_edges(self):
+        m = AppConfig.RESIZE_MARGIN
+        w, h = self.w.width(), self.w.height()
+        # 四边与四角
+        self.assertTrue(self.w._edge_at(QPoint(m // 2, h // 2)) & Qt.LeftEdge)
+        self.assertTrue(self.w._edge_at(QPoint(w - 1, h // 2)) & Qt.RightEdge)
+        self.assertTrue(self.w._edge_at(QPoint(w // 2, m // 2)) & Qt.TopEdge)
+        self.assertTrue(self.w._edge_at(QPoint(w // 2, h - 1)) & Qt.BottomEdge)
+        edge_tl = self.w._edge_at(QPoint(0, 0))
+        self.assertTrue(edge_tl & Qt.LeftEdge and edge_tl & Qt.TopEdge)
+        edge_br = self.w._edge_at(QPoint(w - 1, h - 1))
+        self.assertTrue(edge_br & Qt.RightEdge and edge_br & Qt.BottomEdge)
+        # 中心不是边缘
+        self.assertIsNone(self.w._edge_at(QPoint(w // 2, h // 2)))
+
+    def test_edge_at_collapsed_returns_none(self):
+        self.w._mode = "collapsed"
+        self.assertIsNone(self.w._edge_at(QPoint(0, 0)))
+
+    def test_mouse_in_expanded_guard(self):
+        self.assertTrue(self.w._mouse_in_expanded())
+        self.w._mode = "collapsed"
+        self.assertFalse(self.w._mouse_in_expanded())
+        self.w._mode = "expanded"
+        self.w._animation_running = True
+        self.assertFalse(self.w._mouse_in_expanded())
+
+
+@unittest.skipUnless(AppConfig.IS_WINDOWS, "仅 Windows 有该信号联动")
+class WindowsZoomSignalTest(unittest.TestCase):
+    def setUp(self):
+        self.w = MainWindow()
+        self.w.setGeometry(300, 200, AppConfig.BOARD_WIDTH,
+                           AppConfig.BOARD_HEIGHT)  # ≥ min，可还原
+        self.w.show()
+        self.w._mode = "expanded"
+        self.w._animation_running = False
+
+    def tearDown(self):
+        self.w.hide()
+        self.w.deleteLater()
+
+    def test_zoom_state_changed_emitted(self):
+        states = []
+        self.w.zoom_state_changed.connect(states.append)
+        self.w.toggle_zoom()
+        self.assertEqual(states, [True])
+        self.w.toggle_zoom()
+        self.assertEqual(states, [True, False])
+
+    def test_toggle_zoom_restores_geometry(self):
+        before = self.w.geometry()
+        self.w.toggle_zoom()
+        self.assertTrue(self.w._zoomed)
+        # 还原后回到进入最大化前的几何
+        self.w.toggle_zoom()
+        self.assertFalse(self.w._zoomed)
+        self.assertEqual(self.w.geometry(), before)
 
 
 if __name__ == "__main__":

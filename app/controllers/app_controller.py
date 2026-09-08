@@ -231,6 +231,9 @@ class AppController(QObject):
         self._board_view.signal_theme_selected.connect(self._on_theme_selected)
         self._board_view.signal_quit_requested.connect(self._on_quit)
         self._board_view.signal_zoom_requested.connect(self._window.toggle_zoom)
+        # Windows 窗口控制键的最大化图标 ⇆ 跟随 toggle_zoom（含工具栏绿键/双击触发）
+        self._window.zoom_state_changed.connect(
+            self._board_view.set_zoom_state)
 
         # 托盘
         self._tray.signal_always_top_toggled.connect(

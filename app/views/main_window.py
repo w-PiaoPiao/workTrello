@@ -18,8 +18,10 @@ from PySide6.QtCore import (
     QRect,
     QSize,
     Qt,
+    QTimer,
+    Signal,
 )
-from PySide6.QtGui import QKeySequence, QMouseEvent, QScreen, QShortcut
+from PySide6.QtGui import QCursor, QKeySequence, QMouseEvent, QScreen, QShortcut
 from PySide6.QtWidgets import QApplication, QStackedWidget, QVBoxLayout, QWidget
 
 from app.config import AppConfig
@@ -30,6 +32,8 @@ logger = logging.getLogger(__name__)
 
 class MainWindow(QWidget):
     """无边框置顶主窗口"""
+
+    zoom_state_changed = Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -55,6 +59,12 @@ class MainWindow(QWidget):
         self._visible_cb = None
         self._zoomed = False
         self._zoom_restore_geo = QRect()
+
+        # Windows 边缘缩放状态（仅展开态启用；macOS 不启用）
+        self._resize_active = False
+        if AppConfig.IS_WINDOWS:
+            self.setMouseTracking(True)
+            self._refresh_edge_cursor()
 
         # 子视图占位（外部注入）
         self._collapsed_view: QWidget | None = None
@@ -154,6 +164,10 @@ class MainWindow(QWidget):
         self._animate_size(
             target.width(), target.height(),
             delta=self._expand_delta, base_geo=base_geo)
+        # 展开完成后（鼠标可能正悬停在边缘）刷新一次缩放光标
+        if AppConfig.IS_WINDOWS:
+            QTimer.singleShot(AppConfig.ANIMATION_MS + 30,
+                              self._refresh_edge_cursor)
 
     def collapse(self) -> None:
         if self._mode == "collapsed" or self._animation_running:
@@ -211,11 +225,27 @@ class MainWindow(QWidget):
                                 AppConfig.BOARD_MIN_HEIGHT)
             self.setMaximumSize(AppConfig.BOARD_MAX_WIDTH,
                                 AppConfig.BOARD_MAX_HEIGHT)
+        self.zoom_state_changed.emit(self._zoomed)
 
-    # ── 拖拽 ──────────────────────────────────────────────
+    # ── 拖拽 / 边缘缩放 ─────────────────────────────────
+
+    def _mouse_in_expanded(self) -> bool:
+        """窗口是否处于可拖拽/可缩放的展开态（非动画中）"""
+        return (self._mode == "expanded"
+                and not self._animation_running
+                and not self._expanding)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.LeftButton:
+            if AppConfig.IS_WINDOWS and self._mouse_in_expanded():
+                edge = self._edge_at(event.position().toPoint())
+                if edge:
+                    # 命中边缘 → 交给系统级缩放（鼠标被 OS 捕获直到释放）
+                    handle = self.windowHandle()
+                    if handle is not None and handle.startSystemResize(edge):
+                        self._resize_active = True
+                    event.accept()
+                    return
             self._set_pet_idle(False)
             self._drag_pos = (event.globalPosition().toPoint()
                               - self.frameGeometry().topLeft())
@@ -226,9 +256,22 @@ class MainWindow(QWidget):
         if self._is_dragging and event.buttons() == Qt.LeftButton:
             self.move(event.globalPosition().toPoint() - self._drag_pos)
             event.accept()
+            return
+        if (AppConfig.IS_WINDOWS
+                and self._mode == "expanded"
+                and not self._animation_running):
+            # 无按键悬停：按边缘刷新缩放光标（折叠/动画中不改变）
+            self._refresh_edge_cursor()
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.LeftButton:
+            if self._resize_active:
+                self._resize_active = False
+                # 系统级缩放期间窗口原生收尾；此处只收尾状态并持久化
+                self._snap_to_screen_edge()
+                self._save_position()
+                event.accept()
+                return
             self._is_dragging = False
             self._snap_to_screen_edge()
             self._save_position()
@@ -295,6 +338,7 @@ class MainWindow(QWidget):
         if self._mode == "collapsed":
             self._stack.setCurrentWidget(self._collapsed_view)
             self.setFixedSize(self._collapsed_size)
+            self.unsetCursor()
             self._set_pet_idle(True)
 
     def _visible_expand_delta(self, pet_geo: QRect, target: QSize,
@@ -396,6 +440,50 @@ class MainWindow(QWidget):
                     min(pos.y(), geo.bottom() - h - margin))
         if new_x != pos.x() or new_y != pos.y():
             self.move(new_x, new_y)
+
+    # ── Windows 边缘缩放 ─────────────────────────────────
+
+    def _edge_at(self, pos: QPoint) -> Qt.Edge | None:
+        """pos（窗口内坐标）是否落在可缩放边缘/角；返回对应 Qt.Edge 组合或 None"""
+        if self._mode != "expanded" or self._animation_running:
+            return None
+        m = AppConfig.RESIZE_MARGIN
+        w, h = self.width(), self.height()
+        x, y = pos.x(), pos.y()
+        edge = Qt.Edge()
+        if x < m:
+            edge |= Qt.LeftEdge
+        elif x >= w - m:
+            edge |= Qt.RightEdge
+        if y < m:
+            edge |= Qt.TopEdge
+        elif y >= h - m:
+            edge |= Qt.BottomEdge
+        return edge if edge else None
+
+    def _refresh_edge_cursor(self) -> None:
+        """无按键悬停时按边缘更新光标（展开态 + Windows 生效）"""
+        if not (AppConfig.IS_WINDOWS and self._mouse_in_expanded()):
+            self.unsetCursor()
+            return
+        edge = self._edge_at(self.mapFromGlobal(QCursor.pos()))
+        if edge is None:
+            self.unsetCursor()
+            return
+        cursor = None
+        if edge & Qt.LeftEdge and edge & Qt.TopEdge:
+            cursor = Qt.SizeFDiagCursor
+        elif edge & Qt.RightEdge and edge & Qt.BottomEdge:
+            cursor = Qt.SizeFDiagCursor
+        elif edge & Qt.RightEdge and edge & Qt.TopEdge:
+            cursor = Qt.SizeBDiagCursor
+        elif edge & Qt.LeftEdge and edge & Qt.BottomEdge:
+            cursor = Qt.SizeBDiagCursor
+        elif edge & Qt.LeftEdge or edge & Qt.RightEdge:
+            cursor = Qt.SizeHorCursor
+        else:
+            cursor = Qt.SizeVerCursor
+        self.setCursor(cursor)
 
     def set_visibility_callback(self, callback) -> None:
         """控制器注入显隐回调（同步托盘菜单文案）"""

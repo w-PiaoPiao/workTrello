@@ -124,6 +124,7 @@ class AppConfig:
     LIST_WIDTH = 272            # 单个看板列表宽度
     ANIMATION_MS = 240          # 折叠/展开动画时长
     SCREEN_MARGIN = 20
+    RESIZE_MARGIN = 6           # Windows 边缘拖拽缩放的命中宽度（像素）
 
     # ── 交互 ──────────────────────────────────────────────────────
     CARD_DRAG_THRESHOLD = 10    # 卡片按下后超过该位移才判定为拖拽（像素）

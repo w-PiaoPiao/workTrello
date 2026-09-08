@@ -917,8 +917,10 @@ class BoardView(QWidget):
         # ── 工具栏 ────────────────────────────────────────
         self._toolbar = QWidget()
         self._toolbar.setFixedHeight(56)
+        # 右 margin：Windows 分支会让窗口控制键贴右缘，此处改为 0 由控件区补
+        right_margin = 0 if AppConfig.IS_WINDOWS else 14
         self._toolbar_layout = QHBoxLayout(self._toolbar)
-        self._toolbar_layout.setContentsMargins(18, 8, 14, 8)
+        self._toolbar_layout.setContentsMargins(18, 8, right_margin, 8)
         self._toolbar_layout.setSpacing(10)
 
         self._title_label = QLabel("🗂 我的看板")
@@ -988,6 +990,20 @@ class BoardView(QWidget):
             self._toolbar_layout.insertWidget(0, self._traffic_lights)
             self._collapse_btn.hide()   # 黄灯已承担折叠，避免重复控件
 
+        # Windows 窗口控制键（贴右缘）：─ 折叠桌宠  □ 最大化/还原  ✕ 退出
+        self._window_controls = None
+        if AppConfig.IS_WINDOWS:
+            from app.views.window_controls import WindowControls
+            self._window_controls = WindowControls()
+            self._window_controls.signal_minimize.connect(
+                self.signal_collapse_clicked.emit)
+            self._window_controls.signal_zoom.connect(
+                self.signal_zoom_requested.emit)
+            self._window_controls.signal_close.connect(
+                self.signal_quit_requested.emit)
+            self._toolbar_layout.addWidget(self._window_controls)
+            self._collapse_btn.hide()   # 最小化键已承担折叠，避免重复控件
+
         root.addWidget(self._toolbar)
 
         # ── 列表区（横向滚动） ────────────────────────────
@@ -1025,6 +1041,11 @@ class BoardView(QWidget):
     def finish_rename(self, cancel: bool = False) -> bool:
         """关闭当前列表重命名编辑器（cancel=True 丢弃修改）；返回是否有关闭"""
         return finish_active_rename(cancel)
+
+    def set_zoom_state(self, zoomed: bool) -> None:
+        """同步最大化/还原图标状态（macOS 无此控件，空操作）"""
+        if self._window_controls is not None:
+            self._window_controls.set_zoomed(zoomed)
 
     # ── 主题 ──────────────────────────────────────────────
 
@@ -1070,6 +1091,8 @@ class BoardView(QWidget):
             }}
             QPushButton:hover {{ background: rgba(128, 128, 128, 0.30); }}
         """)
+        if self._window_controls is not None:
+            self._window_controls.reapply()
         self._today_btn.setStyleSheet(f"""
             QPushButton {{
                 background: rgba(128, 128, 128, 0.15);
