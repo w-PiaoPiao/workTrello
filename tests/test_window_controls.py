@@ -8,10 +8,14 @@ Windows 窗口控制键测试：三键信号发射、按下拖出释放不触发
 
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# 数据目录隔离：单文件 / discover / pytest 运行方式下
+# 都不得读写真实用户数据（防止全量回归清空 %LOCALAPPDATA% 看板）
+os.environ["PET_BOARD_DATA_DIR"] = tempfile.mkdtemp()
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 

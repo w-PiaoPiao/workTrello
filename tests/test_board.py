@@ -7,12 +7,16 @@
 """
 
 import json
+import os
 import sys
 import tempfile
 import unittest
 from datetime import date, datetime
 from pathlib import Path
 
+# 数据目录隔离：单文件 / discover / pytest 运行方式下
+# 都不得读写真实用户数据（防止全量回归清空 %LOCALAPPDATA% 看板）
+os.environ["PET_BOARD_DATA_DIR"] = tempfile.mkdtemp()
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.models.board import Board, BoardList, BoardStore, Card

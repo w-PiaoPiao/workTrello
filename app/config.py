@@ -89,7 +89,17 @@ class AppConfig:
             import appdirs
             DATA_DIR = Path(appdirs.user_data_dir(APP_NAME, False))
         except ImportError:
-            DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+            # 兜底（如 PyInstaller frozen 环境缺 appdirs）：仍落到系统
+            # 数据目录，绝不回退 __file__ 旁路径——frozen 下 __file__ 指向
+            # 每次启动都重建的 _MEIPASS 临时目录，数据会随进程消失
+            if sys.platform == "win32":
+                base = os.environ.get("LOCALAPPDATA") or str(Path.home())
+            elif sys.platform == "darwin":
+                base = str(Path.home() / "Library" / "Application Support")
+            else:
+                base = os.environ.get("XDG_DATA_HOME") \
+                    or str(Path.home() / ".local" / "share")
+            DATA_DIR = Path(base) / APP_NAME
 
     BOARD_FILE = "board.json"
 
