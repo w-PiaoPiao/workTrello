@@ -193,6 +193,45 @@ class CardDialog(QDialog):
         root.addLayout(bottom)
         self._apply_due_state()
 
+        # 重复周期：勾选完成时自动滚动截止日期到下一周期（配合截止日期使用）
+        cap5 = QLabel("重复")
+        cap5.setProperty("cap", True)
+        root.addWidget(cap5)
+        repeat_row = QHBoxLayout()
+        repeat_row.setSpacing(6)
+        self._repeat_choices: dict[str, QPushButton] = {}
+        for key, name in (("never", "不重复"), ("daily", "每天"),
+                          ("weekly", "每周")):
+            btn = QPushButton(name)
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {c['bg_card']};
+                    color: {c['text_secondary']};
+                    border: 1px solid {c['border']};
+                    border-radius: 6px;
+                    padding: 4px 10px;
+                    font-size: 12px;
+                }}
+                QPushButton:checked {{
+                    background: {c['accent_soft']};
+                    color: {c['accent']};
+                    border: 1.5px solid {c['accent']};
+                }}
+                QPushButton:hover {{
+                    border: 1.5px solid {c['accent']};
+                }}
+            """)
+            btn.clicked.connect(self._on_repeat_clicked)
+            self._repeat_choices[key] = btn
+            repeat_row.addWidget(btn)
+        selected = (card.repeat if card is not None
+                    and card.repeat in self._repeat_choices else "never")
+        self._repeat_choices[selected].setChecked(True)
+        repeat_row.addStretch(1)
+        root.addLayout(repeat_row)
+
         # 按钮
         btns = QHBoxLayout()
         btns.addStretch(1)
@@ -234,6 +273,11 @@ class CardDialog(QDialog):
     def _on_chip_toggled(self) -> None:
         for chip in self._label_chips:
             chip.reapply()
+
+    def _on_repeat_clicked(self) -> None:
+        """重复周期单选：被点击的成为唯一选中项"""
+        for key, btn in self._repeat_choices.items():
+            btn.setChecked(btn is self.sender())
 
     def _apply_due_state(self) -> None:
         """按当前 _due_cleared 切换：未设置=灰字标签，已设置=日期选择框"""
@@ -277,4 +321,6 @@ class CardDialog(QDialog):
             else self._due_edit.date().toString("yyyy-MM-dd"),
             "done": self._done_check.isChecked(),
             "starred": self._star_check.isChecked(),
+            "repeat": next((k for k, b in self._repeat_choices.items()
+                            if b.isChecked()), "never"),
         }

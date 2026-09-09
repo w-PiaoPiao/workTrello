@@ -28,6 +28,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QAction,
+    QActionGroup,
     QMouseEvent,
     QPainter,
     QPainterPath,
@@ -48,6 +49,7 @@ class PetCanvas(QWidget):
     def __init__(self, base_size: int, parent=None):
         super().__init__(parent)
         self._base = base_size
+        self._skin_key = AppConfig.get_pet_skin()
         self._offset_y = 0.0
         self._scale = 1.0
         self._angle = 0.0
@@ -129,6 +131,18 @@ class PetCanvas(QWidget):
             self._mood = mood
             self.update()
 
+    # ── 皮肤 ──────────────────────────────────────────────
+
+    def skin(self) -> dict:
+        """当前皮肤配色（非法 key 回退默认"milk"）"""
+        return AppConfig.PET_SKINS.get(self._skin_key,
+                                       AppConfig.PET_SKINS["milk"])
+
+    def set_skin(self, key: str) -> None:
+        if key in AppConfig.PET_SKINS and key != self._skin_key:
+            self._skin_key = key
+            self.update()
+
     # ── 绘制 ──────────────────────────────────────────────
 
     def paintEvent(self, event) -> None:
@@ -156,13 +170,15 @@ class PetCanvas(QWidget):
         """绘制卡通形象（以中心为原点，s 为基准尺寸）"""
         half = s / 2
 
-        # ── 配色 ──
-        body_top = QColor("#FFF7EA")
-        body_bottom = QColor("#FFE3C2")
-        outline = QColor("#8A5A2B")
-        blush = QColor(255, 150, 140, 90)
-        eye_color = QColor("#3B2A1A")
-        accent = QColor("#FFB84D")
+        # ── 配色（皮肤可换，见 AppConfig.PET_SKINS） ──
+        skin = self.skin()
+        body_top = QColor(*skin["body_top"])
+        body_bottom = QColor(*skin["body_bottom"])
+        outline = QColor(*skin["outline"])
+        blush = QColor(*skin["blush"])
+        eye_color = QColor(*skin["eye"])
+        accent = QColor(*skin["ear_inner"])
+        belly = QColor(*skin["belly"])
 
         blinking = self._focus_mode or time.monotonic() < self._blink_until
 
@@ -214,7 +230,6 @@ class PetCanvas(QWidget):
 
         # 肚皮（浅色椭圆）
         painter.setPen(Qt.NoPen)
-        belly = QColor(255, 255, 255, 130)
         painter.setBrush(belly)
         painter.drawEllipse(
             int(-half * 0.34), int(half * 0.08),
@@ -296,6 +311,7 @@ class PetView(QWidget):
     signal_quit_requested = Signal()
     signal_animation_toggled = Signal(bool)  # 空闲动画启用状态
     signal_always_top_toggled = Signal(bool)  # 窗口置顶开关
+    signal_skin_selected = Signal(str)        # 皮肤 key（持久化由控制器负责）
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -303,6 +319,7 @@ class PetView(QWidget):
         self._pressed = False
         self._press_global = QPoint()
         self._count = 0
+        self._focus_mode = False
         self._animations_enabled = True
         self._badge_override: str | None = None   # 番茄钟倒计时等临时文本
         self._celebrating = None                  # 庆祝动画组
@@ -348,6 +365,21 @@ class PetView(QWidget):
         self._context_menu.addSeparator()
         self._context_menu.addAction(self._act_animation)
         self._context_menu.addAction(self._act_always_top)
+        self._context_menu.addSeparator()
+        # 换皮肤：预置配色单选（挂 QActionGroup 保证互斥）
+        self._skin_actions: dict[str, QAction] = {}
+        skin_menu = self._context_menu.addMenu("换皮肤")
+        self._skin_group = QActionGroup(self)
+        current_skin = AppConfig.get_pet_skin()
+        for key, spec in AppConfig.PET_SKINS.items():
+            act = QAction(spec.get("name", key), skin_menu)
+            act.setCheckable(True)
+            act.setChecked(key == current_skin)
+            act.triggered.connect(
+                lambda _=False, k=key: self._on_skin_triggered(k))
+            self._skin_group.addAction(act)
+            self._skin_actions[key] = act
+            skin_menu.addAction(act)
         self._context_menu.addAction(self._act_quit)
         self._act_expand.triggered.connect(self.signal_expand_clicked.emit)
         self._act_quick_add.triggered.connect(self.signal_quick_add_clicked.emit)
@@ -532,9 +564,29 @@ class PetView(QWidget):
 
     def set_focus_mode(self, on: bool) -> None:
         """专注模式：桌宠打瞌睡（闭眼），暂停空闲小动作"""
+        self._focus_mode = on
         if on:
             self.stop_idle()
         self._pet_canvas.set_focus_mode(on)
+
+    def _on_skin_triggered(self, key: str) -> None:
+        """皮肤菜单选中：切换绘制并通知控制器持久化"""
+        self._pet_canvas.set_skin(key)
+        self.signal_skin_selected.emit(key)
+
+    def nudge(self) -> None:
+        """提醒示意：跳一下（专注/动画禁用/已有小动作时跳过；
+        空闲动画运行中会先暂停、结束后恢复）"""
+        if not self._animations_enabled or self._focus_mode:
+            return
+        if self._active_action is not None:
+            return
+        if self._float_anim.state() == QAbstractAnimation.Running:
+            self._float_anim.pause()
+        group = self._make_jump_action()
+        self._active_action = group
+        group.finished.connect(self._on_action_finished)
+        group.start()
 
     def set_mood(self, mood: str) -> None:
         self._pet_canvas.set_mood(mood)

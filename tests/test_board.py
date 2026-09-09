@@ -11,7 +11,7 @@ import os
 import sys
 import tempfile
 import unittest
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 # 数据目录隔离：单文件 / discover / pytest 运行方式下
@@ -88,6 +88,47 @@ class CardTest(unittest.TestCase):
         card = Card(title="任务")
         card.apply({"starred": True})
         self.assertTrue(card.starred)
+
+    # ── 重复任务：roll_repeat（完成时滚动截止日期） ──────────
+
+    def test_roll_repeat_daily_and_weekly(self):
+        card = Card(title="每日晨会", due_date=date.today().isoformat())
+        card.repeat = "daily"
+        self.assertTrue(card.roll_repeat())
+        self.assertEqual(card.due_date,
+                         (date.today() + timedelta(days=1)).isoformat())
+        self.assertFalse(card.done)
+        self.assertIsNone(card.done_at)
+        card.repeat = "weekly"
+        card.due_date = date.today().isoformat()
+        self.assertTrue(card.roll_repeat())
+        self.assertEqual(card.due_date,
+                         (date.today() + timedelta(days=7)).isoformat())
+
+    def test_roll_repeat_overdue_jumps_to_today_or_later(self):
+        card = Card(title="迟交补完",
+                    due_date=(date.today() - timedelta(days=20)).isoformat())
+        card.repeat = "daily"
+        self.assertTrue(card.roll_repeat())
+        delta = (date.fromisoformat(card.due_date) - date.today()).days
+        self.assertGreaterEqual(delta, 0)
+
+    def test_roll_repeat_noop_without_repeat_or_date(self):
+        card = Card(title="普通卡", due_date=date.today().isoformat())
+        self.assertFalse(card.roll_repeat())          # repeat=never
+        card.repeat = "daily"
+        card.due_date = None
+        self.assertFalse(card.roll_repeat())          # 无日期
+        card.due_date = "bad-date"
+        self.assertFalse(card.roll_repeat())          # 非法日期
+
+    def test_repeat_roundtrip_and_validation(self):
+        card = Card(title="周报", due_date="2026-09-13", repeat="weekly")
+        card2 = Card.from_dict(card.to_dict())
+        self.assertEqual(card2.repeat, "weekly")
+        self.assertEqual(Card.from_dict(
+            {"title": "x", "repeat": "monthly"}).repeat, "never")
+        self.assertEqual(Card.from_dict({"title": "y"}).repeat, "never")
 
     # ── 统一谓词：due_delta / in_today_focus（今日聚焦与统计共用） ──
 

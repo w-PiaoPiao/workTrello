@@ -42,6 +42,7 @@ class Card:
     pomodoros: int = 0                  # 完成的番茄钟数
     done_at: str | None = None          # 勾选完成的时刻（周统计用）
     archived: bool = False              # 归档（不出现在看板）
+    repeat: str = "never"               # never | daily | weekly（完成时自动滚到下一周期）
 
     def to_dict(self) -> dict:
         return {
@@ -56,6 +57,7 @@ class Card:
             "pomodoros": self.pomodoros,
             "done_at": self.done_at,
             "archived": self.archived,
+            "repeat": self.repeat,
         }
 
     @classmethod
@@ -74,6 +76,9 @@ class Card:
         except (TypeError, ValueError):
             pomodoros = 0
         done_at = data.get("done_at")
+        repeat = data.get("repeat", "never")
+        if repeat not in ("never", "daily", "weekly"):
+            repeat = "never"
         return cls(
             title=title,
             id=str(data.get("id") or _new_id()),
@@ -86,6 +91,7 @@ class Card:
             pomodoros=max(0, pomodoros),
             done_at=str(done_at) if done_at else None,
             archived=bool(data.get("archived", False)),
+            repeat=repeat,
         )
 
     def apply(self, data: dict) -> None:
@@ -96,6 +102,9 @@ class Card:
         self.due_date = data.get("due_date", self.due_date)
         self.done = bool(data.get("done", self.done))
         self.starred = bool(data.get("starred", self.starred))
+        repeat = data.get("repeat", self.repeat)
+        self.repeat = repeat if repeat in ("never", "daily", "weekly") \
+            else "never"
         # 完成时刻自动维护（周统计用）
         if self.done and not self.done_at:
             self.done_at = _now_iso()
@@ -122,6 +131,25 @@ class Card:
             return True
         delta = self.due_delta(today)
         return delta is not None and delta <= 0
+
+    def roll_repeat(self) -> bool:
+        """重复任务完成时滚动：截止日推进到下一周期（逾期补完则推进到
+        不早于今天），并复位 done/done_at。返回是否发生了滚动。"""
+        if self.repeat not in ("daily", "weekly") or not self.due_date:
+            return False
+        try:
+            due = date.fromisoformat(self.due_date)
+        except ValueError:
+            return False
+        step = 1 if self.repeat == "daily" else 7
+        due += timedelta(days=step)
+        today = date.today()
+        while due < today:
+            due += timedelta(days=step)
+        self.due_date = due.isoformat()
+        self.done = False
+        self.done_at = None
+        return True
 
 
 @dataclass

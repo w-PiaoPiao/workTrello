@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import csv
 import logging
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QTimer
@@ -70,11 +70,13 @@ class AppController(QObject):
 
         # ── 撤销 / 截止提醒 / 系统主题跟随 / 番茄钟 ────────
         self._undo_stack: list[dict] = []
-        self._due_signature: tuple[int, int] | None = None
         self._due_timer = QTimer(self)
         self._due_timer.setInterval(AppConfig.DUE_CHECK_INTERVAL_MS)
         self._due_timer.timeout.connect(self._check_due_dates)
         self._due_timer.start()
+        # 启动后立即检查一次(等窗口就绪,避免提醒弹在启动瞬间)；
+        # 之后由 DUE_CHECK_INTERVAL_MS 周期驱动
+        QTimer.singleShot(2000, self._check_due_dates)
         self._pomo_card_id: str | None = None
         self._pomo_left = 0
         self._pomo_timer = QTimer(self)
@@ -276,6 +278,7 @@ class AppController(QObject):
         self._pet_view.signal_quit_requested.connect(self._on_quit)
         self._pet_view.signal_animation_toggled.connect(
             self._on_pet_animation_toggled)
+        self._pet_view.signal_skin_selected.connect(self._on_pet_skin_selected)
         self._pet_view.signal_always_top_toggled.connect(
             self._on_always_top_toggled)
         self._board_view.signal_card_pomo.connect(self._on_card_pomo)
@@ -360,6 +363,11 @@ class AppController(QObject):
             return
         self._push_undo()
         card.done = done
+        if done and card.roll_repeat():
+            # 重复任务：完成即滚动到下一周期并复位，提示下次日期
+            self._after_data_change(
+                f"已完成 · 下次 {card.due_date[5:].replace('-', '/')}")
+            return
         self._after_data_change(None)
         self._notify_done(card)
 
@@ -522,6 +530,9 @@ class AppController(QObject):
         if enabled:
             self._window.start_collapsed_idle()
 
+    def _on_pet_skin_selected(self, key: str) -> None:
+        AppConfig.save_pet_skin(key)
+
     def _on_always_top_toggled(self, on: bool) -> None:
         self._window.set_always_on_top(on)
         AppConfig.save_always_on_top(on)
@@ -671,20 +682,46 @@ class AppController(QObject):
     # ── 截止提醒 ──────────────────────────────────────────
 
     def _check_due_dates(self) -> None:
-        """逾期/今日截止统计变化时经托盘提醒（签名去重，避免重复轰炸）"""
-        counts = self._store.load().due_counts(date.today())
-        if counts == self._due_signature:
+        """截止提醒：逐卡检查（逾期 / 今天截止），每天每卡只提醒一次
+
+        提醒签名（card_id:due_date:kind + 日期）持久化到 QSettings，
+        同一天重启不再重复轰炸；通知聚合为最多两条主条目 + 数量，
+        折叠态时桌宠跳一下示意。
+        """
+        today = date.today()
+        board = self._store.load()
+        log = AppConfig.get_remind_log()
+        log_for_today = log.get(today.isoformat(), [])
+        items: list[tuple[str, str]] = []   # (卡片标题, 状态文案)
+        for lst in board.lists:
+            for c in lst.cards:
+                if c.done or c.archived:
+                    continue
+                delta = c.due_delta(today)
+                if delta is None or delta > 0:
+                    continue
+                kind = "overdue" if delta < 0 else "today"
+                key = f"{c.id}:{c.due_date}:{kind}"
+                if key in log_for_today:
+                    continue
+                log_for_today.append(key)
+                items.append((c.title, "已逾期" if kind == "overdue"
+                              else "今天截止"))
+        if not items:
             return
-        self._due_signature = counts
-        overdue, due_today = counts
-        if overdue == 0 and due_today == 0:
-            return
-        parts = []
-        if overdue:
-            parts.append(f"{overdue} 张已逾期")
-        if due_today:
-            parts.append(f"{due_today} 张今天截止")
-        self._tray.show_notification("截止提醒：" + "，".join(parts))
+        # 清旧日志：只保留今天与昨天（防无限增长）
+        keep = (today.isoformat(),
+                (today - timedelta(days=1)).isoformat())
+        log = {d: v for d, v in log.items() if d in keep}
+        log[today.isoformat()] = log_for_today
+        AppConfig.save_remind_log(log)
+
+        parts = [f"「{t}」{k}" for t, k in items[:2]]
+        if len(items) > 2:
+            parts.append(f"等 {len(items)} 项")
+        self._tray.show_notification("截止提醒：" + "、".join(parts))
+        if self._window.mode == "collapsed":
+            self._pet_view.nudge()
 
     # ── 番茄钟 ────────────────────────────────────────────
 
@@ -830,6 +867,8 @@ class AppController(QObject):
             for c in cards:
                 mark = "x" if c.done else " "
                 extra = f" 📅 {c.due_date}" if c.due_date else ""
+                if c.repeat != "never":
+                    extra += f" 🔁{AppConfig.REPEAT_NAMES.get(c.repeat, '')}"
                 if c.pomodoros:
                     extra += f" 🍅×{c.pomodoros}"
                 lines.append(f"- [{mark}] {c.title}{extra}")
@@ -843,7 +882,7 @@ class AppController(QObject):
         with path.open("w", encoding="utf-8-sig", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["列表", "标题", "备注", "标签", "截止日期",
-                             "完成", "番茄数", "创建时间"])
+                             "完成", "番茄数", "重复", "创建时间"])
             for lst in board.lists:
                 for c in lst.cards:
                     if c.archived:
@@ -851,7 +890,8 @@ class AppController(QObject):
                     writer.writerow([
                         lst.title, c.title, c.notes,
                         ";".join(c.labels), c.due_date or "",
-                        "是" if c.done else "否", c.pomodoros, c.created_at,
+                        "是" if c.done else "否", c.pomodoros,
+                        AppConfig.REPEAT_NAMES.get(c.repeat, ""), c.created_at,
                     ])
 
     # ── 托盘 / 显隐 / 退出 ────────────────────────────────

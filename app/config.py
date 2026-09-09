@@ -4,6 +4,7 @@
 所有配置集中在单处，方便管理和修改。
 """
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -35,6 +36,8 @@ class AppConfig:
     KEY_ANIMATION_ENABLED = "window/pet_animation"
     KEY_ALWAYS_ON_TOP = "window/always_on_top"
     KEY_EMPTY_BOARD_ACK = "board/empty_board_ack"
+    KEY_PET_SKIN = "pet/skin"
+    KEY_REMIND_LOG = "remind/log"
 
     @classmethod
     def get_expanded_size(cls):
@@ -94,6 +97,38 @@ class AppConfig:
     @classmethod
     def clear_empty_board_ack(cls) -> None:
         _settings().remove(cls.KEY_EMPTY_BOARD_ACK)
+
+    # ── 桌宠皮肤 ────────────────────────────────────────────
+
+    @classmethod
+    def get_pet_skin(cls) -> str:
+        """上次选择的桌宠皮肤 key（非法/缺失回退默认"milk"）"""
+        key = str(_settings().value(cls.KEY_PET_SKIN, "milk"))
+        return key if key in cls.PET_SKINS else "milk"
+
+    @classmethod
+    def save_pet_skin(cls, key: str) -> None:
+        _settings().setValue(cls.KEY_PET_SKIN, key)
+
+    # ── 截止提醒日志（逐卡每天一次，防重启/防轰炸）─────────────
+
+    @classmethod
+    def get_remind_log(cls) -> dict[str, list[str]]:
+        """{日期 ISO: [card_id:due:kind, ...]}，损坏时回退空表"""
+        raw = _settings().value(cls.KEY_REMIND_LOG, "")
+        try:
+            val = json.loads(raw) if isinstance(raw, str) else {}
+        except (TypeError, ValueError):
+            return {}
+        if not isinstance(val, dict):
+            return {}
+        return {str(k): [str(x) for x in v if isinstance(x, str)]
+                for k, v in val.items() if isinstance(v, list)}
+
+    @classmethod
+    def save_remind_log(cls, log: dict[str, list[str]]) -> None:
+        _settings().setValue(cls.KEY_REMIND_LOG,
+                             json.dumps(log, ensure_ascii=False))
 
     # ── 数据路径 ──────────────────────────────────────────────
     _env_override = os.environ.get("PET_BOARD_DATA_DIR")
@@ -176,7 +211,7 @@ class AppConfig:
     SAVE_DEBOUNCE_MS = 500
     SIZE_SAVE_DEBOUNCE_MS = 200       # 窗口尺寸持久化防抖（系统缩放循环按帧触发 resizeEvent）
     SEARCH_DEBOUNCE_MS = 150             # 搜索框逐键过滤防抖间隔（输入停顿后才刷新）
-    DUE_CHECK_INTERVAL_MS = 60 * 60 * 1000   # 截止提醒检查间隔（1 小时）
+    DUE_CHECK_INTERVAL_MS = 60 * 1000    # 截止提醒检查间隔（1 分钟，桌宠常驻成本极低）
     UNDO_LIMIT = 20                          # 撤销快照保留步数
     POMODORO_MINUTES = 25                    # 番茄钟时长（分钟）
 
@@ -242,9 +277,64 @@ class AppConfig:
         "teal": "青色",
     }
 
+    # ── 重复周期（卡片完成时自动滚动截止日期）─────────────────
+    REPEAT_NAMES = {"never": "", "daily": "每日", "weekly": "每周"}
+
+    # ── 皮肤中文名（桌宠右键"换皮肤"）───────────────────────
+    SKIN_NAMES = {
+        "milk": "奶糖",
+        "snow": "雪团",
+        "choco": "可可",
+        "midnight": "子夜",
+    }
+
     # ── 列表（Trello 列）配色点缀 ───────────────────────────
     LIST_ACCENTS = ["#2F6BFF", "#1FA971", "#F5A623", "#E5484D",
                     "#8B5CF6", "#0EA5A5", "#EC4899"]
+
+    # ── 桌宠皮肤（key → 配色；全部 RGBA 元组，QColor(*value) 使用）──
+    PET_SKINS = {
+        "milk": {   # 默认：奶白 + 黄油耳朵
+            "name": "奶糖",
+            "body_top": (255, 247, 234, 255),
+            "body_bottom": (255, 227, 194, 255),
+            "outline": (138, 90, 43, 255),
+            "ear_inner": (255, 184, 77, 255),
+            "belly": (255, 255, 255, 130),
+            "blush": (255, 150, 140, 90),
+            "eye": (59, 42, 26, 255),
+        },
+        "snow": {   # 雪兔：白 + 粉耳
+            "name": "雪团",
+            "body_top": (255, 255, 255, 255),
+            "body_bottom": (238, 244, 250, 255),
+            "outline": (122, 138, 158, 255),
+            "ear_inner": (255, 190, 210, 255),
+            "belly": (255, 255, 255, 200),
+            "blush": (255, 170, 190, 100),
+            "eye": (52, 66, 82, 255),
+        },
+        "choco": {  # 可可：焦糖棕
+            "name": "可可",
+            "body_top": (214, 171, 132, 255),
+            "body_bottom": (174, 124, 88, 255),
+            "outline": (94, 60, 36, 255),
+            "ear_inner": (255, 205, 158, 255),
+            "belly": (255, 238, 220, 180),
+            "blush": (240, 130, 110, 100),
+            "eye": (48, 30, 18, 255),
+        },
+        "midnight": {   # 子夜：黑猫 + 琥珀眼
+            "name": "子夜",
+            "body_top": (64, 70, 92, 255),
+            "body_bottom": (44, 48, 66, 255),
+            "outline": (20, 24, 36, 255),
+            "ear_inner": (255, 196, 110, 255),
+            "belly": (120, 128, 150, 140),
+            "blush": (255, 140, 130, 80),
+            "eye": (255, 205, 100, 255),
+        },
+    }
 
     # ── 平台检测 ──────────────────────────────────────────────
     IS_WINDOWS = sys.platform == "win32"

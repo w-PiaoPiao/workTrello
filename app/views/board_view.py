@@ -378,6 +378,9 @@ class CardWidget(QFrame):
         if card.due_date:
             text, overdue = _fmt_due(card.due_date)
             meta_items.append((text, "danger" if overdue else "accent", False))
+        if card.repeat != "never":
+            meta_items.append((f"🔁 {AppConfig.REPEAT_NAMES.get(card.repeat, '')}",
+                               "text_secondary", False))
         if card.notes:
             meta_items.append(("≡ 有备注", "text_secondary", True))
         if card.pomodoros:

@@ -9,7 +9,7 @@ import os
 import sys
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -245,28 +245,84 @@ class ControllerFeatureTest(unittest.TestCase):
             self.c._flush_store()
         clear.assert_called_once()
 
-    # ── 截止提醒 ──────────────────────────────────────────
+    # ── 截止提醒（逐卡检查，每天每卡只提醒一次） ─────────────
 
-    def test_due_check_signature(self):
+    def test_due_check_reminds_each_card_once_per_day(self):
         self._reset()
         board = self.c._store.load()
         for lst in board.lists:
             for x in lst.cards:
                 x.due_date = None
         self.c._after_data_change(None)
-        self.c._due_signature = None
-        self.c._check_due_dates()
-        self.assertEqual(self.c._due_signature, (0, 0))
-
+        # 一张今天到期、一张已逾期
         self.c._on_card_add(self._list().id, "今天到期")
+        self._list().cards[0].due_date = date.today().isoformat()
+        self.c._on_card_add(self._list().id, "已逾期")
+        self._list().cards[0].due_date = (
+            date.today() - timedelta(days=1)).isoformat()
+        self.c._after_data_change(None)
+
+        log_saved: dict = {}
+
+        def fake_save(log):
+            log_saved.clear()
+            log_saved.update(log)
+
+        with patch.object(self.c._tray, "show_notification") as notify, \
+                patch.object(AppConfig, "get_remind_log",
+                             return_value={}), \
+                patch.object(AppConfig, "save_remind_log",
+                             side_effect=fake_save):
+            self.c._check_due_dates()
+        notify.assert_called_once()
+        self.assertIn("已逾期", notify.call_args.args[0])
+        self.assertIn("今天到期", notify.call_args.args[0])
+
+        # 当天签名已入库：重复检查不触发通知、不写日志
+        with patch.object(self.c._tray, "show_notification") as notify2, \
+                patch.object(AppConfig, "get_remind_log",
+                             return_value=log_saved), \
+                patch.object(AppConfig, "save_remind_log") as save2:
+            self.c._check_due_dates()
+        notify2.assert_not_called()
+        save2.assert_not_called()
+
+    def test_due_check_skips_done_archived_and_future(self):
+        self._reset()
+        self.c._on_card_add(self._list().id, "未来卡")
+        self._list().cards[0].due_date = (
+            date.today() + timedelta(days=3)).isoformat()
+        self.c._on_card_add(self._list().id, "已完成")
+        self._list().cards[0].due_date = date.today().isoformat()
+        self._list().cards[0].done = True
+        self.c._after_data_change(None)
+        with patch.object(self.c._tray, "show_notification") as notify, \
+                patch.object(AppConfig, "get_remind_log",
+                             return_value={}), \
+                patch.object(AppConfig, "save_remind_log"):
+            self.c._check_due_dates()
+        notify.assert_not_called()
+
+    # ── 重复任务 ──────────────────────────────────────────
+
+    def test_daily_repeat_cards_roll_on_done(self):
+        self._reset()
+        self.c._on_card_add(self._list().id, "每日晨会")
         card = self._list().cards[0]
         card.due_date = date.today().isoformat()
+        card.repeat = "daily"
         self.c._after_data_change(None)
-        self.c._check_due_dates()
-        self.assertEqual(self.c._due_signature, (0, 1))
-        # 状态未变：签名不重复触发
-        self.c._check_due_dates()
-        self.assertEqual(self.c._due_signature, (0, 1))
+        self.c._on_card_done(self._list().id, card.id, True)
+        c = self._list().cards[0]
+        self.assertEqual(
+            c.due_date, (date.today() + timedelta(days=1)).isoformat())
+        self.assertFalse(c.done)
+        self.assertIsNone(c.done_at)
+
+    def test_pet_skin_selected_saves(self):
+        with patch.object(AppConfig, "save_pet_skin") as save:
+            self.c._on_pet_skin_selected("snow")
+        save.assert_called_once_with("snow")
 
     # ── 归档 ──────────────────────────────────────────────
 
