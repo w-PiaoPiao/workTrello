@@ -1,0 +1,66 @@
+name: 发布桌面版
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+          - os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: 构建（Windows，单文件 exe）
+        if: runner.os == 'Windows'
+        run: python tools/build_app.py
+
+      - name: 构建（macOS，.app 并打包 zip）
+        if: runner.os == 'macOS'
+        run: |
+          bash tools/build.sh
+          cd dist
+          app_name=$(ls -d 桌宠看板v*.app)
+          zip -r -q "${app_name%.app}.zip" "$app_name"
+
+      - name: 上传到 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body: |
+            ### 桌宠看板 v0.1.0
+
+            Windows / macOS **桌面悬浮小工具**：缩小时是一只卡通桌宠，展开是清爽的 Trello 风格看板。
+
+            **核心功能**
+            - 🐾 桌宠：漂浮 / 呼吸 / 眨眼 / 随机小动作，4 款皮肤（奶糖 / 雪团 / 可可 / 子夜），完成彩蛋与状态表情
+            - 📋 看板：卡片与整列拖拽、重复任务（每日 / 每周自动滚动）、优先级 P1-P3、6 色标签、备注、截止日期与逐卡提醒
+            - ⭐ 今日聚焦：一眼看清今天要做什么；不展开看板也能在「今日清单」浮窗勾选
+            - 🍅 番茄钟专注：25 分钟倒计时，桌宠陪你打瞌睡，完成 🍅+1
+            - ⌘ 撤销 20 步、实时搜索、归档恢复、Markdown / CSV 导出与完整备份、深浅色双主题
+
+            **安装**
+            - Windows：运行 `桌宠看板v0.1.0.exe`（单文件，免安装）
+            - macOS：解压 `桌宠看板v0.1.0.zip` 拖入「应用程序」；未签名应用首次打开请右键 →「打开」
+
+            数据保存在本地（Windows `%LOCALAPPDATA%`、macOS `~/Library/Application Support`），自动备份 + 损坏恢复。
+          files: |
+            dist/*.exe
+            dist/*.zip
