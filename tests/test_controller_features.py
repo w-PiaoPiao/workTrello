@@ -266,6 +266,31 @@ class ControllerFeatureTest(unittest.TestCase):
         AppTheme.set_mode("light")   # 还原全局单例
 
 
+@unittest.skipIf(AppConfig.IS_MACOS, "键盘入口仅非 macOS 构建")
+class KeyboardShortcutTest(unittest.TestCase):
+    """Windows/Linux：Ctrl+Z 经窗口信号触发控制器撤销"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.c = AppController()
+
+    def setUp(self):
+        board = self.c._store.load()
+        for lst in board.lists:
+            lst.cards.clear()
+        self.c._after_data_change(None)
+        self.c._undo_stack.clear()
+
+    def _titles(self):
+        return [x.title for x in self.c._store.load().lists[0].cards]
+
+    def test_ctrl_z_signal_wired_to_undo(self):
+        self.c._on_card_add(self.c._store.load().lists[0].id, "键盘撤销")
+        self.assertEqual(self._titles(), ["键盘撤销"])
+        self.c._window.undo_shortcut.emit()
+        self.assertEqual(self._titles(), [])
+
+
 @unittest.skipUnless(AppConfig.IS_MACOS, "全局菜单栏仅 macOS 构建")
 class MenuBarTest(unittest.TestCase):
     @classmethod

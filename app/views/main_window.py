@@ -34,6 +34,8 @@ class MainWindow(QWidget):
     """无边框置顶主窗口"""
 
     zoom_state_changed = Signal(bool)
+    undo_shortcut = Signal()      # Windows/Linux：Ctrl+Z 触发撤销
+    new_card_shortcut = Signal()  # Windows/Linux：Ctrl+N 触发快速新建卡片
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -93,6 +95,17 @@ class MainWindow(QWidget):
         self._find_shortcut = QShortcut(QKeySequence.Find, self)
         self._find_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
         self._find_shortcut.activated.connect(self._focus_board_search)
+
+        # Windows/Linux 键盘入口：撤销 / 新建卡片（macOS 由全局菜单栏 QAction
+        # 承担同键，注册会与菜单快捷键双重触发）
+        if not AppConfig.IS_MACOS:
+            self._undo_shortcut = QShortcut(QKeySequence.Undo, self)
+            self._undo_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+            self._undo_shortcut.activated.connect(self.undo_shortcut.emit)
+            self._new_card_shortcut = QShortcut(QKeySequence.New, self)
+            self._new_card_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+            self._new_card_shortcut.activated.connect(
+                self.new_card_shortcut.emit)
 
         self._move_to_default_position()
 
@@ -189,8 +202,12 @@ class MainWindow(QWidget):
             return
         if self._finish_board_rename(cancel=True):
             return    # Esc 先取消重命名，再按一次才折叠
-        if self._expanded_view.clear_search_if_active():
-            return    # Esc 先清空搜索，再按一次才折叠
+        # 仅在焦点位于搜索框时用 Esc 清空搜索（正在输入的用户预期先清空）；
+        # 搜索有字但焦点在别处时，Esc 的意图是收起看板，直接折叠
+        if (self._expanded_view is not None
+                and self._expanded_view.search_has_focus()
+                and self._expanded_view.clear_search_if_active()):
+            return
         self.collapse()
 
     def _focus_board_search(self) -> None:

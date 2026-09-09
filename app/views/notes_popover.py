@@ -2,7 +2,8 @@
 备注悬浮预览卡片
 
 鼠标悬停看板卡片上的「≡ 有备注」徽章时，弹出一张不抢焦点的
-顶层小卡片完整展示备注正文（保留换行），移开自动关闭。
+顶层小卡片完整展示备注正文（保留换行），移开自动关闭；
+点击徽章可切换为「固定展示」（移开不关闭，再点收起）。
 
 设计要点：
 - Qt.ToolTip 顶层窗：不激活、不占任务栏、可悬浮在看板滚动区之上
@@ -41,6 +42,7 @@ class NotesPopover(QFrame):
         self._hide_timer.setInterval(_HIDE_DELAY_MS)
         self._hide_timer.timeout.connect(self._do_hide)
         self.setMouseTracking(True)
+        self._pin_card_id: str | None = None   # 固定展示所属卡片 id（None=悬停模式）
 
         self._title = QLabel("备注")
         self._title.setObjectName("popTitle")
@@ -90,9 +92,28 @@ class NotesPopover(QFrame):
 
     # ── 显隐 ──────────────────────────────────────────────
 
-    def show_for(self, text: str, anchor_global: "QRect") -> None:
-        """在锚点徽章旁展示备注全文（text 为空则隐藏）"""
+    def show_for(self, text: str, anchor_global: QRect) -> None:
+        """悬停展示备注全文（临时：移开后延迟自动关闭）"""
+        self._pin_card_id = None
+        self._show(text, anchor_global)
+
+    def show_pinned(self, card_id: str, text: str,
+                    anchor_global: QRect) -> None:
+        """点击徽章固定展示：鼠标移开不自动关闭，直至再次点击该徽章收起"""
+        self._pin_card_id = card_id
+        self._show(text, anchor_global)
+
+    def is_pinned(self) -> bool:
+        """浮层是否处于固定展示状态"""
+        return self._pin_card_id is not None
+
+    def pinned_for(self, card_id: str) -> bool:
+        return self._pin_card_id == card_id
+
+    def _show(self, text: str, anchor_global: QRect) -> None:
+        """展示备注全文（text 为空则隐藏）"""
         if not text.strip():
+            self._pin_card_id = None
             self.hide()
             return
         self.reapply_style()
@@ -110,7 +131,10 @@ class NotesPopover(QFrame):
         self.raise_()
 
     def schedule_hide(self) -> None:
-        """徽章/浮层 leave：延迟关闭，鼠标快速移入目标时可被取消"""
+        """徽章/浮层 leave：延迟关闭（固定展示中不自动关闭），
+        鼠标快速移入目标时可被取消"""
+        if self.is_pinned():
+            return
         self._hide_timer.start()
 
     def _do_hide(self) -> None:
@@ -120,7 +144,8 @@ class NotesPopover(QFrame):
         self.hide()
 
     def hide_now(self) -> None:
-        """立即隐藏（并取消延迟计时）"""
+        """立即隐藏（并取消延迟计时与固定状态）"""
+        self._pin_card_id = None
         self._hide_timer.stop()
         self.hide()
 
@@ -179,6 +204,16 @@ def hide_notes_popover() -> None:
     """立即隐藏（应用退出等场景用）"""
     if _popover is not None:
         _popover.hide_now()
+
+
+def notes_pinned_for(card_id: str) -> bool:
+    """浮层是否正固定于该卡片（只读判定，不触发单例创建）"""
+    return _popover is not None and _popover.pinned_for(card_id)
+
+
+def notes_popover_hovering() -> bool:
+    """浮层存在且处于悬停模式（未固定）"""
+    return _popover is not None and not _popover.is_pinned()
 
 
 # 供测试直接清理单例

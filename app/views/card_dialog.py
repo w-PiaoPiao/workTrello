@@ -7,6 +7,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from PySide6.QtCore import QDate, Qt
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QDateEdit,
@@ -213,6 +214,21 @@ class CardDialog(QDialog):
         btns.addWidget(cancel)
         btns.addWidget(ok)
         root.addLayout(btns)
+
+        # 备注是多行编辑框，Enter 只换行、够不到"保存"默认键 →
+        # 补 Ctrl+Return（macOS 另有 ⌘+Return）直接保存
+        self._save_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self)
+        self._save_shortcut.activated.connect(self._on_save)
+        if AppConfig.IS_MACOS:
+            self._mac_save_shortcut = QShortcut(
+                QKeySequence("Meta+Return"), self)
+            self._mac_save_shortcut.activated.connect(self._on_save)
+
+    def showEvent(self, event) -> None:
+        """打开即聚焦标题框并全选（直接输入即可覆盖标题）"""
+        super().showEvent(event)
+        self._title_edit.setFocus()
+        self._title_edit.selectAll()
 
     def _on_chip_toggled(self) -> None:
         for chip in self._label_chips:

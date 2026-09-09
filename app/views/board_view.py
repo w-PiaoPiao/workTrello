@@ -49,7 +49,12 @@ from PySide6.QtWidgets import (
 
 from app.config import AppConfig
 from app.models.board import BoardList, Card
-from app.views.notes_popover import hide_notes_popover, notes_popover
+from app.views.notes_popover import (
+    hide_notes_popover,
+    notes_pinned_for,
+    notes_popover,
+    notes_popover_hovering,
+)
 from app.views.theme import AppTheme
 
 MIME_LIST = "application/x-petboard-list"
@@ -141,6 +146,10 @@ class CardWidget(QFrame):
     def update_from_model(self, card: Card) -> None:
         """增量刷新：重指向模型对象；内容指纹未变则跳过重建"""
         self._card = card
+        # 备注正文不进指纹（仅 bool 参与），编辑保存后固定预览会残留旧文本：
+        # 本卡任一模型刷新即收起其固定预览
+        if notes_pinned_for(card.id):
+            notes_popover().hide_now()
         if self._fingerprint != self._content_fingerprint():
             self.rebuild()
 
@@ -341,10 +350,10 @@ class CardWidget(QFrame):
                 badge = QLabel(text)
                 self._meta_badges.append((badge, key))
                 if is_notes:
-                    # 备注徽章：悬停弹出备注全文预览（事件过滤由本卡处理）
+                    # 备注徽章：悬停弹备注全文预览，点击固定展示（本卡事件过滤处理）
                     self._notes_badge = badge
                     badge.setCursor(Qt.PointingHandCursor)
-                    badge.setToolTip("查看备注全文")
+                    badge.setToolTip("悬停预览 · 点击固定")
                     badge.installEventFilter(self)
                 meta_row.addWidget(badge)
             self._style_meta_badges()
@@ -370,21 +379,45 @@ class CardWidget(QFrame):
     # ── 备注悬浮预览 ──────────────────────────────────────
 
     def eventFilter(self, obj, event):
-        """备注徽章悬停：Enter 弹预览浮层，Leave 延迟关闭（可移入浮层续看）"""
-        if obj is self._notes_badge and event.type() == QEvent.Enter:
-            badge = self._notes_badge
-            global_rect = QRect(badge.mapToGlobal(QPoint(0, 0)),
-                                badge.size())
-            notes_popover().show_for(self._card.notes, global_rect)
-            return False
-        if obj is self._notes_badge and event.type() == QEvent.Leave:
-            notes_popover().schedule_hide()
-            return False
+        """备注徽章：Enter 弹预览浮层；Leave 延迟关闭；左键点击固定/收起"""
+        if obj is self._notes_badge:
+            if event.type() == QEvent.Enter:
+                pop = notes_popover()
+                if pop.is_pinned():
+                    return False   # 已有固定展示：悬停不抢占内容
+                badge = self._notes_badge
+                global_rect = QRect(badge.mapToGlobal(QPoint(0, 0)),
+                                    badge.size())
+                pop.show_for(self._card.notes, global_rect)
+                return False
+            if event.type() == QEvent.Leave:
+                notes_popover().schedule_hide()
+                return False
+            if (event.type() == QEvent.MouseButtonPress
+                    and event.button() == Qt.LeftButton):
+                self._toggle_notes_pin()
+                return True   # 拦截冒泡，避免误开卡片编辑框
         return super().eventFilter(obj, event)
 
+    def _toggle_notes_pin(self) -> None:
+        """点击备注徽章：固定展示 ⇄ 收起（另一卡固定中则切换归属）"""
+        pop = notes_popover()
+        if self._notes_badge is None:
+            return
+        rect = QRect(self._notes_badge.mapToGlobal(QPoint(0, 0)),
+                     self._notes_badge.size())
+        if pop.is_pinned() and pop.pinned_for(self._card.id):
+            pop.hide_now()                       # 同卡再点一次 → 收起
+        else:
+            pop.show_pinned(self._card.id, self._card.notes, rect)
+
     def hideEvent(self, event) -> None:
-        """卡片被重建/隐藏时收起可能开着的备注浮层"""
-        hide_notes_popover()
+        """卡片隐藏时收起备注浮层：悬停预览/本卡固定预览关闭，
+        固定于其他卡的预览不受牵连"""
+        if notes_pinned_for(self._card.id):
+            notes_popover().hide_now()
+        elif notes_popover_hovering():
+            hide_notes_popover()
         super().hideEvent(event)
 
     def enterEvent(self, event) -> None:
@@ -1261,11 +1294,15 @@ class BoardView(QWidget):
             self.signal_export.emit("csv")
 
     def clear_search_if_active(self) -> bool:
-        """Esc 优先清空搜索（有内容时）；返回是否清空了搜索"""
+        """清空搜索框（有内容时）；返回是否清空了搜索"""
         if self._search_edit.text():
             self._search_edit.clear()
             return True
         return False
+
+    def search_has_focus(self) -> bool:
+        """搜索框是否持有焦点（Esc 折叠链中仅此状态先清空搜索）"""
+        return self._search_edit.hasFocus()
 
     def focus_search(self) -> None:
         """Cmd+F 聚焦搜索框并全选"""

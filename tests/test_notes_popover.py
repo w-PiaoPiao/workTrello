@@ -15,7 +15,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from PySide6.QtCore import QEvent
+from PySide6.QtCore import QEvent, QPoint, Qt
+from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QApplication
 
 _qapp = QApplication.instance() or QApplication([])
@@ -34,6 +35,7 @@ def _make_view():
     view.refresh([BoardList(title="待办", cards=[
         Card(title="带备注", notes="第一行\n09-08 14:30 完成 A\n第二行"),
         Card(title="无备注"),
+        Card(title="另一条备注", notes="B 卡备注内容"),
     ])])
     view.resize(900, 600)
     view.show()
@@ -55,13 +57,13 @@ class NotesBadgeTest(unittest.TestCase):
         return self.view._columns[0]._card_widgets
 
     def test_badge_only_when_notes(self):
-        c1, c2 = self._cards()
+        c1, c2, _c3 = self._cards()
         self.assertIsNotNone(c1._notes_badge)
         self.assertEqual(c1._notes_badge.text(), "≡ 有备注")
         self.assertIsNone(c2._notes_badge)      # 无备注无徽章
 
     def test_hover_shows_full_notes(self):
-        c1, _ = self._cards()
+        c1, *_ = self._cards()
         c1.eventFilter(c1._notes_badge, QEvent(QEvent.Enter))
         pop = notes_popover()
         self.assertTrue(pop.isVisible())
@@ -70,7 +72,7 @@ class NotesBadgeTest(unittest.TestCase):
 
     def test_leave_schedules_hide(self):
         """Leave 只延迟不立即隐藏；hide_now 立即生效"""
-        c1, _ = self._cards()
+        c1, *_ = self._cards()
         c1.eventFilter(c1._notes_badge, QEvent(QEvent.Enter))
         pop = notes_popover()
         c1.eventFilter(c1._notes_badge, QEvent(QEvent.Leave))
@@ -78,10 +80,76 @@ class NotesBadgeTest(unittest.TestCase):
         pop.hide_now()
         self.assertFalse(pop.isVisible())
 
+    def test_click_pins_and_hover_does_not_steal(self):
+        """点击徽章固定展示；固定期间悬停其他徽章不抢占内容、移开不关闭"""
+        c1, _c2, c3 = self._cards()
+        press = QMouseEvent(QEvent.Type.MouseButtonPress,
+                            QPoint(0, 0), Qt.LeftButton, Qt.LeftButton,
+                            Qt.NoModifier)
+        c1.eventFilter(c1._notes_badge, press)
+        pop = notes_popover()
+        self.assertTrue(pop.isVisible())
+        self.assertTrue(pop.is_pinned())
+        self.assertTrue(pop.pinned_for(c1.card().id))
+        self.assertEqual(pop._body.text(), c1.card().notes)
+        # 固定中：Leave 不自动隐藏
+        c1.eventFilter(c1._notes_badge, QEvent(QEvent.Leave))
+        self.assertTrue(pop.isVisible())
+        # 固定中：悬停另一卡徽章不切换内容
+        c3.eventFilter(c3._notes_badge, QEvent(QEvent.Enter))
+        self.assertTrue(pop.pinned_for(c1.card().id))
+        self.assertEqual(pop._body.text(), c1.card().notes)
+        pop.hide_now()
+
+    def test_click_again_unpins(self):
+        """同一徽章再点一次收起；点击不冒泡打开卡片编辑"""
+        c1, *_ = self._cards()
+        press = QMouseEvent(QEvent.Type.MouseButtonPress,
+                            QPoint(0, 0), Qt.LeftButton, Qt.LeftButton,
+                            Qt.NoModifier)
+        edited = []
+        c1.signal_edit_requested.connect(edited.append)
+        c1.eventFilter(c1._notes_badge, press)
+        pop = notes_popover()
+        self.assertTrue(pop.isVisible())
+        self.assertEqual(edited, [])            # 点击徽章不误触编辑对话框
+        c1.eventFilter(c1._notes_badge, press)  # 再点一次收起
+        self.assertFalse(pop.isVisible())
+        self.assertFalse(pop.is_pinned())
+
+    def test_pin_switches_to_other_badge(self):
+        """固定于 A 时点击 B 徽章：固定归属切到 B"""
+        c1, _c2, c3 = self._cards()
+        press = QMouseEvent(QEvent.Type.MouseButtonPress,
+                            QPoint(0, 0), Qt.LeftButton, Qt.LeftButton,
+                            Qt.NoModifier)
+        c1.eventFilter(c1._notes_badge, press)
+        pop = notes_popover()
+        self.assertTrue(pop.pinned_for(c1.card().id))
+        c3.eventFilter(c3._notes_badge, press)
+        self.assertTrue(pop.is_pinned())
+        self.assertTrue(pop.pinned_for(c3.card().id))
+        self.assertEqual(pop._body.text(), c3.card().notes)
+        pop.hide_now()
+
+    def test_model_update_unpins_pinned_preview(self):
+        """本卡模型刷新（如编辑保存）后收起其固定预览，避免残留旧备注文本"""
+        c1, *_ = self._cards()
+        press = QMouseEvent(QEvent.Type.MouseButtonPress,
+                            QPoint(0, 0), Qt.LeftButton, Qt.LeftButton,
+                            Qt.NoModifier)
+        c1.eventFilter(c1._notes_badge, press)
+        pop = notes_popover()
+        self.assertTrue(pop.is_pinned())
+        c1.card().notes = "编辑后的备注"
+        c1.update_from_model(c1.card())         # 模拟控制器编辑保存后的刷新
+        self.assertFalse(pop.isVisible())
+        self.assertFalse(pop.is_pinned())
+
     def test_popover_theme_repaint(self):
         """深浅主题切换后浮层可正常绘制"""
         from app.views.theme import AppTheme
-        c1, _ = self._cards()
+        c1, *_ = self._cards()
         c1.eventFilter(c1._notes_badge, QEvent(QEvent.Enter))
         pop = notes_popover()
         AppTheme.set_mode("dark")

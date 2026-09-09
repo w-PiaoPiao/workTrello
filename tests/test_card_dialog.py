@@ -119,5 +119,44 @@ class InsertTimeTest(unittest.TestCase):
         dlg.deleteLater()
 
 
+class KeyboardSaveTest(unittest.TestCase):
+    """键盘保存：Ctrl+Return 直接保存（多行备注里 Enter 只换行）；打开自动聚焦标题"""
+
+    def test_show_focuses_title_and_selects_all(self):
+        dlg = CardDialog(Card(title="旧标题"))
+        dlg.show()
+        _qapp.processEvents()
+        self.assertTrue(dlg._title_edit.hasFocus())
+        self.assertEqual(dlg._title_edit.selectedText(), "旧标题")
+        dlg.close()
+        dlg.deleteLater()
+
+    def test_ctrl_return_saves(self):
+        dlg = CardDialog(None)
+        dlg._title_edit.setText("回车保存")
+        dlg._save_shortcut.activated.emit()
+        self.assertEqual(dlg.result(), CardDialog.Accepted)
+        self.assertEqual(dlg.result_card()["title"], "回车保存")
+        dlg.deleteLater()
+
+    def test_ctrl_return_rejects_empty_title(self):
+        dlg = CardDialog(None)
+        dlg._title_edit.setText("   ")
+        dlg.show()
+        _qapp.processEvents()
+        dlg._save_shortcut.activated.emit()
+        self.assertNotEqual(dlg.result(), CardDialog.Accepted)
+        self.assertTrue(dlg.isVisible())      # 校验拦截：对话框未关闭
+        self.assertTrue(dlg._title_edit.hasFocus())   # 焦点回到标题框
+        dlg.close()
+        dlg.deleteLater()
+
+    @unittest.skipUnless(sys.platform == "darwin", "仅 macOS 注册 ⌘+Return")
+    def test_mac_meta_return_shortcut_registered(self):
+        dlg = CardDialog(None)
+        self.assertIsNotNone(dlg._mac_save_shortcut)
+        dlg.deleteLater()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

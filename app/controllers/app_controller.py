@@ -240,6 +240,11 @@ class AppController(QObject):
             self._on_always_top_toggled)
         self._tray.signal_undo_requested.connect(
             lambda: self._on_undo_requested(True))
+        # Windows/Linux 键盘入口（macOS 由全局菜单栏 QAction 承担同键）
+        if not AppConfig.IS_MACOS:
+            self._window.undo_shortcut.connect(
+                lambda: self._on_undo_requested(True))
+            self._window.new_card_shortcut.connect(self._on_quick_add)
 
         # 看板数据操作
         self._board_view.signal_card_add.connect(self._on_card_add)

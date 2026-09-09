@@ -10,12 +10,14 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from PySide6.QtCore import QPoint, Qt
+from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import QApplication
 
 _qapp = QApplication.instance() or QApplication([])
@@ -215,6 +217,101 @@ class WindowsZoomSignalTest(unittest.TestCase):
         self.w.toggle_zoom()
         self.assertFalse(self.w._zoomed)
         self.assertEqual(self.w.geometry(), before)
+
+
+class _FakeExpandedView:
+    """主窗口展开视图桩：记录重命名/搜索状态，供 Esc 链分支测试"""
+
+    def __init__(self):
+        self.rename_open = False
+        self.search_text = ""
+        self.search_focus = False
+
+    def finish_rename(self, cancel=False):
+        if self.rename_open:
+            self.rename_open = False
+            return True
+        return False
+
+    def search_has_focus(self):
+        return self.search_focus
+
+    def clear_search_if_active(self):
+        if self.search_text:
+            self.search_text = ""
+            return True
+        return False
+
+
+class EscCollapseChainTest(unittest.TestCase):
+    """Esc 折叠链：取消重命名 →（焦点在搜索框时清空搜索）→ 折叠"""
+
+    def setUp(self):
+        self.w = MainWindow()
+        self.w._mode = "expanded"
+        self.view = _FakeExpandedView()
+        self.w._expanded_view = self.view
+
+    def tearDown(self):
+        self.w.hide()
+        self.w.deleteLater()
+
+    def _press_esc(self):
+        with patch.object(AppConfig, "save_expanded_size"):
+            self.w._on_esc_pressed()
+
+    def test_esc_chain_rename_first_then_collapse(self):
+        self.view.rename_open = True
+        self._press_esc()
+        self.assertFalse(self.view.rename_open)      # 第一下：取消重命名
+        self.assertEqual(self.w.mode, "expanded")
+        self._press_esc()
+        self.assertEqual(self.w.mode, "collapsed")   # 第二下：折叠
+
+    def test_esc_clears_focused_search_before_collapse(self):
+        self.view.search_text = "待办"
+        self.view.search_focus = True
+        self._press_esc()
+        self.assertEqual(self.view.search_text, "")  # 焦点在搜索框：先清空
+        self.assertEqual(self.w.mode, "expanded")
+        self._press_esc()
+        self.assertEqual(self.w.mode, "collapsed")
+
+    def test_esc_collapses_when_search_text_unfocused(self):
+        """回归：搜索有字但焦点不在搜索框时，一下 Esc 即折叠（原需三次）"""
+        self.view.search_text = "待办"
+        self.view.search_focus = False
+        self._press_esc()
+        self.assertEqual(self.w.mode, "collapsed")
+        self.assertEqual(self.view.search_text, "待办")  # 不误清搜索
+
+    def test_esc_collapses_when_nothing_active(self):
+        self._press_esc()
+        self.assertEqual(self.w.mode, "collapsed")
+
+
+@unittest.skipIf(AppConfig.IS_MACOS, "键盘入口仅非 macOS（macOS 由全局菜单栏承担）")
+class NonMacKeyboardShortcutTest(unittest.TestCase):
+    def setUp(self):
+        self.w = MainWindow()
+
+    def tearDown(self):
+        self.w.hide()
+        self.w.deleteLater()
+
+    def test_ctrl_z_registered_and_fires_undo_signal(self):
+        self.assertEqual(self.w._undo_shortcut.key(), QKeySequence.Undo)
+        fired = []
+        self.w.undo_shortcut.connect(lambda: fired.append(1))
+        self.w._undo_shortcut.activated.emit()
+        self.assertEqual(fired, [1])
+
+    def test_ctrl_n_registered_and_fires_new_card_signal(self):
+        self.assertEqual(self.w._new_card_shortcut.key(), QKeySequence.New)
+        fired = []
+        self.w.new_card_shortcut.connect(lambda: fired.append(1))
+        self.w._new_card_shortcut.activated.emit()
+        self.assertEqual(fired, [1])
 
 
 if __name__ == "__main__":
