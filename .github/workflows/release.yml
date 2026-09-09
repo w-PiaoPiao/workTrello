@@ -60,9 +60,8 @@ jobs:
           gh release view $tag --json id *> $null
           if ($LASTEXITCODE -ne 0) { exit 1 }
           for ($i = 0; $i -lt 30; $i++) {
-            # GitHub 资产名不支持中文：显式指定 ASCII 名
-            gh release upload $tag dist/*.exe --clobber `
-              --name "peTTrello-$tag.exe"
+            # 产物名已是 ASCII（peTTrello-v0.1.0.exe），资产名沿用文件 basename
+            gh release upload $tag dist/*.exe --clobber
             if ($LASTEXITCODE -eq 0) { break }
             Start-Sleep -Seconds 10
           }
@@ -82,8 +81,7 @@ jobs:
           done
           gh release view "$TAG" --json id >/dev/null 2>&1 || exit 1
           for i in $(seq 1 30); do
-            # GitHub 资产名不支持中文：显式指定 ASCII 名
-            gh release upload "$TAG" dist/*.zip --clobber \
-              --name "peTTrello-$TAG.zip" && break
+            # 产物名已是 ASCII（peTTrello-v0.1.0.zip），资产名沿用文件 basename
+            gh release upload "$TAG" dist/*.zip --clobber && break
             sleep 10
           done
