@@ -176,6 +176,75 @@ class ControllerFeatureTest(unittest.TestCase):
         self.c._on_list_move(ids[1], ids[1], False)  # 拖到自己 → 直接返回
         self.assertEqual(self.c._undo_stack, [])
 
+    # ── 空板恢复引导 / 落盘可靠性 ─────────────────────────
+
+    def _seed_snapshot(self, title="快照里的卡"):
+        """在数据目录预置一份含卡的启动快照（模拟历史数据）"""
+        import json
+        path = self.c._store.path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        snap = path.with_name(path.name + ".snap.20260909_100000_000000.bak")
+        doc = {"app": "桌宠看板", "lists": [
+            {"id": "l1", "title": "待办",
+             "cards": [Card(title=title).to_dict()]}]}
+        snap.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+        return snap
+
+    def test_empty_board_restore_yes(self):
+        """空板 + 历史快照：选"是"从快照恢复数据"""
+        self._reset()
+        snap = self._seed_snapshot()
+        try:
+            with patch.object(AppConfig, "get_empty_board_ack",
+                              return_value=False), \
+                 patch.object(QMessageBox, "question",
+                              return_value=QMessageBox.Yes):
+                self.c._maybe_offer_empty_restore()
+            board = self.c._store.load()
+            titles = [c.title for lst in board.lists for c in lst.cards]
+            self.assertEqual(titles, ["快照里的卡"])
+        finally:
+            snap.unlink(missing_ok=True)
+            self._reset()
+
+    def test_empty_board_restore_no_remembers(self):
+        """空板 + 快照：选"否"记住选择，后续启动不再询问"""
+        self._reset()
+        snap = self._seed_snapshot()
+        try:
+            with patch.object(AppConfig, "get_empty_board_ack",
+                              return_value=False), \
+                 patch.object(QMessageBox, "question",
+                              return_value=QMessageBox.No), \
+                 patch.object(AppConfig, "set_empty_board_ack") as set_ack:
+                self.c._maybe_offer_empty_restore()
+            set_ack.assert_called_once_with(True)
+            # 已记住 → 不再弹窗
+            with patch.object(AppConfig, "get_empty_board_ack",
+                              return_value=True), \
+                 patch.object(QMessageBox, "question") as q:
+                self.c._maybe_offer_empty_restore()
+            q.assert_not_called()
+        finally:
+            snap.unlink(missing_ok=True)
+            self._reset()
+
+    def test_flush_failure_notifies_user(self):
+        """落盘失败通过托盘通知用户（不静默丢写）"""
+        with patch.object(self.c._store, "flush",
+                          side_effect=OSError("磁盘满")), \
+             patch.object(self.c._tray, "show_notification") as notify:
+            self.c._flush_store()
+        notify.assert_called_once()
+
+    def test_flush_with_cards_clears_empty_ack(self):
+        """保存含卡数据后清除"已确认空板"标记（下次真空重新询问）"""
+        self._reset()
+        self.c._on_card_add(self._list().id, "有卡")
+        with patch.object(AppConfig, "clear_empty_board_ack") as clear:
+            self.c._flush_store()
+        clear.assert_called_once()
+
     # ── 截止提醒 ──────────────────────────────────────────
 
     def test_due_check_signature(self):

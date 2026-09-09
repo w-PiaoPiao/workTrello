@@ -147,6 +147,55 @@ class AppController(QObject):
         if not self._store.path.exists():
             self._store.mark_dirty()
             self._schedule_save()
+        else:
+            # 每次正常启动为上一份数据留档：即使随后被异常覆盖（如旧版
+            # exe 非原子写空板），快照链仍可恢复；空板不产生快照
+            json_io.snapshot_board(self._store.path)
+        # 空板恢复引导（看板为空但有历史快照时询问，记住用户选择）
+        self._maybe_offer_empty_restore()
+
+    def _maybe_offer_empty_restore(self) -> None:
+        """看板为空但存在历史数据时询问是否恢复（"否"则记住选择）
+
+        防"空板吞数据"：任何把默认空板写盘的事故都不会触发损坏恢复，
+        这里在启动时用快照链兜底。用户明确保持空看板后不再追问，
+        直到再次录入过数据（保存含卡内容会清除确认标记）。
+        """
+        if AppConfig.get_empty_board_ack():
+            return
+        board = self._store.load()
+        if any(lst.cards for lst in board.lists):
+            return                       # 看板非空，无需引导
+        candidates: list[Path] = []
+        prev = json_io.good_prev_copy(self._store.path)
+        if prev is not None and json_io.doc_has_cards(prev):
+            candidates.append(prev)      # .prev 是最新一次原子写的旧内容
+        candidates.extend(json_io.nonempty_snapshots(self._store.path))
+        if not candidates:
+            return
+        latest = candidates[0]
+        reply = QMessageBox.question(
+            self._window,
+            "看板数据为空",
+            f"看板当前没有任何卡片，但检测到 {len(candidates)} 份历史数据"
+            f"副本（最近一份：{latest.name}）。\n"
+            "是否恢复最近一份数据？\n"
+            "选择「否」将保持空看板，且下次不再询问（直到再次录入过数据）。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if reply != QMessageBox.Yes:
+            AppConfig.set_empty_board_ack(True)
+            return
+        if not json_io.restore_from_backup(self._store.path, latest):
+            AppConfig.set_empty_board_ack(True)
+            self._show_error(f"快照 {latest.name} 无法解析，恢复失败。")
+            return
+        board = self._store.reload()
+        self._apply_board_to_ui(board)
+        self._store.mark_dirty()
+        self._schedule_save()
+        self._tray.show_notification("已从快照恢复看板数据")
 
     def _preserve_good_copy(self) -> None:
         """把最近好副本（.prev）复制为带时间戳的保留文件，防止被后续落盘轮转覆盖"""
@@ -204,10 +253,19 @@ class AppController(QObject):
         self._save_timer.start()
 
     def _flush_store(self) -> None:
+        board = self._store.load()
+        had_cards = any(lst.cards for lst in board.lists)
         try:
             self._store.flush()
         except Exception as e:
             logger.error("保存数据失败: %s", e)
+            # 落盘失败用户可见，避免静默丢写
+            self._tray.show_notification(
+                "看板数据保存失败，请检查磁盘空间或文件权限")
+            return
+        if had_cards:
+            # 保存过含卡数据：清除"已确认空板"标记，下次真空时会重新询问
+            AppConfig.clear_empty_board_ack()
 
     # ── 信号 ──────────────────────────────────────────────
 

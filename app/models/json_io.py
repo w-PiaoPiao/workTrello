@@ -19,6 +19,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 CORRUPT_BACKUP_KEEP = 5
+SNAPSHOT_KEEP = 10       # 启动快照保留份数
 
 
 def backup_ext(tag: str = "corrupt") -> str:
@@ -136,6 +137,56 @@ def good_prev_copy(path: Path) -> Path | None:
     """最近一次成功写入轮转出的好副本（<文件名>.prev），不存在返回 None"""
     prev = path.with_name(path.name + ".prev")
     return prev if prev.exists() else None
+
+
+def doc_has_cards(path: Path) -> bool:
+    """文档是否含任意卡片（空默认板 / 空文件不算有数据）"""
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            doc = json.load(f)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return False
+    lists = doc.get("lists") if isinstance(doc, dict) else None
+    if not isinstance(lists, list):
+        return False
+    return any(isinstance(lst, dict)
+               and isinstance(lst.get("cards"), list)
+               and bool(lst["cards"])
+               for lst in lists)
+
+
+def _snapshot_paths(path: Path) -> list[Path]:
+    """现有启动快照（按名称时间升序）"""
+    return sorted(path.parent.glob(f"{path.name}.snap.*.bak"))
+
+
+def snapshot_board(path: Path, keep: int = SNAPSHOT_KEEP) -> Path | None:
+    """启动快照：把当前含数据的文件复制为 <名>.snap.<时间戳>.bak
+
+    每次正常启动调用一次，为上一份数据留档——即使数据文件随后被异常
+    覆盖（如旧版 exe 非原子写入空板），快照链仍可一键恢复。
+    空板/默认板不产生快照（不污染恢复候选）；保留最近 keep 份。
+    """
+    if not path.exists() or not doc_has_cards(path):
+        return None
+    snap = path.with_name(path.name + backup_ext("snap"))
+    try:
+        shutil.copy2(path, snap)
+    except OSError as e:
+        logger.warning("创建启动快照失败: %s (%s)", snap, e)
+        return None
+    try:
+        for old in _snapshot_paths(path)[:-keep]:
+            old.unlink(missing_ok=True)
+    except OSError as e:
+        logger.warning("清理历史启动快照失败: %s", e)
+    logger.info("已创建启动快照: %s", snap)
+    return snap
+
+
+def nonempty_snapshots(path: Path) -> list[Path]:
+    """按时间倒序返回含数据的启动快照（供空板恢复引导选用）"""
+    return [p for p in reversed(_snapshot_paths(path)) if doc_has_cards(p)]
 
 
 def restore_from_backup(store_path: Path, backup: Path) -> bool:

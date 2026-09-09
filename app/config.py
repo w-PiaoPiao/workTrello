@@ -34,6 +34,7 @@ class AppConfig:
     KEY_THEME_MODE = "theme/mode"
     KEY_ANIMATION_ENABLED = "window/pet_animation"
     KEY_ALWAYS_ON_TOP = "window/always_on_top"
+    KEY_EMPTY_BOARD_ACK = "board/empty_board_ack"
 
     @classmethod
     def get_expanded_size(cls):
@@ -79,6 +80,20 @@ class AppConfig:
     @classmethod
     def save_always_on_top(cls, on: bool) -> None:
         _settings().setValue(cls.KEY_ALWAYS_ON_TOP, on)
+
+    @classmethod
+    def get_empty_board_ack(cls) -> bool:
+        """用户是否已确认过"看板为空"（空板恢复引导不再追问）"""
+        return bool(_settings().value(cls.KEY_EMPTY_BOARD_ACK, False,
+                                      type=bool))
+
+    @classmethod
+    def set_empty_board_ack(cls, on: bool = True) -> None:
+        _settings().setValue(cls.KEY_EMPTY_BOARD_ACK, on)
+
+    @classmethod
+    def clear_empty_board_ack(cls) -> None:
+        _settings().remove(cls.KEY_EMPTY_BOARD_ACK)
 
     # ── 数据路径 ──────────────────────────────────────────────
     _env_override = os.environ.get("PET_BOARD_DATA_DIR")

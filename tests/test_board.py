@@ -21,12 +21,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.models.board import Board, BoardList, BoardStore, Card
 from app.models.json_io import (
+    SNAPSHOT_KEEP,
     StoreError,
     atomic_write_json,
+    doc_has_cards,
     good_prev_copy,
     latest_backup,
     load_json_doc,
+    nonempty_snapshots,
     restore_from_backup,
+    snapshot_board,
 )
 
 
@@ -365,6 +369,39 @@ class PrevBackupRecoveryTest(unittest.TestCase):
         self.assertEqual(doc, {})
         self.assertIsNotNone(latest_backup(self.path))
         self.assertIsNone(good_prev_copy(self.path))  # 损坏备份 ≠ 好副本
+
+    # ── 启动快照链（防空板覆盖事故的多层备份） ──
+
+    def test_snapshot_skips_empty_board(self):
+        """空默认板不产生快照（不污染恢复候选链）"""
+        atomic_write_json(self.path, {"lists": [{"title": "待办", "cards": []}]})
+        self.assertIsNone(snapshot_board(self.path))
+        self.assertEqual(nonempty_snapshots(self.path), [])
+
+    def test_snapshot_creates_and_lists(self):
+        doc = {"lists": [{"title": "待办", "cards": [
+            Card(title="真实卡").to_dict()]}]}
+        atomic_write_json(self.path, doc)
+        snap = snapshot_board(self.path)
+        self.assertIsNotNone(snap)
+        self.assertTrue(snap.exists())
+        self.assertTrue(doc_has_cards(snap))            # 快照内容含卡
+        self.assertEqual(nonempty_snapshots(self.path), [snap])
+
+    def test_snapshot_prunes_old_ones(self):
+        doc = {"lists": [{"title": "待办", "cards": [
+            Card(title="卡").to_dict()]}]}
+        atomic_write_json(self.path, doc)
+        for _ in range(12):
+            snapshot_board(self.path)
+        snaps = list(self.path.parent.glob("board.json.snap.*.bak"))
+        self.assertLessEqual(len(snaps), SNAPSHOT_KEEP)
+
+    def test_doc_has_cards_robust(self):
+        """损坏/空文件判定为无数据，不误当恢复候选"""
+        self.path.write_text("{坏", encoding="utf-8")
+        self.assertFalse(doc_has_cards(self.path))
+        self.assertFalse(doc_has_cards(self.path.with_name("不存在.json")))
 
 
 if __name__ == "__main__":
