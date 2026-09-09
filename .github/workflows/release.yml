@@ -60,7 +60,9 @@ jobs:
           gh release view $tag --json id *> $null
           if ($LASTEXITCODE -ne 0) { exit 1 }
           for ($i = 0; $i -lt 30; $i++) {
-            gh release upload $tag dist/*.exe --clobber
+            # GitHub 资产名不支持中文：显式指定 ASCII 名
+            gh release upload $tag dist/*.exe --clobber `
+              --name "ZhuoChongKanban-v0.1.0.exe"
             if ($LASTEXITCODE -eq 0) { break }
             Start-Sleep -Seconds 10
           }
@@ -80,6 +82,8 @@ jobs:
           done
           gh release view "$TAG" --json id >/dev/null 2>&1 || exit 1
           for i in $(seq 1 30); do
-            gh release upload "$TAG" dist/*.zip --clobber && break
+            # GitHub 资产名不支持中文：显式指定 ASCII 名
+            gh release upload "$TAG" dist/*.zip --clobber \
+              --name "ZhuoChongKanban-v0.1.0.zip" && break
             sleep 10
           done

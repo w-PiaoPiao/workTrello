@@ -10,7 +10,7 @@ Windows / macOS **桌面悬浮小工具**：缩小时是一只卡通桌宠，展
 - ⌘ 撤销 20 步、实时搜索、归档恢复、Markdown / CSV 导出与完整备份、深浅色双主题
 
 **安装**
-- Windows：运行 `桌宠看板v0.1.0.exe`（单文件，免安装）
-- macOS：解压 `桌宠看板v0.1.0.zip` 拖入「应用程序」；未签名应用首次打开请右键 →「打开」
+- Windows：运行 `ZhuoChongKanban-v0.1.0.exe`（单文件，免安装）
+- macOS：解压 `ZhuoChongKanban-v0.1.0.zip` 拖入「应用程序」（内含「桌宠看板v0.1.0.app」）；未签名应用首次打开请右键 →「打开」
 
 数据保存在本地（Windows `%LOCALAPPDATA%`、macOS `~/Library/Application Support`），自动备份 + 损坏恢复。
