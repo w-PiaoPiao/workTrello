@@ -1,4 +1,4 @@
-# 一键打包：读取 config.py 版本号，生成 桌宠看板v{版本}.exe
+﻿# 一键打包：读取 config.py 版本号，生成 桌宠看板v{版本}.exe
 # 用法：powershell -ExecutionPolicy Bypass -File tools\build.ps1
 $ErrorActionPreference = "Stop"
 
