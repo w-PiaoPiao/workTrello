@@ -31,6 +31,8 @@ jobs:
 
       - name: 构建（Windows，单文件 exe）
         if: runner.os == 'Windows'
+        env:
+          PYTHONIOENCODING: utf-8
         run: python tools/build_app.py
 
       - name: 构建（macOS，.app 并打包 zip）

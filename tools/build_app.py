@@ -18,6 +18,13 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def main() -> int:
+    # 控制台可能不是 UTF-8（如 GitHub Actions 的 cp1252）：中文包名/日志
+    # 打印会 UnicodeEncodeError，先把 stdout/stderr 切成 UTF-8
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError, OSError):
+            pass
     cfg = (ROOT / "app" / "config.py").read_text(encoding="utf-8")
     match = re.search(r'APP_VERSION = "([^"]+)"', cfg)
     if not match:
