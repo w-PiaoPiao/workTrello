@@ -473,6 +473,17 @@ class CardWidget(QFrame):
         self._pressing = False
 
 
+class _TitleLabel(QLabel):
+    """列表标题标签：双击进入重命名（子类覆写，替代实例 monkeypatch）"""
+
+    def __init__(self, text: str, header: "ListHeader", parent=None):
+        super().__init__(text, parent)
+        self._header = header
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        self._header._start_rename(event)
+
+
 class ListHeader(QWidget):
     """列表头部：标题（双击重命名）+ 计数 + "⋯"菜单（重命名/删除）"""
 
@@ -495,7 +506,7 @@ class ListHeader(QWidget):
         dot.setStyleSheet(f"background: {accent}; border-radius: 4px;")
         layout.addWidget(dot)
 
-        self._title_label = QLabel(board_list.title)
+        self._title_label = _TitleLabel(board_list.title, self)
         self._title_label.setStyleSheet(f"""
             QLabel {{
                 font-size: 14px;
@@ -522,10 +533,6 @@ class ListHeader(QWidget):
         self._menu_btn.setToolTip("列表操作")
         self._menu_btn.clicked.connect(self._show_menu)
         layout.addWidget(self._menu_btn)
-
-        # 双击标题进入重命名编辑
-        self._title_label.mouseDoubleClickEvent = self._start_rename  # type: ignore
-        self._menu_btn.mouseDoubleClickEvent = self._start_rename     # type: ignore
 
         # 列表操作菜单
         self._menu = QMenu(self)
@@ -687,6 +694,13 @@ class _HeaderMenuButton(QPushButton):
     def reapply(self) -> None:
         self.setStyleSheet("QPushButton { background: transparent; border: none; }")
 
+    def mouseDoubleClickEvent(self, event) -> None:
+        header = self.parent()
+        if isinstance(header, ListHeader):
+            header._start_rename(event)
+            return
+        super().mouseDoubleClickEvent(event)
+
 
 class _ThemeToggleButton(QPushButton):
     """自绘 日/月 图标的主题切换按钮（🌙/☀️ emoji 在部分平台缺字形，改矢量绘制）"""
@@ -837,18 +851,22 @@ class ListColumn(QFrame):
         reusable: dict[str, CardWidget] = {
             cw.card().id: cw for cw in self._card_widgets}
         ordered: list[CardWidget] = []
-        for i, card in enumerate(cards):
+        for card in cards:
             cw = reusable.pop(card.id, None)
             if cw is None:
                 cw = self._make_card_widget(card)
             else:
                 cw.update_from_model(card)
             ordered.append(cw)
-            self._cards_layout.removeWidget(cw)
-            self._cards_layout.insertWidget(i, cw)
         for gone in reusable.values():
             gone.setParent(None)
             gone.deleteLater()
+        # 顺序未变（勾选完成/编辑保存等单卡变更）→ 布局无需重插；
+        # 仅增删/移动造成顺序变化时才 remove+insert 保序
+        if [cw.card().id for cw in self._card_widgets] != [c.id for c in cards]:
+            for i, cw in enumerate(ordered):
+                self._cards_layout.removeWidget(cw)
+                self._cards_layout.insertWidget(i, cw)
         self._card_widgets = ordered
 
         # 空列提示
@@ -1241,26 +1259,15 @@ class BoardView(QWidget):
         return [c for c in lst.cards
                 if q in c.title.lower() or q in c.notes.lower()]
 
-    @staticmethod
-    def _is_focus_card(c: Card, today) -> bool:
-        """今日聚焦：未完成且（星标 或 截止日<=today）"""
-        if c.done or c.archived:
-            return False
-        if c.starred:
-            return True
-        if c.due_date:
-            try:
-                return date.fromisoformat(c.due_date) <= today
-            except ValueError:
-                return False
-        return False
-
     def _visible_cards_for(self, lst: BoardList) -> list[Card] | None:
-        """列的可见卡片：今日聚焦模式与搜索过滤组合；无任何过滤返回 None"""
+        """列的可见卡片：今日聚焦模式与搜索过滤组合；无任何过滤返回 None
+
+        今日聚焦判定统一走 Card.in_today_focus（模型层单实现）。
+        """
         q = self._search_query()
         if self._today_btn.isChecked():
             today = date.today()
-            cards = [c for c in lst.cards if self._is_focus_card(c, today)]
+            cards = [c for c in lst.cards if c.in_today_focus(today)]
             if q:
                 cards = [c for c in cards
                          if q in c.title.lower() or q in c.notes.lower()]

@@ -191,6 +191,27 @@ class ControllerFeatureTest(unittest.TestCase):
         dlg.close()
         self._reset()
 
+    def test_archive_refresh_skipped_when_unchanged(self):
+        """归档内容未变时数据变更不重建对话框（指纹跳过）"""
+        self._reset()
+        self.c._on_card_add(self._list().id, "指纹卡")
+        card_id = self._list().cards[0].id
+        self.c._on_card_archive(card_id)
+        self.c._on_archive_open()
+        dlg = self.c._archive_dialog
+        self.assertIsNotNone(dlg)
+        calls = []
+        orig = dlg.set_items
+        dlg.set_items = lambda *a, **k: (calls.append(1), orig(*a, **k))
+        try:
+            self.c._refresh_archive()          # 归档未变 → 跳过重建
+            self.assertEqual(calls, [])
+            self.c._on_card_restore(card_id)   # 恢复 → 内容变化 → 重建一次
+            self.assertEqual(calls, [1])
+        finally:
+            dlg.close()
+            self._reset()
+
     # ── 导出 ──────────────────────────────────────────────
 
     def test_export_markdown_and_csv(self):

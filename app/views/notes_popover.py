@@ -116,16 +116,21 @@ class NotesPopover(QFrame):
             self._pin_card_id = None
             self.hide()
             return
-        self.reapply_style()
-        self._body.setText(text)
-        # 按最长行估算自然宽度并封顶，保证多行/长文本折行且短文本不拉宽
-        fm = self._body.fontMetrics()
-        natural = max((fm.horizontalAdvance(line) for line in text.splitlines()),
-                      default=0) + 8
-        self._body.setFixedWidth(max(120, min(natural, self._MAX_WIDTH)))
-        self._recent_anchor = anchor_global
-        self.adjustSize()
-        self._place_near(anchor_global)
+        # 内容与锚点均未变（如同一徽章反复进出）→ 跳过样式/排版重建
+        same = (self.isVisible()
+                and self._body.text() == text
+                and self._recent_anchor == anchor_global)
+        if not same:
+            self.reapply_style()
+            self._body.setText(text)
+            # 按最长行估算自然宽度并封顶，保证多行/长文本折行且短文本不拉宽
+            fm = self._body.fontMetrics()
+            natural = max((fm.horizontalAdvance(line)
+                           for line in text.splitlines()), default=0) + 8
+            self._body.setFixedWidth(max(120, min(natural, self._MAX_WIDTH)))
+            self._recent_anchor = anchor_global
+            self.adjustSize()
+            self._place_near(anchor_global)
         self._hide_timer.stop()
         self.show()
         self.raise_()

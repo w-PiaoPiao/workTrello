@@ -102,6 +102,27 @@ class Card:
         elif not self.done:
             self.done_at = None
 
+    # ── 统一谓词（今日聚焦 / 截止统计 / 视图展示共用，避免多处各自解析）──
+
+    def due_delta(self, today: date) -> int | None:
+        """截止日与 today 相差天数（逾期为负、当天为 0）；
+        未设置日期或日期字符串非法时返回 None"""
+        if not self.due_date:
+            return None
+        try:
+            return (date.fromisoformat(self.due_date) - today).days
+        except ValueError:
+            return None
+
+    def in_today_focus(self, today: date) -> bool:
+        """今日聚焦谓词：未归档、未完成，且（星标 或 截止日不晚于 today）"""
+        if self.done or self.archived:
+            return False
+        if self.starred:
+            return True
+        delta = self.due_delta(today)
+        return delta is not None and delta <= 0
+
 
 @dataclass
 class BoardList:
@@ -209,35 +230,21 @@ class Board:
         overdue = due_today = 0
         for lst in self.lists:
             for c in lst.cards:
-                if c.done or c.archived or not c.due_date:
+                if c.done or c.archived:
                     continue
-                try:
-                    d = date.fromisoformat(c.due_date)
-                except ValueError:
+                delta = c.due_delta(today)
+                if delta is None:
                     continue
-                if d < today:
+                if delta < 0:
                     overdue += 1
-                elif d == today:
+                elif delta == 0:
                     due_today += 1
         return overdue, due_today
 
     def today_focus_cards(self, today: date) -> list[Card]:
         """今日聚焦集合：未归档、未完成，且（星标 或 截止日<=today）"""
-        out: list[Card] = []
-        for lst in self.lists:
-            for c in lst.cards:
-                if c.done or c.archived:
-                    continue
-                if c.starred:
-                    out.append(c)
-                    continue
-                if c.due_date:
-                    try:
-                        if date.fromisoformat(c.due_date) <= today:
-                            out.append(c)
-                    except ValueError:
-                        continue
-        return out
+        return [c for lst in self.lists for c in lst.cards
+                if c.in_today_focus(today)]
 
     def archived_cards(self) -> list[tuple["BoardList", Card]]:
         """归档卡片及其所属列表"""

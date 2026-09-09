@@ -81,6 +81,39 @@ class CardTest(unittest.TestCase):
         card.apply({"starred": True})
         self.assertTrue(card.starred)
 
+    # ── 统一谓词：due_delta / in_today_focus（今日聚焦与统计共用） ──
+
+    def test_due_delta(self):
+        today = date(2026, 9, 6)
+        self.assertEqual(Card(title="无日期").due_delta(today), None)
+        self.assertEqual(Card(title="逾期", due_date="2026-09-05")
+                         .due_delta(today), -1)
+        self.assertEqual(Card(title="今天", due_date="2026-09-06")
+                         .due_delta(today), 0)
+        self.assertEqual(Card(title="明天", due_date="2026-09-07")
+                         .due_delta(today), 1)
+        self.assertEqual(Card(title="非法", due_date="垃圾日期")
+                         .due_delta(today), None)
+
+    def test_in_today_focus(self):
+        today = date(2026, 9, 6)
+        self.assertTrue(Card(title="星标", starred=True).in_today_focus(today))
+        self.assertTrue(Card(title="逾期", due_date="2026-09-05")
+                        .in_today_focus(today))
+        self.assertTrue(Card(title="今天截止", due_date="2026-09-06")
+                        .in_today_focus(today))
+        self.assertFalse(Card(title="明天截止", due_date="2026-09-07")
+                         .in_today_focus(today))
+        self.assertFalse(Card(title="无日期无星标").in_today_focus(today))
+        # 排除项：完成/归档后即使星标也不属于今日聚焦
+        self.assertFalse(Card(title="已完星标", starred=True, done=True)
+                         .in_today_focus(today))
+        self.assertFalse(Card(title="归档星标", starred=True, archived=True)
+                         .in_today_focus(today))
+        # 非法日期按未设置处理
+        self.assertFalse(Card(title="非法", due_date="垃圾")
+                         .in_today_focus(today))
+
 
 class BoardListTest(unittest.TestCase):
     def test_roundtrip_with_cards(self):

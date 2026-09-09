@@ -274,6 +274,35 @@ class BoardViewRefreshTest(unittest.TestCase):
         self.assertEqual([cw.card().title for cw in col0._card_widgets],
                          ["星标甲"])
 
+    def test_refresh_same_order_skips_layout_reinsert(self):
+        """顺序未变的数据刷新不再整列 remove+insert（单卡变更的原位更新）"""
+        col = self.view._columns[0]
+        calls = []
+        orig = col._cards_layout.removeWidget
+        col._cards_layout.removeWidget = lambda w: (calls.append(1), orig(w))
+        self.view.refresh(self.lists)          # 顺序未变 → 布局零操作
+        self.assertEqual(calls, [])
+        self.assertEqual(self.widget_titles(col), ["A", "B"])
+        self.lists[0].cards.reverse()          # 移动卡片 → 仍需重排保序
+        self.view.refresh(self.lists)
+        self.assertGreater(len(calls), 0)
+        self.assertEqual(self.widget_titles(col), ["B", "A"])
+
+    def test_double_click_title_starts_rename(self):
+        """标题双击经子类覆写进入重命名（替代实例 monkeypatch）"""
+        from PySide6.QtCore import QEvent, QPointF, Qt
+        from PySide6.QtGui import QMouseEvent
+        import app.views.board_view as bv
+        header = self.view._columns[0]._header
+        dbl = QMouseEvent(QEvent.Type.MouseButtonDblClick, QPointF(10, 5),
+                          Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        try:
+            header._title_label.mouseDoubleClickEvent(dbl)
+            self.assertIsNotNone(bv._ACTIVE_RENAME)
+        finally:
+            bv.finish_active_rename(cancel=True)
+        self.assertIsNone(bv._ACTIVE_RENAME)
+
     def test_pomo_archive_signals_forward(self):
         received = {"pomo": None, "archive": None}
         self.view.signal_card_pomo.connect(

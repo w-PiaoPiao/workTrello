@@ -81,6 +81,7 @@ class AppController(QObject):
         self._pomo_timer.setInterval(1000)
         self._pomo_timer.timeout.connect(self._pomo_tick)
         self._archive_dialog: ArchiveDialog | None = None
+        self._archive_key: tuple | None = None   # 归档内容指纹（按需重建用）
         if app is not None:
             QGuiApplication.styleHints().colorSchemeChanged.connect(
                 self._on_system_scheme_changed)
@@ -668,11 +669,19 @@ class AppController(QObject):
         self._refresh_archive()
 
     def _refresh_archive(self) -> None:
-        if self._archive_dialog is None or not self._archive_dialog.isVisible():
+        """归档对话框可见时按需刷新：归档内容未变则跳过整树重建"""
+        dlg = self._archive_dialog
+        if dlg is None or not dlg.isVisible():
             return
         board = self._store.load()
-        self._archive_dialog.set_items(
-            board.archived_cards(), board.weekly_done_count())
+        archived = board.archived_cards()
+        weekly = board.weekly_done_count()
+        key = (weekly, tuple((lst.id, c.id, c.title, c.done)
+                             for lst, c in archived))
+        if key == self._archive_key:
+            return
+        self._archive_key = key
+        dlg.set_items(archived, weekly)
 
     def _on_card_restore(self, card_id: str) -> None:
         board = self._store.load()

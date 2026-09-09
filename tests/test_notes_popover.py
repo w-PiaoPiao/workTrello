@@ -186,6 +186,25 @@ class PopoverUnitTest(unittest.TestCase):
     def test_show_twice_reuses_singleton(self):
         self.assertIs(notes_popover(), notes_popover())
 
+    def test_repeated_show_same_content_skips_rebuild(self):
+        """同内容同锚重复展示跳过样式/排版重建；变化或隐藏后重建"""
+        from PySide6.QtCore import QRect
+        pop = notes_popover()
+        calls = []
+        orig = pop.reapply_style
+        pop.reapply_style = lambda: (calls.append(1), orig())
+        anchor = QRect(200, 200, 60, 18)
+        pop.show_for("同一段备注", anchor)
+        self.assertEqual(len(calls), 1)        # 首次展示需重建
+        pop.show_for("同一段备注", anchor)      # 重复展示 → 跳过
+        self.assertEqual(len(calls), 1)
+        pop.show_for("换一段备注", anchor)      # 内容变化 → 重建
+        self.assertEqual(len(calls), 2)
+        pop.hide_now()
+        pop.show_for("同一段备注", anchor)      # 隐藏后重新展示 → 重建
+        self.assertEqual(len(calls), 3)
+        pop.hide_now()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
