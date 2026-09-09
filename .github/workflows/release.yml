@@ -43,26 +43,43 @@ jobs:
           app_name=$(ls -d 桌宠看板v*.app)
           zip -r -q "${app_name%.app}.zip" "$app_name"
 
-      - name: 上传到 Release
-        uses: softprops/action-gh-release@v2
-        with:
-          body: |
-            ### 桌宠看板 v0.1.0
+      - name: 创建/复用 Release 并上传（Windows）
+        if: runner.os == 'Windows'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          for ($i = 0; $i -lt 30; $i++) {
+            gh release create $tag --title "桌宠看板 $tag" --notes-file RELEASE_NOTES.md 2>$null
+            if ($LASTEXITCODE -eq 0) { break }
+            gh release view $tag --json id *> $null
+            if ($LASTEXITCODE -eq 0) { break }
+            Start-Sleep -Seconds 10
+          }
+          gh release view $tag --json id *> $null
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          for ($i = 0; $i -lt 30; $i++) {
+            gh release upload $tag dist/*.exe --clobber
+            if ($LASTEXITCODE -eq 0) { break }
+            Start-Sleep -Seconds 10
+          }
 
-            Windows / macOS **桌面悬浮小工具**：缩小时是一只卡通桌宠，展开是清爽的 Trello 风格看板。
-
-            **核心功能**
-            - 🐾 桌宠：漂浮 / 呼吸 / 眨眼 / 随机小动作，4 款皮肤（奶糖 / 雪团 / 可可 / 子夜），完成彩蛋与状态表情
-            - 📋 看板：卡片与整列拖拽、重复任务（每日 / 每周自动滚动）、优先级 P1-P3、6 色标签、备注、截止日期与逐卡提醒
-            - ⭐ 今日聚焦：一眼看清今天要做什么；不展开看板也能在「今日清单」浮窗勾选
-            - 🍅 番茄钟专注：25 分钟倒计时，桌宠陪你打瞌睡，完成 🍅+1
-            - ⌘ 撤销 20 步、实时搜索、归档恢复、Markdown / CSV 导出与完整备份、深浅色双主题
-
-            **安装**
-            - Windows：运行 `桌宠看板v0.1.0.exe`（单文件，免安装）
-            - macOS：解压 `桌宠看板v0.1.0.zip` 拖入「应用程序」；未签名应用首次打开请右键 →「打开」
-
-            数据保存在本地（Windows `%LOCALAPPDATA%`、macOS `~/Library/Application Support`），自动备份 + 损坏恢复。
-          files: |
-            dist/*.exe
-            dist/*.zip
+      - name: 创建/复用 Release 并上传（macOS）
+        if: runner.os == 'macOS'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          TAG="$GITHUB_REF_NAME"
+          for i in $(seq 1 30); do
+            gh release create "$TAG" --title "桌宠看板 $TAG" \
+              --notes-file RELEASE_NOTES.md 2>/dev/null && break
+            gh release view "$TAG" --json id >/dev/null 2>&1 && break
+            sleep 10
+          done
+          gh release view "$TAG" --json id >/dev/null 2>&1 || exit 1
+          for i in $(seq 1 30); do
+            gh release upload "$TAG" dist/*.zip --clobber && break
+            sleep 10
+          done
