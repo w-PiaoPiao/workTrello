@@ -40,7 +40,7 @@ jobs:
         run: |
           bash tools/build.sh
           cd dist
-          app_name=$(ls -d 桌宠看板v*.app)
+          app_name=$(ls -d peTTrello-v*.app)
           zip -r -q "${app_name%.app}.zip" "$app_name"
 
       - name: 创建/复用 Release 并上传（Windows）
@@ -62,7 +62,7 @@ jobs:
           for ($i = 0; $i -lt 30; $i++) {
             # GitHub 资产名不支持中文：显式指定 ASCII 名
             gh release upload $tag dist/*.exe --clobber `
-              --name "ZhuoChongKanban-v0.1.0.exe"
+              --name "peTTrello-$tag.exe"
             if ($LASTEXITCODE -eq 0) { break }
             Start-Sleep -Seconds 10
           }
@@ -84,6 +84,6 @@ jobs:
           for i in $(seq 1 30); do
             # GitHub 资产名不支持中文：显式指定 ASCII 名
             gh release upload "$TAG" dist/*.zip --clobber \
-              --name "ZhuoChongKanban-v0.1.0.zip" && break
+              --name "peTTrello-$TAG.zip" && break
             sleep 10
           done

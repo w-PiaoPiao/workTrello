@@ -1,4 +1,4 @@
-# 一键打包（macOS）：读取 config.py 版本号，产出 dist/桌宠看板v{版本}.app
+# 一键打包（macOS）：读取 config.py 版本号，产出 dist/peTTrello-v{版本}.app
 # 用法：bash tools/build.sh
 set -euo pipefail
 
@@ -9,7 +9,7 @@ if [ -z "$version" ]; then
     echo "未能从 app/config.py 读取 APP_VERSION" >&2
     exit 1
 fi
-name="桌宠看板v$version"
+name="peTTrello-v$version"
 echo "打包: $name"
 
 pyinstaller --windowed \

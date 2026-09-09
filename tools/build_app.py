@@ -30,7 +30,7 @@ def main() -> int:
     if not match:
         print("未能从 app/config.py 读取 APP_VERSION", file=sys.stderr)
         return 1
-    name = f"桌宠看板v{match.group(1)}"
+    name = f"peTTrello-v{match.group(1)}"
     print(f"打包: {name}")
 
     cmd = [
