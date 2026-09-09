@@ -211,6 +211,7 @@ class AppConfig:
     CARD_DRAG_THRESHOLD = 10    # 卡片按下后超过该位移才判定为拖拽（像素）
     LIST_DRAG_THRESHOLD = 10    # 列表头按下后超过该位移才判定为整列拖拽（像素）
     CARD_DELETE_BTN_H = 20      # 卡片右上角悬浮删除按钮的命中尺寸
+    CARD_META_BADGE_MAX = 4     # 卡片底部信息行最多显示的徽章数（超出折叠为 …）
     EDGE_CURSOR_POLL_MS = 150   # Windows 展开态光标轮询间隔（系统缩放后事件链可能断裂）
     DRAG_AUTO_SCROLL_EDGE_PX = 44    # 卡片拖拽距视口该距离内触发自动滚动（像素）
     DRAG_AUTO_SCROLL_STEP = 20       # 自动滚动每帧位移（像素）
@@ -326,6 +327,7 @@ class AppConfig:
             "belly": (255, 255, 255, 130),
             "blush": (255, 150, 140, 90),
             "eye": (59, 42, 26, 255),
+            "sweat": (150, 205, 255, 200),
         },
         "snow": {   # 雪兔：白 + 粉耳
             "name": "雪团",
@@ -336,6 +338,7 @@ class AppConfig:
             "belly": (255, 255, 255, 200),
             "blush": (255, 170, 190, 100),
             "eye": (52, 66, 82, 255),
+            "sweat": (130, 185, 235, 200),
         },
         "choco": {  # 可可：焦糖棕
             "name": "可可",
@@ -346,6 +349,7 @@ class AppConfig:
             "belly": (255, 238, 220, 180),
             "blush": (240, 130, 110, 100),
             "eye": (48, 30, 18, 255),
+            "sweat": (150, 205, 255, 200),
         },
         "midnight": {   # 子夜：黑猫 + 琥珀眼
             "name": "子夜",
@@ -356,6 +360,7 @@ class AppConfig:
             "belly": (120, 128, 150, 140),
             "blush": (255, 140, 130, 80),
             "eye": (255, 205, 100, 255),
+            "sweat": (140, 195, 255, 230),
         },
     }
 

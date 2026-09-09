@@ -74,15 +74,25 @@ class ArchiveDialog(QDialog):
             empty = QLabel("暂无归档卡片：右键卡片即可归档")
             empty.setAlignment(Qt.AlignCenter)
             empty.setStyleSheet(
-                f"color: {AppTheme.colors()['text_disabled']}; padding: 24px;")
+                f"color: {AppTheme.colors()['text_disabled']};"
+                " font-size: 12px; padding: 24px;")
             self._rows_layout.addWidget(empty)
             return
 
         for lst, card in items:
-            row = QWidget()
+            c = AppTheme.colors()
+            row = QFrame()
+            # 与今日清单行一致的"row card"卡面
+            row.setStyleSheet(f"""
+                QFrame {{
+                    background: {c['bg_card']};
+                    border: 1px solid {c['border']};
+                    border-radius: 8px;
+                }}
+            """)
             lay = QHBoxLayout(row)
             lay.setContentsMargins(8, 4, 8, 4)
-            lay.setSpacing(8)
+            lay.setSpacing(6)
 
             title = QLabel(f"{'✅ ' if card.done else ''}{card.title}")
             title.setStyleSheet(f"color: {AppTheme.colors()['text_primary']};")
@@ -110,8 +120,8 @@ class ArchiveDialog(QDialog):
                 background: {c['bg_card']};
                 color: {c['text_primary']};
                 border: 1px solid {c['border']};
-                border-radius: 6px;
-                padding: 3px 10px;
+                border-radius: 8px;
+                padding: 4px 12px;
             }}
             QPushButton:hover {{ background: {c['bg_hover']}; }}
         """)

@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QKeySequence
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QWidget
 
 _qapp = QApplication.instance() or QApplication([])
 
@@ -384,6 +384,30 @@ class NonMacKeyboardShortcutTest(unittest.TestCase):
         self.w.new_card_shortcut.connect(lambda: fired.append(1))
         self.w._new_card_shortcut.activated.emit()
         self.assertEqual(fired, [1])
+
+class CollapseInterruptTest(unittest.TestCase):
+    """折叠动画被 hide() 打断（托盘隐藏）时：强制回折叠尺寸、收起缩放把手"""
+
+    def setUp(self):
+        self.w = MainWindow()
+        self.w.set_views(PetView(), QWidget())
+        self.w.show()
+
+    def tearDown(self):
+        self.w.hide()
+        self.w.deleteLater()
+
+    def test_hide_during_collapse_restores_collapsed_size(self):
+        self.w.expand()
+        self.w.collapse()                 # 启动折叠动画（240ms）
+        if self.w._animation_running:
+            self.w.hide()                 # hide 打断动画
+        self.assertEqual(self.w.mode, "collapsed")
+        self.assertEqual(self.w.width(), AppConfig.PET_WIDTH)
+        self.assertEqual(self.w.height(), AppConfig.PET_HEIGHT)
+        if self.w._resize_grip is not None:
+            self.assertFalse(self.w._resize_grip.isVisible())
+
 
 
 if __name__ == "__main__":

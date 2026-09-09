@@ -101,13 +101,20 @@ class Card:
             priority=max(0, min(3, priority)),
         )
 
+    def set_done(self, done: bool) -> None:
+        """勾选完成/取消：done_at 自动维护（今日统计 / 彩蛋 / 周统计共用）"""
+        self.done = done
+        if done and not self.done_at:
+            self.done_at = _now_iso()
+        elif not done:
+            self.done_at = None
+
     def apply(self, data: dict) -> None:
         """用表单结果 dict 就地更新字段（CardDialog.result_card 的输出）"""
         self.title = str(data.get("title", self.title)).strip()
         self.notes = str(data.get("notes", self.notes)).strip()
         self.labels = list(data.get("labels", self.labels))
         self.due_date = data.get("due_date", self.due_date)
-        self.done = bool(data.get("done", self.done))
         self.starred = bool(data.get("starred", self.starred))
         repeat = data.get("repeat", self.repeat)
         self.repeat = repeat if repeat in ("never", "daily", "weekly") \
@@ -117,11 +124,7 @@ class Card:
         except (TypeError, ValueError):
             priority = self.priority
         self.priority = max(0, min(3, priority))
-        # 完成时刻自动维护（周统计用）
-        if self.done and not self.done_at:
-            self.done_at = _now_iso()
-        elif not self.done:
-            self.done_at = None
+        self.set_done(bool(data.get("done", self.done)))
 
     # ── 统一谓词（今日聚焦 / 截止统计 / 视图展示共用，避免多处各自解析）──
 

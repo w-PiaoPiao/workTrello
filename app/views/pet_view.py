@@ -292,9 +292,9 @@ class PetCanvas(QWidget):
             painter.drawEllipse(
                 int(-w * 0.4), int(mouth_y - w * 0.3),
                 int(w * 0.9), int(w * 0.9))
-            # 额头汗珠（浅蓝水滴）
+            # 额头汗珠（颜色随皮肤调色板）
             painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(150, 205, 255, 210))
+            painter.setBrush(QColor(*skin["sweat"]))
             hx = int(-half * 0.42)
             hy = int(-half * 0.54)
             painter.drawEllipse(

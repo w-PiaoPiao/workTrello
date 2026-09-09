@@ -319,6 +319,18 @@ class ControllerFeatureTest(unittest.TestCase):
         self.assertFalse(c.done)
         self.assertIsNone(c.done_at)
 
+    def test_card_done_maintains_done_at(self):
+        """勾选框完成写 done_at（今日统计/彩蛋/周统计共用）；取消则清空"""
+        self._reset()
+        self.c._on_card_add(self._list().id, "勾选完成")
+        card = self._list().cards[0]
+        self.c._on_card_done(self._list().id, card.id, True)
+        self.assertIsNotNone(card.done_at)
+        self.assertEqual(self.c._store.load().today_done_count(), 1)
+        self.c._on_card_done(self._list().id, card.id, False)
+        self.assertIsNone(card.done_at)
+        self.assertEqual(self.c._store.load().today_done_count(), 0)
+
     def test_pet_skin_selected_saves(self):
         with patch.object(AppConfig, "save_pet_skin") as save:
             self.c._on_pet_skin_selected("snow")

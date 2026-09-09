@@ -338,17 +338,20 @@ class AppController(QObject):
             if board.lists:
                 self._on_card_add(board.lists[0].id, title.strip())
 
+    def _today_focus_items(self) -> list[tuple[BoardList, Card]]:
+        """今日聚焦卡片（含所属列表），供今日清单浮窗显示"""
+        board = self._store.load()
+        today = date.today()
+        return [(lst, c) for lst in board.lists for c in lst.cards
+                if c.in_today_focus(today)]
+
     def _on_today_list_open(self) -> None:
         """桌宠右键"今日清单"：浮窗概览今日待办（勾选/打开编辑直通控制器）"""
         if self._today_popover is None:
             self._today_popover = TodayPopover()
             self._today_popover.signal_card_done.connect(self._on_card_done)
             self._today_popover.signal_card_edit.connect(self._on_card_edit)
-        board = self._store.load()
-        today = date.today()
-        items = [(lst, c) for lst in board.lists for c in lst.cards
-                 if c.in_today_focus(today)]
-        self._today_popover.set_items(items)
+        self._today_popover.set_items(self._today_focus_items())
         self._today_popover.show_below(self._window.frameGeometry())
 
     def _on_card_add(self, list_id: str, title: str = "") -> None:
@@ -383,17 +386,15 @@ class AppController(QObject):
         if card is None:
             return
         self._push_undo()
-        card.done = done
+        card.set_done(done)
         if done and card.roll_repeat():
             # 重复任务：完成即滚动到下一周期并复位，提示下次日期
             self._after_data_change(
                 f"已完成 · 下次 {card.due_date[5:].replace('-', '/')}")
             return
-        if (done and self._today_popover is not None
-                and self._today_popover.isVisible()):
-            self._today_popover.remove_row_for(card_id)
         self._after_data_change(None)
-        self._notify_done(card)
+        if done:
+            self._notify_done(card)
 
     def _notify_done(self, card: Card) -> None:
         board = self._store.load()
@@ -535,6 +536,11 @@ class AppController(QObject):
         self._schedule_save()
         if notify:
             self._notify(notify)
+        # 今日清单浮窗可见时按模型全量重建（编辑保存/撤销/勾选后的行
+        # 与徽章保持同步；今日谓词天然排除刚完成的卡）
+        if (self._today_popover is not None
+                and self._today_popover.isVisible()):
+            self._today_popover.set_items(self._today_focus_items())
 
     def _notify(self, text: str) -> None:
         """操作反馈：看板展开态走窗口内 toast，折叠/隐藏态走托盘气泡"""

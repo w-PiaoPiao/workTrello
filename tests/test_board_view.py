@@ -261,17 +261,17 @@ class BoardViewRefreshTest(unittest.TestCase):
         self.view.refresh(self.lists)
         self.view._today_btn.setChecked(True)
         col0, col1 = self.view._columns
-        # 今日聚焦内排序：今天截止（同为无优先级）排在无限期星标卡之前
+        # 今日聚焦内排序：无优先级但星标的手工标注优先于"今天截止"
         self.assertEqual([cw.card().title for cw in col0._card_widgets],
-                         ["今天到期", "星标卡"])
+                         ["星标卡", "今天到期"])
         self.assertFalse(col0.acceptDrops())          # 过滤态禁用拖放
         self.assertIn("⭐ 今日 2", self.view._today_btn.text())
-        # 优先级：高优先级置顶，其余两卡仍按截止日在前
+        # 优先级：高优先级置顶；同级星标提权（主动标注优先于被动"今天截止"）
         self.lists[0].cards.insert(0, Card(title="高优先卡", starred=True,
                                            priority=1))
         self.view.refresh(self.lists)
         self.assertEqual([cw.card().title for cw in col0._card_widgets],
-                         ["高优先卡", "今天到期", "星标卡"])
+                         ["高优先卡", "星标卡", "今天到期"])
 
     def test_today_composes_with_search(self):
         today = __import__("datetime").date.today()
@@ -284,6 +284,16 @@ class BoardViewRefreshTest(unittest.TestCase):
         col0 = self.view._columns[0]
         self.assertEqual([cw.card().title for cw in col0._card_widgets],
                          ["星标甲"])
+
+    def test_collapsed_filtered_column_expand_keeps_drops_disabled(self):
+        """过滤态(搜索/今日)折叠再展开：拖放禁用不被 set_collapsed 覆盖"""
+        self.view._today_btn.setChecked(True)
+        self.view._apply_filter()
+        col0 = self.view._columns[0]
+        self.assertFalse(col0.acceptDrops())          # 过滤态禁用拖放
+        col0.toggle_collapsed()
+        col0.toggle_collapsed()                       # 折叠又展开
+        self.assertFalse(col0.acceptDrops())          # 仍禁用（A1 修复点）
 
     def test_refresh_same_order_skips_layout_reinsert(self):
         """顺序未变的数据刷新不再整列 remove+insert（单卡变更的原位更新）"""

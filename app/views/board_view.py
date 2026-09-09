@@ -273,8 +273,8 @@ class CardWidget(QFrame):
                 QLabel {{
                     background: {c['accent_soft']};
                     color: {c[key]};
-                    border-radius: 5px;
-                    padding: 2px 7px;
+                    border-radius: 6px;
+                    padding: 2px 6px;
                     font-size: 11px;
                 }}
             """)
@@ -363,7 +363,7 @@ class CardWidget(QFrame):
                 color: {c['text_primary']};
                 border: none;
                 border-radius: {AppConfig.CARD_DELETE_BTN_H // 2}px;
-                font-size: 9px;
+                font-size: 10px;
                 font-weight: bold;
                 padding: 0;
             }}
@@ -394,8 +394,11 @@ class CardWidget(QFrame):
 
         if meta_items:
             meta_row = QHBoxLayout()
-            meta_row.setSpacing(8)
-            for text, key, is_notes in meta_items:
+            meta_row.setSpacing(6)
+            # 卡片 ~236px 可用宽，超量徽章会溢出右缘：超出部分折叠为 "…"
+            shown = meta_items[:AppConfig.CARD_META_BADGE_MAX]
+            extra = len(meta_items) - len(shown)
+            for text, key, is_notes in shown:
                 badge = QLabel(text)
                 self._meta_badges.append((badge, key))
                 if is_notes:
@@ -404,6 +407,10 @@ class CardWidget(QFrame):
                     badge.setCursor(Qt.PointingHandCursor)
                     badge.setToolTip("悬停预览 · 点击固定")
                     badge.installEventFilter(self)
+                meta_row.addWidget(badge)
+            if extra > 0:
+                badge = QLabel("…")
+                self._meta_badges.append((badge, "text_secondary"))
                 meta_row.addWidget(badge)
             self._style_meta_badges()
             meta_row.addStretch(1)
@@ -589,6 +596,7 @@ class ListHeader(QWidget):
         self._menu_btn.setToolTip("列表操作")
         self._menu_btn.clicked.connect(self._show_menu)
         layout.addWidget(self._menu_btn)
+        self._menu_btn.hide()   # 悬停列头才显示（与卡片删除按钮同款降低密度）
 
         # 列表操作菜单
         self._menu = QMenu(self)
@@ -609,6 +617,16 @@ class ListHeader(QWidget):
         if isinstance(col, ListColumn):
             col.toggle_collapsed()
 
+    def enterEvent(self, event) -> None:
+        """悬停列头显示"⋯"菜单按钮"""
+        self._menu_btn.show()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        if not self._menu_btn.underMouse():
+            self._menu_btn.hide()
+        super().leaveEvent(event)
+
     def set_collapsed_mark(self, collapsed: bool) -> None:
         """折叠态箭头：▸ 折叠 / ▾ 展开；折叠态加深颜色便于发现展开入口"""
         c = AppTheme.colors()
@@ -618,7 +636,7 @@ class ListHeader(QWidget):
                 background: transparent;
                 color: {c['text_primary'] if collapsed else c['text_secondary']};
                 border: none;
-                font-size: 9px;
+                font-size: 10px;
                 padding: 0;
             }}
             QPushButton:hover {{ color: {c['text_primary']}; }}
@@ -657,7 +675,7 @@ class ListHeader(QWidget):
                 background: transparent;
                 color: {c['text_secondary']};
                 border: none;
-                font-size: 9px;
+                font-size: 10px;
                 padding: 0;
             }}
             QPushButton:hover {{ color: {c['text_primary']}; }}
@@ -1067,7 +1085,8 @@ class ListColumn(QFrame):
         self._collapsed = collapsed
         self._scroll.setVisible(not collapsed)
         self._add_btn.setVisible(not collapsed)
-        self.setAcceptDrops(not collapsed)
+        # 过滤态(搜索/今日)落点不可靠,拖放保持禁用,不能被折叠切换覆盖
+        self.setAcceptDrops(not collapsed and self._visible_cards is None)
         # 折叠列高度收窄为标题栏（固定策略），未折叠列拉伸填满
         policy = QSizePolicy(QSizePolicy.Preferred,
                              QSizePolicy.Fixed if collapsed
@@ -1298,7 +1317,7 @@ class BoardView(QWidget):
 
         self._stats_label = QLabel()
         self._toolbar_layout.addWidget(self._stats_label)
-        self._toolbar_layout.addStretch(1)
+        # 注意：不加中间 stretch——弹性全部留给搜索框（右侧控件固定聚集）
 
         self._today_btn = QPushButton("⭐ 今日")
         self._today_btn.setCheckable(True)
@@ -1313,7 +1332,7 @@ class BoardView(QWidget):
         self._search_edit.setClearButtonEnabled(True)
         # 弹性宽度：空间富余时舒展、不足时收缩到最小宽，避免工具栏被挤出窗口
         self._search_edit.setMinimumWidth(120)
-        self._search_edit.setMaximumWidth(360)
+        self._search_edit.setMaximumWidth(300)
         self._search_edit.setSizePolicy(QSizePolicy.Policy.Expanding,
                                         QSizePolicy.Policy.Fixed)
         self._search_edit.setAccessibleName("搜索卡片")
@@ -1457,8 +1476,8 @@ class BoardView(QWidget):
             QLabel {{
                 font-size: 12px;
                 color: {c['text_primary']};
-                background: rgba(128, 128, 128, 0.18);
-                border-radius: 9px;
+                background: rgba(128, 128, 128, 0.15);
+                border-radius: 8px;
                 padding: 3px 10px;
             }}
         """)
@@ -1469,7 +1488,6 @@ class BoardView(QWidget):
                 background: rgba(128, 128, 128, 0.15);
                 border: none;
                 border-radius: 17px;
-                font-size: 15px;
                 color: {icon_color};
             }}
             QPushButton:hover {{ background: rgba(128, 128, 128, 0.30); }}
@@ -1479,7 +1497,6 @@ class BoardView(QWidget):
                 background: rgba(128, 128, 128, 0.15);
                 border: none;
                 border-radius: 17px;
-                font-size: 16px;
                 font-weight: bold;
                 color: {icon_color};
             }}
@@ -1487,12 +1504,26 @@ class BoardView(QWidget):
         """)
         if self._window_controls is not None:
             self._window_controls.reapply()
+        # 工具栏文字按钮（今日/归档/导出）统一灰底 pill 样式
+        for btn in (self._archive_btn, self._export_btn):
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: rgba(128, 128, 128, 0.15);
+                    border: none;
+                    border-radius: 9px;
+                    padding: 5px 10px;
+                    font-size: 12px;
+                    color: {c['text_primary']};
+                }}
+                QPushButton:hover {{ background: rgba(128, 128, 128, 0.30); }}
+            """)
         self._today_btn.setStyleSheet(f"""
             QPushButton {{
                 background: rgba(128, 128, 128, 0.15);
                 border: none;
                 border-radius: 9px;
                 padding: 5px 10px;
+                font-size: 12px;
                 color: {c['text_primary']};
             }}
             QPushButton:hover {{ background: rgba(128, 128, 128, 0.30); }}
@@ -1589,9 +1620,10 @@ class BoardView(QWidget):
             if q:
                 cards = [c for c in cards
                          if q in c.title.lower() or q in c.notes.lower()]
-            # 今日聚焦内排序：高 > 中 > 低，无优先级垫底；同级按截止日升序
+            # 今日聚焦内排序：高 > 中 > 低，无优先级垫底；同级星标提前，
+            # 再按截止日升序（星标是主动标注，优先于被动"今天截止"）
             cards.sort(key=lambda c: (
-                c.priority == 0, c.priority,
+                c.priority == 0, c.priority, not c.starred,
                 c.due_delta(today) if c.due_delta(today) is not None else 999))
             return cards
         return self._filter_cards(lst, q)

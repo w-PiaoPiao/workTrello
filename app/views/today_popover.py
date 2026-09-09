@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from app.config import AppConfig
 from app.models.board import BoardList, Card
+from app.views.board_view import _CardCheckButton
 from app.views.theme import AppTheme
 
 _ROW_MIN_H = 42
@@ -121,13 +122,8 @@ class TodayPopover(QWidget):
         lay.setContentsMargins(8, 4, 8, 4)
         lay.setSpacing(6)
 
-        check = QPushButton("☐")
-        check.setFlat(True)
-        check.setFixedSize(22, 22)
-        check.setCursor(Qt.PointingHandCursor)
-        check.setStyleSheet(
-            "QPushButton { color: %s; font-size: 14px; padding: 0; }"
-            % c["text_disabled"])
+        # 勾选框复用看板自绘控件（与卡片同一视觉语言）
+        check = _CardCheckButton()
         check.clicked.connect(
             lambda: self.signal_card_done.emit(lst.id, card.id, True))
         lay.addWidget(check)
@@ -144,37 +140,14 @@ class TodayPopover(QWidget):
             badge.setStyleSheet(f"""
                 QLabel {{
                     color: {c['text_secondary']};
-                    font-size: 10px;
+                    font-size: 11px;
                     background: {c['accent_soft']};
-                    border-radius: 4px;
-                    padding: 1px 5px;
+                    border-radius: 6px;
+                    padding: 1px 6px;
                 }}
             """)
             lay.addWidget(badge)
         return row
-
-    # ── 勾选联动：行即时移除 ──────────────────────────────
-
-    def remove_row_for(self, card_id: str) -> None:
-        """某卡已完成/被删后移除其行（剩余为空则显示空态）"""
-        remain = []
-        for lst_id, cid, row in self._rows:
-            if cid == card_id:
-                row.setParent(None)
-                row.deleteLater()
-            else:
-                remain.append((lst_id, cid, row))
-        self._rows = remain
-        if not remain:
-            empty = QLabel("今天全部搞定 🎉")
-            empty.setAlignment(Qt.AlignCenter)
-            empty.setStyleSheet(
-                f"color: {AppTheme.colors()['success']};"
-                " font-size: 12px; padding: 18px;")
-            self._rows_layout.addWidget(empty)
-        self._title_label.setText(f"今日待办 · {len(remain)}")
-        h = min(_MAX_POP_H, 62 + _ROW_MIN_H * max(1, len(remain)))
-        self.setFixedHeight(h)
 
     # ── 基础 UI ──────────────────────────────────────────
 
@@ -215,7 +188,7 @@ class TodayPopover(QWidget):
         close.setCursor(Qt.PointingHandCursor)
         close.setStyleSheet(f"""
             QPushButton {{
-                background: rgba(128, 128, 128, 0.2);
+                background: rgba(128, 128, 128, 0.25);
                 color: {c['text_primary']};
                 border: none;
                 border-radius: 11px;

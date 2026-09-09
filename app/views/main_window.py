@@ -424,11 +424,15 @@ class MainWindow(QWidget):
         self._finish_board_rename()    # 隐藏前提交未完成的重命名
         if self._collapsed_view is not None:
             self._set_pet_idle(False)
-        if self._mode == "expanded":
-            self._mode = "collapsed"
-            if self._collapsed_view is not None:
-                self._stack.setCurrentWidget(self._collapsed_view)
-                self.setFixedSize(self._collapsed_size)
+        # 动画可能被 hide 打断：finished 不再触发，_on_animation_finished
+        # 不会执行 → 无论当前模式都强制回到折叠态（切回桌宠视图 + 固定尺寸
+        # + 收起缩放把手），避免再次显示时窗口停在展开尺寸、grip 残留
+        self._mode = "collapsed"
+        if self._collapsed_view is not None:
+            self._stack.setCurrentWidget(self._collapsed_view)
+            self.setFixedSize(self._collapsed_size)
+        self.unsetCursor()
+        self._update_grip_visibility()
         super().hideEvent(event)
         if self._visible_cb is not None:
             self._visible_cb(False)
