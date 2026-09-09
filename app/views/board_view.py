@@ -22,6 +22,7 @@ from PySide6.QtCore import (
     QRect,
     QSize,
     Qt,
+    QTimer,
     Signal,
 )
 from PySide6.QtGui import (
@@ -1006,7 +1007,12 @@ class BoardView(QWidget):
         self._search_edit.setClearButtonEnabled(True)
         self._search_edit.setFixedWidth(190)
         self._search_edit.setAccessibleName("搜索卡片")
-        self._search_edit.textChanged.connect(self._apply_filter)
+        # 逐键输入只重启防抖计时器，停顿后才过滤（避免大板每键全树刷新）
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(AppConfig.SEARCH_DEBOUNCE_MS)
+        self._search_timer.timeout.connect(self._apply_filter)
+        self._search_edit.textChanged.connect(self._on_search_edited)
         self._toolbar_layout.addWidget(self._search_edit)
 
         self._add_list_btn = AddCardButton("+ 添加列表")
@@ -1201,6 +1207,8 @@ class BoardView(QWidget):
 
         self._lists = lists
 
+        visibles = {lst.id: self._visible_cards_for(lst) for lst in lists}
+
         by_id = {col.list_id(): col for col in self._columns}
         kept: set[str] = set()
         for i, lst in enumerate(lists):
@@ -1208,7 +1216,7 @@ class BoardView(QWidget):
             if col is None:
                 col = self._make_column(lst)
             else:
-                col.set_list(lst, self._visible_cards_for(lst))
+                col.set_list(lst, visibles[lst.id])
                 kept.add(lst.id)
             self._lists_layout.removeWidget(col)
             self._lists_layout.insertWidget(i, col)
@@ -1219,7 +1227,7 @@ class BoardView(QWidget):
                 col.deleteLater()
 
         self.update_stats(lists)
-        self._update_today_count()
+        self._set_today_count(sum(len(v or []) for v in visibles.values()))
         sb.setValue(scroll_pos)
 
     def _search_query(self) -> str:
@@ -1259,14 +1267,20 @@ class BoardView(QWidget):
             return cards
         return self._filter_cards(lst, q)
 
-    def _apply_filter(self, *_args) -> None:
-        """今日开关/搜索框变化：刷新各列可见卡片与角标统计"""
-        for lst, col in zip(self._lists, self._columns):
-            col.set_visible_cards(self._visible_cards_for(lst))
-        self._update_today_count()
+    def _on_search_edited(self, _text: str) -> None:
+        """重启搜索防抖计时器：输入停顿后才真正过滤"""
+        self._search_timer.start()
 
-    def _update_today_count(self) -> None:
-        n = sum(len(self._visible_cards_for(lst) or []) for lst in self._lists)
+    def _apply_filter(self, *_args) -> None:
+        """今日开关 / 搜索防抖到点：单遍扫描刷新各列可见卡片与角标统计"""
+        total = 0
+        for lst, col in zip(self._lists, self._columns):
+            visible = self._visible_cards_for(lst)
+            col.set_visible_cards(visible)
+            total += len(visible or [])
+        self._set_today_count(total)
+
+    def _set_today_count(self, n: int) -> None:
         self._today_btn.setText(f"⭐ 今日 {n}")
 
     def set_today_mode(self, on: bool) -> None:

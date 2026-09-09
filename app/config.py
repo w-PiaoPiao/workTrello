@@ -142,6 +142,8 @@ class AppConfig:
     # ── 行为选项 ──────────────────────────────────────────────
     NOTIFICATION_DURATION_MS = 2000
     SAVE_DEBOUNCE_MS = 500
+    SIZE_SAVE_DEBOUNCE_MS = 200       # 窗口尺寸持久化防抖（系统缩放循环按帧触发 resizeEvent）
+    SEARCH_DEBOUNCE_MS = 150             # 搜索框逐键过滤防抖间隔（输入停顿后才刷新）
     DUE_CHECK_INTERVAL_MS = 60 * 60 * 1000   # 截止提醒检查间隔（1 小时）
     UNDO_LIMIT = 20                          # 撤销快照保留步数
     POMODORO_MINUTES = 25                    # 番茄钟时长（分钟）

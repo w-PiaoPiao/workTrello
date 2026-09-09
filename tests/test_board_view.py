@@ -46,6 +46,10 @@ class BoardViewRefreshTest(unittest.TestCase):
     def widget_titles(self, col):
         return [cw.card().title for cw in col._card_widgets]
 
+    def _flush_search(self):
+        """手动触发搜索防抖计时器（离屏无事件循环，直接驱动到点逻辑）"""
+        self.view._search_timer.timeout.emit()
+
     # ── 复用性 ────────────────────────────────────────────
 
     def test_same_data_reuses_widgets(self):
@@ -185,6 +189,7 @@ class BoardViewRefreshTest(unittest.TestCase):
         self.lists[0].cards.append(Card(title="ApplePie", notes="甜甜圈"))
         self.view.refresh(self.lists)
         self.view._search_edit.setText("apple")
+        self._flush_search()
         col0, col1 = self.view._columns
         self.assertEqual([cw.card().title for cw in col0._card_widgets],
                          ["ApplePie"])
@@ -198,13 +203,16 @@ class BoardViewRefreshTest(unittest.TestCase):
         self.lists[1].cards.append(Card(title="购物", notes="Buy Milk"))
         self.view.refresh(self.lists)
         self.view._search_edit.setText("MILK")
+        self._flush_search()
         col1 = self.view._columns[1]
         self.assertEqual([cw.card().title for cw in col1._card_widgets],
                          ["购物"])
 
     def test_search_clear_restores_all(self):
         self.view._search_edit.setText("apple")
+        self._flush_search()
         self.view._search_edit.clear()
+        self._flush_search()
         col0, col1 = self.view._columns
         self.assertEqual([cw.card().title for cw in col0._card_widgets],
                          ["A", "B"])
@@ -214,11 +222,28 @@ class BoardViewRefreshTest(unittest.TestCase):
 
     def test_search_survives_data_refresh(self):
         self.view._search_edit.setText("a")
+        self._flush_search()
         self.lists[0].cards.append(Card(title="Papaya"))
         self.view.refresh(self.lists)
         col0 = self.view._columns[0]
         self.assertEqual([cw.card().title for cw in col0._card_widgets],
                          ["A", "Papaya"])   # 新数据仍按当前关键词过滤
+
+    def test_search_debounces_keystroke_bursts(self):
+        """连续输入只重启计时器，停顿后仅触发一次过滤刷新"""
+        self.view.refresh(make_lists([("待办", ["Apple", "Banana", "Avocado"])]))
+        col0 = self.view._columns[0]
+        calls = []
+        orig = col0.refresh_cards
+        col0.refresh_cards = lambda: (calls.append(1), orig())
+        self.view._search_edit.setText("a")
+        self.view._search_edit.setText("ap")
+        self.view._search_edit.setText("app")
+        self.assertEqual(calls, [])                   # 输入中未触发过滤
+        self.assertTrue(self.view._search_timer.isActive())
+        self.view._search_timer.timeout.emit()        # 停顿后只刷新一次
+        self.assertEqual(calls, [1])
+        self.assertEqual(self.widget_titles(col0), ["Apple"])
 
     # ── 今日聚焦 ──────────────────────────────────────────
 
@@ -244,6 +269,7 @@ class BoardViewRefreshTest(unittest.TestCase):
         self.view.refresh(self.lists)
         self.view._today_btn.setChecked(True)
         self.view._search_edit.setText("甲")
+        self._flush_search()
         col0 = self.view._columns[0]
         self.assertEqual([cw.card().title for cw in col0._card_widgets],
                          ["星标甲"])

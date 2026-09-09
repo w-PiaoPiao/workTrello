@@ -68,6 +68,39 @@ class AlwaysOnTopTest(unittest.TestCase):
         self.assertTrue(self.w.isVisible())
 
 
+class ExpandedSizeDebounceTest(unittest.TestCase):
+    """展开尺寸持久化防抖：连续调整只写一次 QSettings，折叠时冲刷"""
+
+    def setUp(self):
+        self.w = MainWindow()
+        self.w.show()   # 隐藏窗口不派发 resize 事件，须先显示
+        self.w._mode = "expanded"
+        self.w._expanding = False
+        self.w._animation_running = False
+        self.w._zoomed = False
+
+    def tearDown(self):
+        self.w.hide()
+        self.w.deleteLater()
+
+    def test_resize_burst_persists_once_on_timeout(self):
+        with patch.object(AppConfig, "save_expanded_size") as save:
+            self.w.resize(900, 600)
+            self.w.resize(910, 610)
+            self.w.resize(920, 620)
+            save.assert_not_called()                # 连续调整中不写盘
+            self.assertTrue(self.w._size_save_timer.isActive())
+            self.w._size_save_timer.timeout.emit()  # 防抖到点 → 只写一次
+            self.assertEqual(save.call_count, 1)
+
+    def test_collapse_flushes_pending_size(self):
+        with patch.object(AppConfig, "save_expanded_size") as save:
+            self.w.resize(930, 630)
+            save.assert_not_called()
+            self.w.collapse()
+            self.assertEqual(save.call_count, 1)
+
+
 class PetAlwaysTopMenuTest(unittest.TestCase):
     def test_checked_sync_does_not_recurse(self):
         pet = PetView()

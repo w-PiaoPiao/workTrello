@@ -62,6 +62,13 @@ class MainWindow(QWidget):
         self._zoomed = False
         self._zoom_restore_geo = QRect()
 
+        # 展开尺寸持久化防抖：系统缩放循环按帧触发 resizeEvent，
+        # 停顿（或折叠）后才写 QSettings，避免逐帧写注册表
+        self._size_save_timer = QTimer(self)
+        self._size_save_timer.setSingleShot(True)
+        self._size_save_timer.setInterval(AppConfig.SIZE_SAVE_DEBOUNCE_MS)
+        self._size_save_timer.timeout.connect(self._flush_expanded_size)
+
         # Windows 边缘缩放状态（仅展开态启用；macOS 不启用）
         self._resize_active = False
         if AppConfig.IS_WINDOWS:
@@ -196,6 +203,7 @@ class MainWindow(QWidget):
         self._animate_size(
             self._collapsed_size.width(), self._collapsed_size.height(),
             delta=-self._expand_delta, base_geo=base_geo)
+        self._flush_expanded_size()    # 折叠时冲刷防抖中的展开尺寸
 
     def _on_esc_pressed(self) -> None:
         if self._mode != "expanded":
@@ -315,14 +323,18 @@ class MainWindow(QWidget):
             event.accept()
 
     def resizeEvent(self, event) -> None:
-        """看板态用户调整尺寸时即时持久化（排除动画/中间态/最大化还原）"""
+        """看板态用户调整尺寸时防抖持久化（排除动画/中间态/最大化还原）"""
         if (self._mode == "expanded"
                 and not self._animation_running
                 and not self._expanding
                 and not self._zoomed):
             self._expanded_size = self.size()
-            AppConfig.save_expanded_size(self._expanded_size)
+            self._size_save_timer.start()
         super().resizeEvent(event)
+
+    def _flush_expanded_size(self) -> None:
+        """防抖到点 / 折叠时：把暂存的展开尺寸写盘"""
+        AppConfig.save_expanded_size(self._expanded_size)
 
     # ── 显隐（托盘"隐藏"时窗口隐藏而非销毁，事件通知控制器同步菜单） ──
 
