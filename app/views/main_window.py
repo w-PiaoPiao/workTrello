@@ -282,7 +282,11 @@ class MainWindow(QWidget):
         if event.button() == Qt.LeftButton:
             if self._resize_active:
                 self._resize_active = False
-                # 系统级缩放期间窗口原生收尾；此处只收尾状态并持久化
+                # 系统缩放循环期间 Qt 收不到鼠标事件，结束后窗口 cursor
+                # 仍停在缩放样式；按鼠标真实位置重算（边缘→缩放光标，
+                # 内部→箭头），并等事件循环恢复 hover 后再兜底刷一次
+                self._refresh_edge_cursor()
+                QTimer.singleShot(0, self._refresh_edge_cursor)
                 self._snap_to_screen_edge()
                 self._save_position()
                 event.accept()

@@ -19,7 +19,7 @@ os.environ["PET_BOARD_DATA_DIR"] = tempfile.mkdtemp()
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from PySide6.QtGui import QKeySequence
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtWidgets import QApplication, QLabel, QMessageBox
 
 _qapp = QApplication.instance() or QApplication([])
 
@@ -91,6 +91,53 @@ class ControllerFeatureTest(unittest.TestCase):
         for i in range(AppConfig.UNDO_LIMIT + 5):
             self.c._on_card_add(self._list().id, f"卡{i}")
         self.assertLessEqual(len(self.c._undo_stack), AppConfig.UNDO_LIMIT)
+
+    # ── 列表删除 ──────────────────────────────────────────
+
+    def test_delete_empty_list_without_dialog(self):
+        """空列表删除不弹确认框、可撤销（回归：reply 未定义曾致 UnboundLocalError）"""
+        self._reset()
+        board = self.c._store.load()
+        target = board.lists[0]
+        n_lists = len(board.lists)
+        with patch.object(QMessageBox, "question") as q:
+            self.c._on_list_delete(target.id)
+            q.assert_not_called()
+        board = self.c._store.load()
+        self.assertEqual(len(board.lists), n_lists - 1)
+        self.assertIsNone(board.find_list(target.id))
+        self.c._on_undo_requested(False)
+        board = self.c._store.load()
+        self.assertIsNotNone(board.find_list(target.id))
+
+    def test_delete_nonempty_list_cancel_keeps_list(self):
+        self._reset()
+        self.c._on_card_add(self._list().id, "占位卡")
+        board = self.c._store.load()
+        target = board.lists[0]
+        with patch.object(QMessageBox, "question",
+                          return_value=QMessageBox.No):
+            self.c._on_list_delete(target.id)
+        board = self.c._store.load()
+        self.assertIsNotNone(board.find_list(target.id))
+
+    def test_delete_nonempty_list_confirm_and_undo(self):
+        self._reset()
+        self.c._on_card_add(self._list().id, "占位卡")
+        board = self.c._store.load()
+        target = board.lists[0]
+        n_lists = len(board.lists)
+        with patch.object(QMessageBox, "question",
+                          return_value=QMessageBox.Yes):
+            self.c._on_list_delete(target.id)
+        board = self.c._store.load()
+        self.assertEqual(len(board.lists), n_lists - 1)
+        self.assertIsNone(board.find_list(target.id))
+        self.c._on_undo_requested(False)
+        board = self.c._store.load()
+        self.assertIsNotNone(board.find_list(target.id))
+        self.assertEqual(
+            [x.title for x in board.find_list(target.id).cards], ["占位卡"])
 
     # ── 截止提醒 ──────────────────────────────────────────
 

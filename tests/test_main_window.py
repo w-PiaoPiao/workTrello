@@ -125,6 +125,24 @@ class WindowsEdgeResizeTest(unittest.TestCase):
             QPoint(self.w.width() - 1, self.w.height() - 1)))
         self.w._zoomed = False
 
+    def test_resize_release_resets_cursor(self):
+        """系统缩放结束后光标必须恢复（不能残留缩放样式）"""
+        from PySide6.QtCore import QEvent, QPointF
+        from PySide6.QtGui import QCursor, QMouseEvent
+        # 把窗口挪到系统鼠标正下方，确保 release 时鼠标在窗口内部（远离边缘）
+        gp = QCursor.pos()
+        self.w.setGeometry(gp.x() - 400, gp.y() - 300, 800, 600)
+        _qapp.processEvents()
+        # 模拟系统缩放中的状态：光标已被设为缩放样式
+        self.w.setCursor(Qt.SizeHorCursor)
+        self.w._resize_active = True
+        release = QMouseEvent(QEvent.Type.MouseButtonRelease,
+                              QPointF(400, 300), Qt.LeftButton,
+                              Qt.NoButton, Qt.NoModifier)
+        self.w.mouseReleaseEvent(release)
+        self.assertFalse(self.w._resize_active)
+        self.assertEqual(self.w.cursor().shape(), Qt.ArrowCursor)
+
     def test_mouse_in_expanded_guard(self):
         self.assertTrue(self.w._mouse_in_expanded())
         self.w._mode = "collapsed"

@@ -380,9 +380,10 @@ class AppController(QObject):
             reply = QMessageBox.question(
                 self._window, "确认删除",
                 f"列表「{lst.title}」还有 {n} 张卡片，删除后不可恢复。\n继续？",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        if reply != QMessageBox.Yes:
-            return
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if reply != QMessageBox.Yes:
+                return
+        # 空列表无卡片可丢，直接删除（撤销栈可恢复）
         self._push_undo()
         board.remove_list(list_id)
         self._after_data_change("已删除列表")
