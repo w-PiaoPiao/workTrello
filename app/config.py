@@ -140,6 +140,7 @@ class AppConfig:
     CARD_DRAG_THRESHOLD = 10    # 卡片按下后超过该位移才判定为拖拽（像素）
     LIST_DRAG_THRESHOLD = 10    # 列表头按下后超过该位移才判定为整列拖拽（像素）
     CARD_DELETE_BTN_H = 14      # 卡片右上角悬浮删除按钮的命中尺寸
+    EDGE_CURSOR_POLL_MS = 150   # Windows 展开态光标轮询间隔（系统缩放后事件链可能断裂）
 
     # ── 桌宠随机小动作动画时长（ms）───────────────────────────────
     TILT_PHASE_MS = (260, 320, 300)      # 歪头三段（歪出/歪回/回正）

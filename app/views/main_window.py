@@ -71,9 +71,17 @@ class MainWindow(QWidget):
 
         # Windows 边缘缩放状态（仅展开态启用；macOS 不启用）
         self._resize_active = False
+        # 上次设置的边缘光标（None=系统默认）；仅结果变化才调平台接口
+        self._last_edge_cursor: Qt.CursorShape | None = None
         if AppConfig.IS_WINDOWS:
             self.setMouseTracking(True)
-            self._refresh_edge_cursor()
+            # 展开态常驻轻量光标轮询：系统缩放期间 Qt 收不到鼠标事件、
+            # 结束后 hover/move 链可能不重建，轮询保证光标始终按鼠标真实
+            # 位置回正（刷新函数内含展开态/窗口内守卫，非展开态自动空转）
+            self._edge_cursor_timer = QTimer(self)
+            self._edge_cursor_timer.setInterval(AppConfig.EDGE_CURSOR_POLL_MS)
+            self._edge_cursor_timer.timeout.connect(self._refresh_edge_cursor)
+            self._edge_cursor_timer.start()
 
         # 子视图占位（外部注入）
         self._collapsed_view: QWidget | None = None
@@ -184,10 +192,7 @@ class MainWindow(QWidget):
         self._animate_size(
             target.width(), target.height(),
             delta=self._expand_delta, base_geo=base_geo)
-        # 展开完成后（鼠标可能正悬停在边缘）刷新一次缩放光标
-        if AppConfig.IS_WINDOWS:
-            QTimer.singleShot(AppConfig.ANIMATION_MS + 30,
-                              self._refresh_edge_cursor)
+        # 展开后光标由 EDGE_CURSOR_POLL_MS 常驻轮询持续刷新（此处无需兜底）
 
     def collapse(self) -> None:
         if self._mode == "collapsed" or self._animation_running:
@@ -308,11 +313,12 @@ class MainWindow(QWidget):
             if self._resize_active:
                 self._resize_active = False
                 # 系统缩放循环期间 Qt 收不到鼠标事件，结束后窗口 cursor
-                # 仍停在缩放样式；按鼠标真实位置重算（边缘→缩放光标，
-                # 内部→箭头），并等事件循环恢复 hover 后再兜底刷一次
+                # 仍停在缩放样式：先吸附修正窗口位置，再按真实位置刷新；
+                # singleShot(0) 等 Qt hover 链重建后再校正一次
+                # （另有 EDGE_CURSOR_POLL_MS 常驻轮询兜底）
+                self._snap_to_screen_edge()
                 self._refresh_edge_cursor()
                 QTimer.singleShot(0, self._refresh_edge_cursor)
-                self._snap_to_screen_edge()
                 self._save_position()
                 event.accept()
                 return
@@ -512,28 +518,52 @@ class MainWindow(QWidget):
         return edge if edge else None
 
     def _refresh_edge_cursor(self) -> None:
-        """无按键悬停时按边缘更新光标（展开态 + Windows 生效）"""
-        if not (AppConfig.IS_WINDOWS and self._mouse_in_expanded()):
-            self.unsetCursor()
-            return
-        edge = self._edge_at(self.mapFromGlobal(QCursor.pos()))
-        if edge is None:
-            self.unsetCursor()
-            return
-        cursor = None
-        if edge & Qt.LeftEdge and edge & Qt.TopEdge:
-            cursor = Qt.SizeFDiagCursor
-        elif edge & Qt.RightEdge and edge & Qt.BottomEdge:
-            cursor = Qt.SizeFDiagCursor
-        elif edge & Qt.RightEdge and edge & Qt.TopEdge:
-            cursor = Qt.SizeBDiagCursor
-        elif edge & Qt.LeftEdge and edge & Qt.BottomEdge:
-            cursor = Qt.SizeBDiagCursor
-        elif edge & Qt.LeftEdge or edge & Qt.RightEdge:
-            cursor = Qt.SizeHorCursor
-        else:
-            cursor = Qt.SizeVerCursor
-        self.setCursor(cursor)
+        """按鼠标真实位置刷新边缘缩放光标（展开态 + Windows 生效）
+
+        所有触发源（悬停 move / 常驻轮询 / 缩放收尾 / 移入窗口）统一走这里：
+        - 鼠标不在窗口内、或非展开态/动画中 → 还原系统默认光标
+          （窗外全局坐标会被 _edge_at 误判成边缘，必须先守卫）
+        - 仅当结果与上次不同才调用 setCursor/unsetCursor（幂等缓存，
+          避免 150ms 轮询反复触发平台光标更新）
+        """
+        cursor: Qt.CursorShape | None = None    # None = 还原系统默认
+        if (AppConfig.IS_WINDOWS and self._mouse_in_expanded()
+                and self.frameGeometry().contains(QCursor.pos())):
+            edge = self._edge_at(self.mapFromGlobal(QCursor.pos()))
+            if edge is not None:
+                if edge & Qt.LeftEdge and edge & Qt.TopEdge:
+                    cursor = Qt.SizeFDiagCursor
+                elif edge & Qt.RightEdge and edge & Qt.BottomEdge:
+                    cursor = Qt.SizeFDiagCursor
+                elif edge & Qt.RightEdge and edge & Qt.TopEdge:
+                    cursor = Qt.SizeBDiagCursor
+                elif edge & Qt.LeftEdge and edge & Qt.BottomEdge:
+                    cursor = Qt.SizeBDiagCursor
+                elif edge & Qt.LeftEdge or edge & Qt.RightEdge:
+                    cursor = Qt.SizeHorCursor
+                else:
+                    cursor = Qt.SizeVerCursor
+        if cursor is None:
+            # 还原默认：仅当缓存或实际光标仍停在其他样式时才 unset
+            # （外部手动 setCursor 后缓存可能为 None，需按实际形状判定）
+            if (self._last_edge_cursor is not None
+                    or self.cursor().shape() != Qt.ArrowCursor):
+                self._last_edge_cursor = None
+                self.unsetCursor()
+        elif cursor != self._last_edge_cursor:
+            self._last_edge_cursor = cursor
+            self.setCursor(cursor)
+
+    def enterEvent(self, event) -> None:
+        """移入窗口立即按位置刷新光标（不等首次 move）"""
+        self._refresh_edge_cursor()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        """移出窗口即还原默认光标（常驻轮询的窗口内守卫同样兜底）"""
+        self._last_edge_cursor = None
+        self.unsetCursor()
+        super().leaveEvent(event)
 
     def set_visibility_callback(self, callback) -> None:
         """控制器注入显隐回调（同步托盘菜单文案）"""

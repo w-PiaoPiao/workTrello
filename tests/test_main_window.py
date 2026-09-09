@@ -182,6 +182,41 @@ class WindowsEdgeResizeTest(unittest.TestCase):
         self.assertFalse(self.w._resize_active)
         self.assertEqual(self.w.cursor().shape(), Qt.ArrowCursor)
 
+    def test_poll_resets_stuck_cursor_inside_window(self):
+        """缩放后事件链断裂导致的光标粘滞：常驻轮询按真实位置回正"""
+        from PySide6.QtGui import QCursor
+        gp = QCursor.pos()
+        self.w.setGeometry(gp.x() - 400, gp.y() - 300, 800, 600)
+        _qapp.processEvents()
+        # 模拟粘滞残留：光标与缓存都停在缩放样式，之后无任何 move 事件
+        self.w.setCursor(Qt.SizeHorCursor)
+        self.w._last_edge_cursor = Qt.SizeHorCursor
+        self.w._edge_cursor_timer.timeout.emit()   # 轮询到点（鼠标在窗口中央）
+        self.assertIsNone(self.w._last_edge_cursor)
+        self.assertEqual(self.w.cursor().shape(), Qt.ArrowCursor)
+
+    def test_refresh_cursor_outside_window_unsets(self):
+        """鼠标在窗口外：不把窗外全局坐标误判成边缘，一律还原默认"""
+        from unittest.mock import patch
+        from PySide6.QtGui import QCursor
+        self.w.setCursor(Qt.SizeVerCursor)
+        self.w._last_edge_cursor = Qt.SizeVerCursor
+        with patch.object(QCursor, "pos",
+                          return_value=QPoint(-9999, -9999)):
+            self.w._refresh_edge_cursor()
+        self.assertIsNone(self.w._last_edge_cursor)
+        self.assertEqual(self.w.cursor().shape(), Qt.ArrowCursor)
+
+    def test_edge_cursor_ignored_when_collapsed(self):
+        """折叠态不设缩放光标（守卫空转）"""
+        self.w._mode = "collapsed"
+        self.w.setCursor(Qt.SizeHorCursor)
+        self.w._last_edge_cursor = Qt.SizeHorCursor
+        self.w._refresh_edge_cursor()
+        self.assertIsNone(self.w._last_edge_cursor)
+        self.assertEqual(self.w.cursor().shape(), Qt.ArrowCursor)
+        self.w._mode = "expanded"
+
     def test_mouse_in_expanded_guard(self):
         self.assertTrue(self.w._mouse_in_expanded())
         self.w._mode = "collapsed"
