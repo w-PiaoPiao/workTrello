@@ -257,6 +257,7 @@ class AppController(QObject):
         self._board_view.signal_list_title_changed.connect(
             self._on_list_title_changed)
         self._board_view.signal_list_delete.connect(self._on_list_delete)
+        self._board_view.signal_list_move.connect(self._on_list_move)
 
     # ── 卡片操作 ──────────────────────────────────────────
 
@@ -393,6 +394,32 @@ class AppController(QObject):
         self._push_undo()
         board.remove_list(list_id)
         self._after_data_change("已删除列表")
+
+    def _on_list_move(self, moved_id: str, target_id: str,
+                      insert_before: bool) -> None:
+        """整列拖拽重排：把 moved 列插到 target 列前/后
+
+        拖回原相邻位置视为无变化（不产生撤销快照、不刷新）。
+        """
+        board = self._store.load()
+        moved = board.find_list(moved_id)
+        target = board.find_list(target_id)
+        if moved is None or target is None or moved_id == target_id:
+            return
+        current = [lst.id for lst in board.lists]
+        rest = [lst.id for lst in board.lists if lst.id != moved_id]
+        new_order = list(rest)
+        t = rest.index(target_id)
+        if insert_before:
+            new_order.insert(t, moved_id)
+        else:
+            new_order.insert(t + 1, moved_id)
+        if new_order == current:
+            return                        # 位置未变（拖回原位）→ 短路
+        self._push_undo()
+        by_id = {lst.id: lst for lst in board.lists}
+        board.lists[:] = [by_id[lid] for lid in new_order]
+        self._after_data_change(None)
 
     # ── 数据变更后的统一刷新 ──────────────────────────────
 

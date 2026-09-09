@@ -493,6 +493,7 @@ class ListHeader(QWidget):
     def __init__(self, board_list: BoardList, parent=None):
         super().__init__(parent)
         self._lst = board_list
+        self._drag_press_pos: QPoint | None = None   # 整列拖拽起点（None=未按下）
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 8, 10, 6)
@@ -599,6 +600,44 @@ class ListHeader(QWidget):
             finish_active_rename(cancel=True)
             return True
         return super().eventFilter(obj, event)
+
+    # ── 整列拖拽（按住列表头拖动重排；位移超阈值才生效，单击/双击不受影响）──
+
+    def mousePressEvent(self, event) -> None:
+        if (event.button() == Qt.LeftButton and _ACTIVE_RENAME is None):
+            self._drag_press_pos = event.position().toPoint()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        col = self.parent()
+        if (self._drag_press_pos is not None
+                and event.buttons() & Qt.LeftButton
+                and isinstance(col, ListColumn)
+                and not col.is_filtered()
+                and (event.position().toPoint() - self._drag_press_pos)
+                .manhattanLength() > AppConfig.LIST_DRAG_THRESHOLD):
+            self._drag_press_pos = None      # 只触发一次
+            self._start_list_drag()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        self._drag_press_pos = None
+        super().mouseReleaseEvent(event)
+
+    def _start_list_drag(self) -> None:
+        """启动整列拖拽：列头截图作拖影，MIME_LIST 携带列表 id"""
+        col = self.parent()
+        if not isinstance(col, ListColumn):
+            return
+        mime = QMimeData()
+        mime.setData(MIME_LIST, self._lst.id.encode("utf-8"))
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        pixmap = self.grab()
+        drag.setPixmap(pixmap)
+        drag.setHotSpot(QPoint(pixmap.width() // 2, pixmap.height() // 2))
+        drag.exec(Qt.MoveAction)
 
 
 class _RenameEdit(QLineEdit):
@@ -759,6 +798,7 @@ class ListColumn(QFrame):
     signal_delete_list = Signal(str)
     signal_card_pomo = Signal(str)             # card_id
     signal_card_archive = Signal(str)          # card_id
+    signal_list_move = Signal(str, str, bool)  # moved_list_id, target_list_id, insert_before
 
     def __init__(self, board_list: BoardList, parent=None):
         super().__init__(parent)
@@ -912,6 +952,24 @@ class ListColumn(QFrame):
 
     # ── 拖放 ──────────────────────────────────────────────
 
+    def is_filtered(self) -> bool:
+        """搜索/今日聚焦过滤态：整列拖拽不可用（卡片拖放由 acceptDrops 拦截）"""
+        return self._visible_cards is not None
+
+    def _set_drop_highlight(self, on: bool) -> None:
+        """整列拖拽悬停时的落点高亮（accent 边框）"""
+        if on:
+            c = AppTheme.colors()
+            self.setStyleSheet(f"""
+                QFrame#listColumn {{
+                    background: {c['bg_panel']};
+                    border: 2px solid {c['accent']};
+                    border-radius: 14px;
+                }}
+            """)
+        else:
+            self.reapply_frame_style()
+
     def _drop_index_from_y(self, y_global: int) -> int:
         """根据全局 y 坐标计算插入位置（卡片序号）"""
         for i, cw in enumerate(self._card_widgets):
@@ -923,20 +981,36 @@ class ListColumn(QFrame):
     def dragEnterEvent(self, event) -> None:
         if event.mimeData().hasFormat(MIME_CARD):
             event.acceptProposedAction()
-
-    def dragMoveEvent(self, event) -> None:
-        if event.mimeData().hasFormat(MIME_CARD):
+        elif event.mimeData().hasFormat(MIME_LIST):
+            self._set_drop_highlight(True)
             event.acceptProposedAction()
 
+    def dragMoveEvent(self, event) -> None:
+        if (event.mimeData().hasFormat(MIME_CARD)
+                or event.mimeData().hasFormat(MIME_LIST)):
+            event.acceptProposedAction()
+
+    def dragLeaveEvent(self, event) -> None:
+        self._set_drop_highlight(False)
+        super().dragLeaveEvent(event)
+
     def dropEvent(self, event) -> None:
-        if not event.mimeData().hasFormat(MIME_CARD):
+        mime = event.mimeData()
+        if mime.hasFormat(MIME_CARD):
+            card_id = bytes(mime.data(MIME_CARD)).decode("utf-8")
+            index = self._drop_index_from_y(
+                event.position().toPoint().y()
+                + self.mapToGlobal(QPoint(0, 0)).y())
+            self.signal_card_move.emit(card_id, self._lst.id, index)
+            event.acceptProposedAction()
             return
-        card_id = bytes(event.mimeData().data(MIME_CARD)).decode("utf-8")
-        index = self._drop_index_from_y(
-            event.position().toPoint().y()
-            + self.mapToGlobal(QPoint(0, 0)).y())
-        self.signal_card_move.emit(card_id, self._lst.id, index)
-        event.acceptProposedAction()
+        if mime.hasFormat(MIME_LIST):
+            self._set_drop_highlight(False)
+            moved_id = bytes(mime.data(MIME_LIST)).decode("utf-8")
+            # 落点 x 相对本列中心：左半=插到本列前，右半=插到本列后
+            insert_before = event.position().toPoint().x() < self.width() // 2
+            self.signal_list_move.emit(moved_id, self._lst.id, insert_before)
+            event.acceptProposedAction()
 
 
 class AddCardButton(QPushButton):
@@ -975,6 +1049,7 @@ class BoardView(QWidget):
     signal_card_done = Signal(str, str, bool)   # list_id, card_id, done
     signal_card_delete = Signal(str, str)       # list_id, card_id
     signal_card_move = Signal(str, str, int)    # card_id, target_list_id, index
+    signal_list_move = Signal(str, str, bool)   # moved_list_id, target_list_id, insert_before
     signal_card_add = Signal(str)               # list_id
     signal_list_add = Signal()
     signal_list_title_changed = Signal(str, str)
@@ -1228,6 +1303,7 @@ class BoardView(QWidget):
         visibles = {lst.id: self._visible_cards_for(lst) for lst in lists}
 
         by_id = {col.list_id(): col for col in self._columns}
+        ordered_cols: list[ListColumn] = []
         kept: set[str] = set()
         for i, lst in enumerate(lists):
             col = by_id.get(lst.id)
@@ -1236,6 +1312,7 @@ class BoardView(QWidget):
             else:
                 col.set_list(lst, visibles[lst.id])
                 kept.add(lst.id)
+            ordered_cols.append(col)
             self._lists_layout.removeWidget(col)
             self._lists_layout.insertWidget(i, col)
         for list_id, col in by_id.items():
@@ -1243,6 +1320,11 @@ class BoardView(QWidget):
                 self._columns.remove(col)
                 col.setParent(None)
                 col.deleteLater()
+
+        # 列顺序与 lists 同步：列拖拽/撤销会改变 lists 顺序，布局已随上方
+        # 循环重插，_columns 列表本身也必须跟随，否则 _apply_filter 的
+        # zip(_lists, _columns) 在过滤模式下会与列配对错位
+        self._columns = ordered_cols
 
         self.update_stats(lists)
         self._set_today_count(sum(len(v or []) for v in visibles.values()))
@@ -1337,6 +1419,7 @@ class BoardView(QWidget):
         col.signal_card_done.connect(self._on_card_done)
         col.signal_card_delete.connect(self._on_card_delete)
         col.signal_card_move.connect(self.signal_card_move)
+        col.signal_list_move.connect(self.signal_list_move)
         col.signal_add_card.connect(self.signal_card_add)
         col.signal_title_changed.connect(self.signal_list_title_changed)
         col.signal_delete_list.connect(self.signal_list_delete)

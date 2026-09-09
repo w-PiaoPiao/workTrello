@@ -25,7 +25,7 @@ _qapp = QApplication.instance() or QApplication([])
 
 from app.config import AppConfig
 from app.controllers.app_controller import AppController
-from app.models.board import Card
+from app.models.board import BoardList, Card
 import app.views.theme as theme_mod
 from app.views.theme import AppTheme
 
@@ -138,6 +138,43 @@ class ControllerFeatureTest(unittest.TestCase):
         self.assertIsNotNone(board.find_list(target.id))
         self.assertEqual(
             [x.title for x in board.find_list(target.id).cards], ["占位卡"])
+
+    # ── 列表拖拽重排 ──────────────────────────────────────
+
+    def _ensure_lists(self, n=3):
+        board = self.c._store.load()
+        while len(board.lists) < n:
+            board.lists.append(BoardList(title=f"列{len(board.lists)}"))
+        return [lst.id for lst in board.lists]
+
+    def test_list_move_reorders_and_undo(self):
+        self._reset()
+        ids = self._ensure_lists()
+        self.c._on_list_move(ids[0], ids[2], True)   # A 移到 C 前面
+        board = self.c._store.load()
+        self.assertEqual([lst.id for lst in board.lists],
+                         [ids[1], ids[0], ids[2]])
+        self.c._on_undo_requested(False)             # 撤销 → 还原列序
+        board = self.c._store.load()
+        self.assertEqual([lst.id for lst in board.lists], ids)
+
+    def test_list_move_after_puts_at_end(self):
+        self._reset()
+        ids = self._ensure_lists()
+        self.c._on_list_move(ids[0], ids[2], False)  # A 移到 C 后面（末尾）
+        board = self.c._store.load()
+        self.assertEqual([lst.id for lst in board.lists],
+                         [ids[1], ids[2], ids[0]])
+
+    def test_list_move_noop_when_unchanged(self):
+        """拖回原相邻位置不产生撤销快照、不刷新"""
+        self._reset()
+        ids = self._ensure_lists()
+        self.c._on_list_move(ids[0], ids[1], True)   # A 本就在 B 前 → 无变化
+        self.assertEqual([lst.id for lst in self.c._store.load().lists], ids)
+        self.assertEqual(self.c._undo_stack, [])
+        self.c._on_list_move(ids[1], ids[1], False)  # 拖到自己 → 直接返回
+        self.assertEqual(self.c._undo_stack, [])
 
     # ── 截止提醒 ──────────────────────────────────────────
 

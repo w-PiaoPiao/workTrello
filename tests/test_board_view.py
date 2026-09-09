@@ -307,6 +307,75 @@ class BoardViewRefreshTest(unittest.TestCase):
             bv.finish_active_rename(cancel=True)
         self.assertIsNone(bv._ACTIVE_RENAME)
 
+    # ── 整列拖拽 ──────────────────────────────────────────
+
+    def _drop_list_on(self, col, moved_id, x):
+        """构造 MIME_LIST 拖放事件投喂目标列"""
+        from PySide6.QtCore import QMimeData, QPointF, Qt
+        from PySide6.QtGui import QDropEvent
+        from app.views.board_view import MIME_LIST
+        mime = QMimeData()
+        mime.setData(MIME_LIST, moved_id.encode("utf-8"))
+        drop = QDropEvent(QPointF(x, 10), Qt.MoveAction, mime,
+                          Qt.LeftButton, Qt.NoModifier)
+        col.dropEvent(drop)
+
+    def test_list_drop_before_and_after(self):
+        """列拖放按落点 x 判 before/after 并经 BoardView 透传"""
+        self.view.resize(1400, 700)
+        got = []
+        self.view.signal_list_move.connect(lambda *a: got.append(a))
+        target = self.view._columns[1]
+        w = max(target.width(), 40)
+        moved = self.view._columns[0].list_id()
+        self._drop_list_on(target, moved, 2)          # 左半 → before
+        self._drop_list_on(target, moved, w - 2)      # 右半 → after
+        self.assertEqual(got, [(moved, target.list_id(), True),
+                               (moved, target.list_id(), False)])
+
+    def test_refresh_keeps_column_order_synced(self):
+        """lists 顺序变化后 _columns/布局/过滤配对跟随（防 zip 错位）"""
+        reordered = [self.lists[1], self.lists[0]]   # 两列对调
+        self.view.refresh(reordered)
+        self.assertEqual([c.list_id() for c in self.view._columns],
+                         [l.id for l in reordered])
+        for col, lst in zip(self.view._columns, reordered):
+            self.assertIs(col._lst, lst)          # 配对无错位
+        # 过滤模式下 zip(_lists, _columns) 逐列应用可见集仍配对正确
+        self.view._today_btn.setChecked(True)
+        col0 = self.view._columns[0]
+        self.assertFalse(col0.acceptDrops())       # 今日模式为过滤态
+        self.view._today_btn.setChecked(False)
+
+    def test_header_drag_threshold(self):
+        """列表头按住：小位移不拖、超阈值拖一次、过滤态不拖"""
+        from PySide6.QtCore import QEvent, QPointF, Qt
+        from PySide6.QtGui import QMouseEvent
+        header = self.view._columns[0]._header
+        calls = []
+        header._start_list_drag = lambda: calls.append(1)
+
+        press = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(30, 10),
+                            Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        header.mousePressEvent(press)
+        small = QMouseEvent(QEvent.Type.MouseMove, QPointF(35, 10),
+                            Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        header.mouseMoveEvent(small)              # 5px < 阈值
+        self.assertEqual(calls, [])
+        big = QMouseEvent(QEvent.Type.MouseMove, QPointF(60, 10),
+                          Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        header.mouseMoveEvent(big)                # 30px > 阈值 → 启动一次
+        self.assertEqual(calls, [1])
+        header.mouseReleaseEvent(press)
+
+        # 过滤态下列不可拖
+        col = self.view._columns[0]
+        col.set_visible_cards([])                 # 进入过滤态
+        header.mousePressEvent(press)
+        header.mouseMoveEvent(big)
+        self.assertEqual(calls, [1])              # 未再触发
+        col.set_visible_cards(None)
+
     def test_pomo_archive_signals_forward(self):
         received = {"pomo": None, "archive": None}
         self.view.signal_card_pomo.connect(
