@@ -375,6 +375,12 @@ class CardWidget(QFrame):
 
         # 底部信息行（截止日期 / 备注图标）
         meta_items: list[tuple[str, str, bool]] = []    # (文本, 主题色键, 是否备注徽章)
+        if card.priority:
+            mark = AppConfig.PRIORITY_MARKS.get(card.priority, "")
+            if mark:
+                meta_items.append(
+                    (mark, {1: "danger", 2: "warning",
+                            3: "accent"}.get(card.priority, "accent"), False))
         if card.due_date:
             text, overdue = _fmt_due(card.due_date)
             meta_items.append((text, "danger" if overdue else "accent", False))
@@ -572,6 +578,13 @@ class ListHeader(QWidget):
         """)
         layout.addWidget(self._count_label)
 
+        self._collapse_btn = QPushButton("▾")
+        self._collapse_btn.setFixedSize(20, 20)
+        self._collapse_btn.setCursor(Qt.PointingHandCursor)
+        self._collapse_btn.setToolTip("折叠 / 展开列表")
+        self._collapse_btn.clicked.connect(self._on_collapse_clicked)
+        layout.addWidget(self._collapse_btn)
+
         self._menu_btn = _HeaderMenuButton(self)
         self._menu_btn.setToolTip("列表操作")
         self._menu_btn.clicked.connect(self._show_menu)
@@ -590,6 +603,26 @@ class ListHeader(QWidget):
     def _show_menu(self) -> None:
         self._menu.exec(self._menu_btn.mapToGlobal(
             QPoint(0, self._menu_btn.height() + 2)))
+
+    def _on_collapse_clicked(self) -> None:
+        col = self.parent()
+        if isinstance(col, ListColumn):
+            col.toggle_collapsed()
+
+    def set_collapsed_mark(self, collapsed: bool) -> None:
+        """折叠态箭头：▸ 折叠 / ▾ 展开；折叠态加深颜色便于发现展开入口"""
+        c = AppTheme.colors()
+        self._collapse_btn.setText("▸" if collapsed else "▾")
+        self._collapse_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {c['text_primary'] if collapsed else c['text_secondary']};
+                border: none;
+                font-size: 9px;
+                padding: 0;
+            }}
+            QPushButton:hover {{ color: {c['text_primary']}; }}
+        """)
 
     def update_count(self, n: int) -> None:
         self._count_label.setText(str(n))
@@ -618,6 +651,16 @@ class ListHeader(QWidget):
                 border-radius: 8px;
                 padding: 1px 7px;
             }}
+        """)
+        self._collapse_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {c['text_secondary']};
+                border: none;
+                font-size: 9px;
+                padding: 0;
+            }}
+            QPushButton:hover {{ color: {c['text_primary']}; }}
         """)
         self._menu_btn.reapply()
 
@@ -841,12 +884,14 @@ class ListColumn(QFrame):
     signal_card_pomo = Signal(str)             # card_id
     signal_card_archive = Signal(str)          # card_id
     signal_list_move = Signal(str, str, bool)  # moved_list_id, target_list_id, insert_before
+    signal_collapsed_changed = Signal(str, bool)  # list_id, collapsed
 
     def __init__(self, board_list: BoardList, parent=None):
         super().__init__(parent)
         self._lst = board_list
         self._card_widgets: list[CardWidget] = []
         self._hint: QLabel | None = None
+        self._collapsed = False
         self._visible_cards: list[Card] | None = None   # None=显示全部（过滤态为子集）
         self.setAcceptDrops(True)
 
@@ -1005,10 +1050,36 @@ class ListColumn(QFrame):
                 " border-radius: 2px; }")
 
     def minimumSizeHint(self):
-        return QSize(AppConfig.LIST_WIDTH, 200)
+        return QSize(AppConfig.LIST_WIDTH, 52 if self._collapsed else 200)
 
     def sizeHint(self):
-        return QSize(AppConfig.LIST_WIDTH, 400)
+        return QSize(AppConfig.LIST_WIDTH, 52 if self._collapsed else 400)
+
+    # ── 列折叠（隐藏卡片区，仅剩标题栏） ────────────────────
+
+    def is_collapsed(self) -> bool:
+        return self._collapsed
+
+    def set_collapsed(self, collapsed: bool, save: bool = True) -> None:
+        """切换列折叠；save=True 时通知控制器持久化状态"""
+        if collapsed == self._collapsed:
+            return
+        self._collapsed = collapsed
+        self._scroll.setVisible(not collapsed)
+        self._add_btn.setVisible(not collapsed)
+        self.setAcceptDrops(not collapsed)
+        # 折叠列高度收窄为标题栏（固定策略），未折叠列拉伸填满
+        policy = QSizePolicy(QSizePolicy.Preferred,
+                             QSizePolicy.Fixed if collapsed
+                             else QSizePolicy.Expanding)
+        self.setSizePolicy(policy)
+        self._header.set_collapsed_mark(collapsed)
+        self.updateGeometry()
+        if save:
+            self.signal_collapsed_changed.emit(self._lst.id, collapsed)
+
+    def toggle_collapsed(self) -> None:
+        self.set_collapsed(not self._collapsed)
 
     # ── 拖放 ──────────────────────────────────────────────
 
@@ -1193,12 +1264,15 @@ class BoardView(QWidget):
     signal_list_add = Signal()
     signal_list_title_changed = Signal(str, str)
     signal_list_delete = Signal(str)
+    signal_list_collapsed = Signal(str, bool)   # list_id, collapsed
     signal_quit_requested = Signal()
     signal_zoom_requested = Signal()
     signal_card_pomo = Signal(str)              # card_id
     signal_card_archive = Signal(str)           # card_id
     signal_archive_open = Signal()
     signal_export = Signal(str)                 # "md" | "csv"
+    signal_export_backup = Signal()             # 导出完整备份 .json
+    signal_import_backup = Signal()             # 从备份导入
     signal_today_toggled = Signal(bool)         # 今日聚焦开关变化（菜单栏同步）
 
     def __init__(self, parent=None):
@@ -1515,6 +1589,10 @@ class BoardView(QWidget):
             if q:
                 cards = [c for c in cards
                          if q in c.title.lower() or q in c.notes.lower()]
+            # 今日聚焦内排序：高 > 中 > 低，无优先级垫底；同级按截止日升序
+            cards.sort(key=lambda c: (
+                c.priority == 0, c.priority,
+                c.due_delta(today) if c.due_delta(today) is not None else 999))
             return cards
         return self._filter_cards(lst, q)
 
@@ -1555,12 +1633,19 @@ class BoardView(QWidget):
         menu = QMenu(self)
         act_md = menu.addAction("Markdown（.md）")
         act_csv = menu.addAction("CSV（.csv）")
+        menu.addSeparator()
+        act_backup = menu.addAction("导出备份（.json）")
+        act_import = menu.addAction("从备份导入…")
         chosen = menu.exec(self.mapToGlobal(
             QPoint(self._export_btn.x(), self._export_btn.height())))
         if chosen is act_md:
             self.signal_export.emit("md")
         elif chosen is act_csv:
             self.signal_export.emit("csv")
+        elif chosen is act_backup:
+            self.signal_export_backup.emit()
+        elif chosen is act_import:
+            self.signal_import_backup.emit()
 
     def clear_search_if_active(self) -> bool:
         """清空搜索框（有内容时）；返回是否清空了搜索"""
@@ -1591,7 +1676,11 @@ class BoardView(QWidget):
         col.signal_delete_list.connect(self.signal_list_delete)
         col.signal_card_pomo.connect(self.signal_card_pomo)
         col.signal_card_archive.connect(self.signal_card_archive)
+        col.signal_collapsed_changed.connect(self.signal_list_collapsed)
         self._columns.append(col)
+        # 恢复上次折叠状态（save=False 不触发持久化回调）
+        if board_list.id in AppConfig.get_collapsed_lists():
+            col.set_collapsed(True, save=False)
         return col
 
     def update_stats(self, lists: list[BoardList]) -> None:

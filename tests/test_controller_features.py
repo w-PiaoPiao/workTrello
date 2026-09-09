@@ -324,6 +324,77 @@ class ControllerFeatureTest(unittest.TestCase):
             self.c._on_pet_skin_selected("snow")
         save.assert_called_once_with("snow")
 
+    # ── 备份导入导出 ──────────────────────────────────────
+
+    def test_backup_export_import_roundtrip(self):
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+        self._reset()
+        self.c._on_card_add(self._list().id, "备份卡")
+        card_id = self._list().cards[0].id
+        tmp = Path(tempfile.mkdtemp()) / "backup.json"
+        with patch.object(QFileDialog, "getSaveFileName",
+                          return_value=(str(tmp), "JSON (*.json)")):
+            self.c._on_export_backup()
+        self.assertTrue(tmp.exists())
+
+        # 改掉内容后再导入：应恢复备份里的标题
+        for lst in self.c._store.load().lists:
+            for x in lst.cards:
+                x.title = "被改"
+        self.c._after_data_change(None)
+        with patch.object(QFileDialog, "getOpenFileName",
+                          return_value=(str(tmp), "JSON (*.json)")), \
+                patch.object(QMessageBox, "question",
+                             return_value=QMessageBox.Yes):
+            self.c._on_import_backup()
+        titles = [c.title for lst in self.c._store.load().lists
+                  for c in lst.cards if c.id == card_id]
+        self.assertEqual(titles, ["备份卡"])
+        self.assertEqual(self.c._undo_stack, [])   # 导入清空撤销栈
+
+    def test_backup_import_bad_file_shows_error(self):
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+        bad = Path(tempfile.mkdtemp()) / "bad.json"
+        bad.write_text("not-json{{{", encoding="utf-8")
+        with patch.object(QFileDialog, "getOpenFileName",
+                          return_value=(str(bad), "JSON (*.json)")), \
+                patch.object(self.c, "_show_error") as err:
+            self.c._on_import_backup()
+        err.assert_called_once()
+
+    # ── 列表折叠持久化 ────────────────────────────────────
+
+    def test_list_collapsed_persists(self):
+        self._reset()
+        lst_id = self._list().id
+        with patch.object(AppConfig, "save_collapsed_lists") as save:
+            self.c._on_list_collapsed(lst_id, True)
+            saved = save.call_args.args[0]
+            self.assertIn(lst_id, saved)
+            self.c._on_list_collapsed(lst_id, False)
+            saved2 = save.call_args.args[0]
+            self.assertNotIn(lst_id, saved2)
+
+    # ── 今日清单浮窗 ──────────────────────────────────────
+
+    def test_today_list_open_and_row_removed_on_done(self):
+        self._reset()
+        self.c._on_card_add(self._list().id, "今日任务")
+        self._list().cards[0].due_date = date.today().isoformat()
+        self.c._on_card_add(self._list().id, "未来的任务")
+        self._list().cards[0].due_date = (
+            date.today() + timedelta(days=2)).isoformat()
+        self.c._after_data_change(None)
+
+        self.c._on_today_list_open()
+        pop = self.c._today_popover
+        self.assertIsNotNone(pop)
+        self.assertEqual(len(pop._rows), 1)     # 只含今日聚焦卡
+        card_id = pop._rows[0][1]
+        self.c._on_card_done(self._list().id, card_id, True)
+        self.assertEqual(len(pop._rows), 0)     # 完成后行移除
+        pop.close()
+
     # ── 归档 ──────────────────────────────────────────────
 
     def test_archive_and_restore_with_undo(self):

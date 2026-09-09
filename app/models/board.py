@@ -43,6 +43,7 @@ class Card:
     done_at: str | None = None          # 勾选完成的时刻（周统计用）
     archived: bool = False              # 归档（不出现在看板）
     repeat: str = "never"               # never | daily | weekly（完成时自动滚到下一周期）
+    priority: int = 0                   # 0=无 1=高 2=中 3=低（今日聚焦内排序用）
 
     def to_dict(self) -> dict:
         return {
@@ -58,6 +59,7 @@ class Card:
             "done_at": self.done_at,
             "archived": self.archived,
             "repeat": self.repeat,
+            "priority": self.priority,
         }
 
     @classmethod
@@ -79,6 +81,10 @@ class Card:
         repeat = data.get("repeat", "never")
         if repeat not in ("never", "daily", "weekly"):
             repeat = "never"
+        try:
+            priority = int(data.get("priority", 0) or 0)
+        except (TypeError, ValueError):
+            priority = 0
         return cls(
             title=title,
             id=str(data.get("id") or _new_id()),
@@ -92,6 +98,7 @@ class Card:
             done_at=str(done_at) if done_at else None,
             archived=bool(data.get("archived", False)),
             repeat=repeat,
+            priority=max(0, min(3, priority)),
         )
 
     def apply(self, data: dict) -> None:
@@ -105,6 +112,11 @@ class Card:
         repeat = data.get("repeat", self.repeat)
         self.repeat = repeat if repeat in ("never", "daily", "weekly") \
             else "never"
+        try:
+            priority = int(data.get("priority", self.priority) or 0)
+        except (TypeError, ValueError):
+            priority = self.priority
+        self.priority = max(0, min(3, priority))
         # 完成时刻自动维护（周统计用）
         if self.done and not self.done_at:
             self.done_at = _now_iso()
@@ -268,6 +280,21 @@ class Board:
                 elif delta == 0:
                     due_today += 1
         return overdue, due_today
+
+    def today_done_count(self, today: date | None = None) -> int:
+        """当日勾选完成的卡片数（done_at 落在 today，含归档；彩蛋统计用）"""
+        today = today or date.today()
+        n = 0
+        for lst in self.lists:
+            for c in lst.cards:
+                if not c.done or not c.done_at:
+                    continue
+                try:
+                    if datetime.fromisoformat(c.done_at).date() == today:
+                        n += 1
+                except ValueError:
+                    continue
+        return n
 
     def today_focus_cards(self, today: date) -> list[Card]:
         """今日聚焦集合：未归档、未完成，且（星标 或 截止日<=today）"""

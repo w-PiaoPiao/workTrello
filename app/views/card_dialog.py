@@ -26,6 +26,28 @@ from app.models.board import Card
 from app.views.theme import AppTheme
 
 
+def _selector_button_style(c: dict) -> str:
+    """单选小按钮（重复 / 优先级共用的样式）"""
+    return f"""
+        QPushButton {{
+            background: {c['bg_card']};
+            color: {c['text_secondary']};
+            border: 1px solid {c['border']};
+            border-radius: 6px;
+            padding: 4px 10px;
+            font-size: 12px;
+        }}
+        QPushButton:checked {{
+            background: {c['accent_soft']};
+            color: {c['accent']};
+            border: 1.5px solid {c['accent']};
+        }}
+        QPushButton:hover {{
+            border: 1.5px solid {c['accent']};
+        }}
+    """
+
+
 class LabelChip(QPushButton):
     """可勾选的标签色块"""
 
@@ -205,24 +227,7 @@ class CardDialog(QDialog):
             btn = QPushButton(name)
             btn.setCheckable(True)
             btn.setCursor(Qt.PointingHandCursor)
-            btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: {c['bg_card']};
-                    color: {c['text_secondary']};
-                    border: 1px solid {c['border']};
-                    border-radius: 6px;
-                    padding: 4px 10px;
-                    font-size: 12px;
-                }}
-                QPushButton:checked {{
-                    background: {c['accent_soft']};
-                    color: {c['accent']};
-                    border: 1.5px solid {c['accent']};
-                }}
-                QPushButton:hover {{
-                    border: 1.5px solid {c['accent']};
-                }}
-            """)
+            btn.setStyleSheet(_selector_button_style(c))
             btn.clicked.connect(self._on_repeat_clicked)
             self._repeat_choices[key] = btn
             repeat_row.addWidget(btn)
@@ -231,6 +236,27 @@ class CardDialog(QDialog):
         self._repeat_choices[selected].setChecked(True)
         repeat_row.addStretch(1)
         root.addLayout(repeat_row)
+
+        # 优先级：今日聚焦内按 高 > 中 > 低 排序展示
+        cap6 = QLabel("优先级")
+        cap6.setProperty("cap", True)
+        root.addWidget(cap6)
+        priority_row = QHBoxLayout()
+        priority_row.setSpacing(6)
+        self._priority_choices: dict[int, QPushButton] = {}
+        for key, name in ((0, "无"), (1, "高"), (2, "中"), (3, "低")):
+            btn = QPushButton(name)
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setStyleSheet(_selector_button_style(c))
+            btn.clicked.connect(self._on_priority_clicked)
+            self._priority_choices[key] = btn
+            priority_row.addWidget(btn)
+        selected_p = (card.priority if card is not None
+                      and card.priority in self._priority_choices else 0)
+        self._priority_choices[selected_p].setChecked(True)
+        priority_row.addStretch(1)
+        root.addLayout(priority_row)
 
         # 按钮
         btns = QHBoxLayout()
@@ -279,6 +305,11 @@ class CardDialog(QDialog):
         for key, btn in self._repeat_choices.items():
             btn.setChecked(btn is self.sender())
 
+    def _on_priority_clicked(self) -> None:
+        """优先级单选：被点击的成为唯一选中项"""
+        for key, btn in self._priority_choices.items():
+            btn.setChecked(btn is self.sender())
+
     def _apply_due_state(self) -> None:
         """按当前 _due_cleared 切换：未设置=灰字标签，已设置=日期选择框"""
         self._due_edit.setVisible(not self._due_cleared)
@@ -323,4 +354,6 @@ class CardDialog(QDialog):
             "starred": self._star_check.isChecked(),
             "repeat": next((k for k, b in self._repeat_choices.items()
                             if b.isChecked()), "never"),
+            "priority": next((k for k, b in self._priority_choices.items()
+                              if b.isChecked()), 0),
         }

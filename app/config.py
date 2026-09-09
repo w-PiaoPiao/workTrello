@@ -38,6 +38,7 @@ class AppConfig:
     KEY_EMPTY_BOARD_ACK = "board/empty_board_ack"
     KEY_PET_SKIN = "pet/skin"
     KEY_REMIND_LOG = "remind/log"
+    KEY_COLLAPSED_LISTS = "board/collapsed_lists"
 
     @classmethod
     def get_expanded_size(cls):
@@ -129,6 +130,24 @@ class AppConfig:
     def save_remind_log(cls, log: dict[str, list[str]]) -> None:
         _settings().setValue(cls.KEY_REMIND_LOG,
                              json.dumps(log, ensure_ascii=False))
+
+    # ── 折叠列表（会话之间保持列折叠状态） ──────────────────
+
+    @classmethod
+    def get_collapsed_lists(cls) -> set[str]:
+        raw = _settings().value(cls.KEY_COLLAPSED_LISTS, "")
+        try:
+            val = json.loads(raw) if isinstance(raw, str) else []
+        except (TypeError, ValueError):
+            return set()
+        if not isinstance(val, list):
+            return set()
+        return {str(x) for x in val if isinstance(x, str)}
+
+    @classmethod
+    def save_collapsed_lists(cls, ids: set[str]) -> None:
+        _settings().setValue(cls.KEY_COLLAPSED_LISTS,
+                             json.dumps(sorted(ids), ensure_ascii=False))
 
     # ── 数据路径 ──────────────────────────────────────────────
     _env_override = os.environ.get("PET_BOARD_DATA_DIR")
@@ -279,6 +298,10 @@ class AppConfig:
 
     # ── 重复周期（卡片完成时自动滚动截止日期）─────────────────
     REPEAT_NAMES = {"never": "", "daily": "每日", "weekly": "每周"}
+
+    # ── 优先级（0=无 1=高 2=中 3=低）──────────────────────
+    PRIORITY_NAMES = {0: "", 1: "高", 2: "中", 3: "低"}
+    PRIORITY_MARKS = {0: "", 1: "P1", 2: "P2", 3: "P3"}
 
     # ── 皮肤中文名（桌宠右键"换皮肤"）───────────────────────
     SKIN_NAMES = {

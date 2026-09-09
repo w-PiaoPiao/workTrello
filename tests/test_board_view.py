@@ -261,10 +261,17 @@ class BoardViewRefreshTest(unittest.TestCase):
         self.view.refresh(self.lists)
         self.view._today_btn.setChecked(True)
         col0, col1 = self.view._columns
+        # 今日聚焦内排序：今天截止（同为无优先级）排在无限期星标卡之前
         self.assertEqual([cw.card().title for cw in col0._card_widgets],
-                         ["星标卡", "今天到期"])
+                         ["今天到期", "星标卡"])
         self.assertFalse(col0.acceptDrops())          # 过滤态禁用拖放
         self.assertIn("⭐ 今日 2", self.view._today_btn.text())
+        # 优先级：高优先级置顶，其余两卡仍按截止日在前
+        self.lists[0].cards.insert(0, Card(title="高优先卡", starred=True,
+                                           priority=1))
+        self.view.refresh(self.lists)
+        self.assertEqual([cw.card().title for cw in col0._card_widgets],
+                         ["高优先卡", "今天到期", "星标卡"])
 
     def test_today_composes_with_search(self):
         today = __import__("datetime").date.today()

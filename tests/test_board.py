@@ -130,6 +130,43 @@ class CardTest(unittest.TestCase):
             {"title": "x", "repeat": "monthly"}).repeat, "never")
         self.assertEqual(Card.from_dict({"title": "y"}).repeat, "never")
 
+    # ── 优先级 ────────────────────────────────────────────
+
+    def test_priority_roundtrip_and_clamp(self):
+        card = Card(title="重要任务", priority=1)
+        card2 = Card.from_dict(card.to_dict())
+        self.assertEqual(card2.priority, 1)
+        # 非法值回退 0 并夹到 0..3
+        self.assertEqual(Card.from_dict({"title": "x",
+                                         "priority": "abc"}).priority, 0)
+        self.assertEqual(Card.from_dict(
+            {"title": "x", "priority": 99}).priority, 3)
+        self.assertEqual(Card.from_dict(
+            {"title": "x", "priority": -2}).priority, 0)
+
+    def test_apply_updates_priority(self):
+        card = Card(title="任务")
+        card.apply({"priority": 2})
+        self.assertEqual(card.priority, 2)
+        card.apply({"priority": 99})
+        self.assertEqual(card.priority, 3)
+        card.apply({})
+        self.assertEqual(card.priority, 3)          # 未涉及：保持原状
+
+    # ── 当日完成统计（彩蛋用） ─────────────────────────────
+
+    def test_today_done_count(self):
+        board = Board()
+        lst = BoardList("待办")
+        board.lists = [lst]
+        now = datetime.now().astimezone()
+        c1 = Card(title="今天完成", done=True, done_at=now.isoformat())
+        c2 = Card(title="昨天完成", done=True,
+                  done_at=(now - timedelta(days=1)).isoformat())
+        c3 = Card(title="今天但取消", done=False, done_at=now.isoformat())
+        lst.cards = [c1, c2, c3]
+        self.assertEqual(board.today_done_count(now.date()), 1)
+
     # ── 统一谓词：due_delta / in_today_focus（今日聚焦与统计共用） ──
 
     def test_due_delta(self):

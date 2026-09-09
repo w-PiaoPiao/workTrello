@@ -278,7 +278,7 @@ class PetCanvas(QWidget):
                     int(side * eye_dx - eye_r * 0.15), int(eye_y - eye_r * 0.55),
                     int(eye_r * 0.55), int(eye_r * 0.55))
 
-        # ── 嘴巴（小 w 形；难过时下弯） ──
+        # ── 嘴巴（小 w 形；难过时下弯；今天有截止时小圆嘴+汗珠） ──
         pen = QPen(eye_color, max(1.8, s * 0.022))
         pen.setCapStyle(Qt.RoundCap)
         painter.setPen(pen)
@@ -288,6 +288,18 @@ class PetCanvas(QWidget):
         if self._mood == "sad":
             painter.drawArc(int(-w * 1.4), int(mouth_y), int(w * 2.8),
                             int(w * 1.6), 0, 180 * 16)
+        elif self._mood == "worried":
+            painter.drawEllipse(
+                int(-w * 0.4), int(mouth_y - w * 0.3),
+                int(w * 0.9), int(w * 0.9))
+            # 额头汗珠（浅蓝水滴）
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(150, 205, 255, 210))
+            hx = int(-half * 0.42)
+            hy = int(-half * 0.54)
+            painter.drawEllipse(
+                hx - int(half * 0.05), hy - int(half * 0.14),
+                int(half * 0.12), int(half * 0.22))
         else:
             painter.drawArc(
                 int(-w), int(mouth_y - w * 0.5), int(w), int(w), 180 * 16, 180 * 16)
@@ -308,6 +320,7 @@ class PetView(QWidget):
 
     signal_expand_clicked = Signal()
     signal_quick_add_clicked = Signal()
+    signal_today_list_clicked = Signal()   # 打开今日清单浮窗
     signal_quit_requested = Signal()
     signal_animation_toggled = Signal(bool)  # 空闲动画启用状态
     signal_always_top_toggled = Signal(bool)  # 窗口置顶开关
@@ -354,6 +367,7 @@ class PetView(QWidget):
         self._context_menu = QMenu(self)
         self._act_expand = QAction("展开看板", self._context_menu)
         self._act_quick_add = QAction("快速添加卡片", self._context_menu)
+        self._act_today_list = QAction("今日清单", self._context_menu)
         self._act_quit = QAction("退出", self._context_menu)
         self._act_animation = QAction("暂停动画", self._context_menu)
         self._act_animation.setCheckable(True)
@@ -361,6 +375,7 @@ class PetView(QWidget):
         self._act_always_top.setCheckable(True)
         self._act_always_top.setChecked(True)
         self._context_menu.addAction(self._act_expand)
+        self._context_menu.addAction(self._act_today_list)
         self._context_menu.addAction(self._act_quick_add)
         self._context_menu.addSeparator()
         self._context_menu.addAction(self._act_animation)
@@ -383,6 +398,8 @@ class PetView(QWidget):
         self._context_menu.addAction(self._act_quit)
         self._act_expand.triggered.connect(self.signal_expand_clicked.emit)
         self._act_quick_add.triggered.connect(self.signal_quick_add_clicked.emit)
+        self._act_today_list.triggered.connect(
+            self.signal_today_list_clicked.emit)
         self._act_quit.triggered.connect(self.signal_quit_requested.emit)
         # checkable 动作：点击后 checked 翻转 → toggled → 切换动画
         self._act_animation.toggled.connect(self._on_animation_toggled)

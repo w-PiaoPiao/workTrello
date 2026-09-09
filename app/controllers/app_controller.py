@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import logging
 from datetime import date, timedelta
 from pathlib import Path
@@ -31,6 +32,7 @@ from app.views.card_dialog import CardDialog
 from app.views.main_window import MainWindow
 from app.views.pet_view import PetView
 from app.views.theme import AppTheme
+from app.views.today_popover import TodayPopover
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +72,7 @@ class AppController(QObject):
 
         # ── 撤销 / 截止提醒 / 系统主题跟随 / 番茄钟 ────────
         self._undo_stack: list[dict] = []
+        self._today_popover: TodayPopover | None = None   # 今日清单浮窗（惰性创建）
         self._due_timer = QTimer(self)
         self._due_timer.setInterval(AppConfig.DUE_CHECK_INTERVAL_MS)
         self._due_timer.timeout.connect(self._check_due_dates)
@@ -285,8 +288,13 @@ class AppController(QObject):
         self._board_view.signal_card_archive.connect(self._on_card_archive)
         self._board_view.signal_archive_open.connect(self._on_archive_open)
         self._board_view.signal_export.connect(self._on_export)
+        self._board_view.signal_export_backup.connect(self._on_export_backup)
+        self._board_view.signal_import_backup.connect(self._on_import_backup)
+        self._board_view.signal_list_collapsed.connect(self._on_list_collapsed)
         self._board_view.signal_today_toggled.connect(
             self._on_today_mode_changed)
+        self._pet_view.signal_today_list_clicked.connect(
+            self._on_today_list_open)
 
         # 看板 → 折叠 / 主题
         self._board_view.signal_collapse_clicked.connect(self._window.collapse)
@@ -330,6 +338,19 @@ class AppController(QObject):
             if board.lists:
                 self._on_card_add(board.lists[0].id, title.strip())
 
+    def _on_today_list_open(self) -> None:
+        """桌宠右键"今日清单"：浮窗概览今日待办（勾选/打开编辑直通控制器）"""
+        if self._today_popover is None:
+            self._today_popover = TodayPopover()
+            self._today_popover.signal_card_done.connect(self._on_card_done)
+            self._today_popover.signal_card_edit.connect(self._on_card_edit)
+        board = self._store.load()
+        today = date.today()
+        items = [(lst, c) for lst in board.lists for c in lst.cards
+                 if c.in_today_focus(today)]
+        self._today_popover.set_items(items)
+        self._today_popover.show_below(self._window.frameGeometry())
+
     def _on_card_add(self, list_id: str, title: str = "") -> None:
         lst = self._store.load().find_list(list_id)
         if lst is None:
@@ -368,17 +389,25 @@ class AppController(QObject):
             self._after_data_change(
                 f"已完成 · 下次 {card.due_date[5:].replace('-', '/')}")
             return
+        if (done and self._today_popover is not None
+                and self._today_popover.isVisible()):
+            self._today_popover.remove_row_for(card_id)
         self._after_data_change(None)
         self._notify_done(card)
 
     def _notify_done(self, card: Card) -> None:
         board = self._store.load()
+        today_n = board.today_done_count()
         total = board.total_cards()
         done = board.done_cards()
         if total > 0 and done == total:
             self._tray.show_notification("全部完成！桌宠为你鼓掌 🎉")
             if self._window.mode == "collapsed":
                 self._pet_view.celebrate()
+        elif today_n == 3:
+            self._tray.show_notification("今日已完成 3 张，节奏不错！🌱")
+        elif today_n == 5:
+            self._tray.show_notification("今日已完成 5 张，收工级表现！🏆")
         elif done > 0 and done % 5 == 0:
             self._tray.show_notification(f"已完成 {done} 张卡片，继续加油！")
 
@@ -487,6 +516,15 @@ class AppController(QObject):
         board.lists[:] = [by_id[lid] for lid in new_order]
         self._after_data_change(None)
 
+    def _on_list_collapsed(self, list_id: str, collapsed: bool) -> None:
+        """列折叠状态持久化（会话之间保留）"""
+        ids = AppConfig.get_collapsed_lists()
+        if collapsed:
+            ids.add(list_id)
+        else:
+            ids.discard(list_id)
+        AppConfig.save_collapsed_lists(ids)
+
     # ── 数据变更后的统一刷新 ──────────────────────────────
 
     def _after_data_change(self, notify: str | None) -> None:
@@ -511,13 +549,19 @@ class AppController(QObject):
     # ── 桌宠状态联动 ──────────────────────────────────────
 
     def _refresh_pet_state(self) -> None:
-        """角标=今日聚焦量（专注时显示倒计时）；有逾期则桌宠难过"""
+        """角标=今日聚焦量（专注时显示倒计时）；表情：逾期难过 / 今日截止紧张 / 其余开心"""
         board = self._store.load()
         if self._pomo_card_id is None:
             n = len(board.today_focus_cards(date.today()))
             self._pet_view.update_count(n)
-        self._pet_view.set_mood(
-            "sad" if board.due_counts(date.today())[0] else "happy")
+        overdue, due_today = board.due_counts(date.today())
+        if overdue:
+            mood = "sad"
+        elif due_today:
+            mood = "worried"
+        else:
+            mood = "happy"
+        self._pet_view.set_mood(mood)
 
     # ── 主题 / 动画 ───────────────────────────────────────
 
@@ -758,7 +802,11 @@ class AppController(QObject):
             _lst, card = board.find_card(card_id)
             if card is not None:
                 card.pomodoros += 1
-                self._after_data_change("专注完成！休息一下 🎉")
+                if card.pomodoros % 5 == 0:
+                    self._after_data_change(
+                        f"专注完成！累计 {card.pomodoros} 个番茄 🍅")
+                else:
+                    self._after_data_change("专注完成！休息一下 🎉")
             else:
                 self._tray.show_notification("专注完成！休息一下 🎉")
         else:
@@ -853,6 +901,49 @@ class AppController(QObject):
             return
         self._tray.show_notification(f"已导出到 {path}")
 
+    def _on_export_backup(self) -> None:
+        """导出完整看板备份（含归档，可用于日后导入恢复）"""
+        board = self._store.load()
+        default = Path(str(AppConfig.DATA_DIR)) / \
+            f"桌宠看板备份_{date.today():%Y%m%d}.json"
+        path, _ = QFileDialog.getSaveFileName(
+            self._window, "导出备份", str(default), "JSON (*.json)")
+        if not path:
+            return
+        try:
+            Path(path).write_text(
+                json.dumps(board.to_dict(), ensure_ascii=False, indent=2),
+                encoding="utf-8")
+        except OSError as e:
+            self._show_error(f"导出失败：{e}")
+            return
+        self._tray.show_notification(f"备份已导出到 {path}")
+
+    def _on_import_backup(self) -> None:
+        """从备份导入：确认后整体替换当前看板（撤销栈清空）"""
+        path, _ = QFileDialog.getOpenFileName(
+            self._window, "从备份导入", str(AppConfig.DATA_DIR),
+            "JSON (*.json)")
+        if not path:
+            return
+        try:
+            doc = json.loads(Path(path).read_text(encoding="utf-8"))
+            if not isinstance(doc, dict):
+                raise ValueError("备份文件不是有效的数据结构")
+            new_board = Board.from_dict(doc)
+        except (OSError, ValueError, AttributeError, TypeError) as e:
+            self._show_error(f"备份文件无法读取：{e}")
+            return
+        reply = QMessageBox.question(
+            self._window, "从备份导入",
+            "导入将替换当前看板（建议先导出备份）。\n继续？",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+        self._store.replace_board(new_board)
+        self._undo_stack.clear()
+        self._after_data_change("已导入备份")
+
     @staticmethod
     def _write_export_md(path: Path, board) -> None:
         lines = [f"# 看板导出（{date.today():%Y-%m-%d}）", ""]
@@ -866,7 +957,11 @@ class AppController(QObject):
                 continue
             for c in cards:
                 mark = "x" if c.done else " "
-                extra = f" 📅 {c.due_date}" if c.due_date else ""
+                extra = ""
+                if c.priority:
+                    extra += f" {AppConfig.PRIORITY_MARKS.get(c.priority, '')}"
+                if c.due_date:
+                    extra += f" 📅 {c.due_date}"
                 if c.repeat != "never":
                     extra += f" 🔁{AppConfig.REPEAT_NAMES.get(c.repeat, '')}"
                 if c.pomodoros:
@@ -882,7 +977,7 @@ class AppController(QObject):
         with path.open("w", encoding="utf-8-sig", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["列表", "标题", "备注", "标签", "截止日期",
-                             "完成", "番茄数", "重复", "创建时间"])
+                             "完成", "优先级", "番茄数", "重复", "创建时间"])
             for lst in board.lists:
                 for c in lst.cards:
                     if c.archived:
@@ -890,7 +985,9 @@ class AppController(QObject):
                     writer.writerow([
                         lst.title, c.title, c.notes,
                         ";".join(c.labels), c.due_date or "",
-                        "是" if c.done else "否", c.pomodoros,
+                        "是" if c.done else "否",
+                        AppConfig.PRIORITY_NAMES.get(c.priority, ""),
+                        c.pomodoros,
                         AppConfig.REPEAT_NAMES.get(c.repeat, ""), c.created_at,
                     ])
 
