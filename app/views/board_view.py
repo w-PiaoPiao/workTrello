@@ -27,6 +27,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QAction,
+    QCursor,
     QDrag,
     QLinearGradient,
     QMouseEvent,
@@ -44,6 +45,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QScrollArea,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -57,6 +59,7 @@ from app.views.notes_popover import (
     notes_popover_hovering,
 )
 from app.views.theme import AppTheme
+from app.views.toast import Toast
 
 MIME_LIST = "application/x-petboard-list"
 MIME_CARD = "application/x-petboard-card"
@@ -95,6 +98,52 @@ def _fmt_due(due: str) -> tuple[str, bool]:
     if diff == 1:
         return "明天截止", False
     return f"{d.month}月{d.day}日", False
+
+
+class _CardCheckButton(QPushButton):
+    """自绘勾选框（替代 ☐/☑ 字形，跨平台渲染一致）"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFlat(True)
+        self.setFixedSize(20, 20)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip("点击切换完成状态")
+        self._done = False
+
+    def set_done(self, done: bool) -> None:
+        if self._done != done:
+            self._done = done
+            self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        c = AppTheme.colors()
+        box = QRect((self.width() - 16) // 2, (self.height() - 16) // 2, 16, 16)
+        radius = 4.5
+        if self._done:
+            # 完成：主题色填充 + 白色对勾
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(c["success"]))
+            painter.drawRoundedRect(box, radius, radius)
+            pen = QPen(QColor("#FFFFFF"), 1.8)
+            pen.setCapStyle(Qt.RoundCap)
+            pen.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(pen)
+            path = QPainterPath()
+            path.moveTo(box.left() + 3.6, box.top() + 8.2)
+            path.lineTo(box.left() + 7.0, box.top() + 11.4)
+            path.lineTo(box.left() + 12.6, box.top() + 4.6)
+            painter.drawPath(path)
+        else:
+            # 未完成：圆角方框，悬停变主题色
+            color = QColor(c["accent"] if self.underMouse()
+                           else c["text_disabled"])
+            painter.setPen(QPen(color, 1.5))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(box, radius, radius)
+        painter.end()
 
 
 class CardWidget(QFrame):
@@ -180,7 +229,7 @@ class CardWidget(QFrame):
                     color: {c['text_primary']};
                     border: none;
                     border-radius: {AppConfig.CARD_DELETE_BTN_H // 2}px;
-                    font-size: 9px;
+                    font-size: 10px;
                     font-weight: bold;
                     padding: 0;
                 }}
@@ -193,31 +242,23 @@ class CardWidget(QFrame):
         self._style_meta_badges()
 
     def _style_check(self) -> None:
-        """勾选框样式（颜色随主题切换）"""
+        """勾选框状态同步（自绘控件，done 变化时重绘）"""
         if self._check_btn is None:
             return
-        c = AppTheme.colors()
-        self._check_btn.setStyleSheet(f"""
-            QPushButton {{
-                color: {c['success'] if self._card.done else c['text_disabled']};
-                font-size: 15px;
-                background: transparent;
-                border: none;
-                padding: 0;
-            }}
-            QPushButton:hover {{ color: {c['accent']}; }}
-        """)
+        self._check_btn.set_done(self._card.done)
 
     def _style_title(self) -> None:
         """标题样式（颜色随主题切换）"""
         if self._title_label is None:
             return
         c = AppTheme.colors()
+        # 完成态用 text_secondary（而非更浅的 disabled），保证白卡上
+        # 删除线文字仍可读（对比度 ≥ 4.5:1）
         self._title_label.setStyleSheet(f"""
             QLabel {{
                 font-size: 13px;
                 font-weight: 500;
-                color: {c['text_disabled'] if self._card.done else c['text_primary']};
+                color: {c['text_secondary'] if self._card.done else c['text_primary']};
                 text-decoration: {'line-through;' if self._card.done else 'none;'}
                 background: transparent;
                 border: none;
@@ -284,6 +325,7 @@ class CardWidget(QFrame):
                 bg, fg = AppTheme.label_style(key)
                 chip = QLabel()
                 chip.setFixedSize(30, 8)
+                chip.setToolTip(AppConfig.LABEL_NAMES.get(key, key))
                 chip.setStyleSheet(
                     f"background: {bg}; border-radius: 3px;")
                 labels_row.addWidget(chip)
@@ -293,11 +335,8 @@ class CardWidget(QFrame):
         # 标题行（勾选 + 文本）
         title_row = QHBoxLayout()
         title_row.setSpacing(8)
-        check = QPushButton("☑" if card.done else "☐")
-        check.setFlat(True)
-        check.setFixedWidth(20)
-        check.setCursor(Qt.PointingHandCursor)
-        check.setToolTip("点击切换完成状态")
+        check = _CardCheckButton()
+        check.set_done(card.done)
         self._check_btn = check
         self._style_check()
         check.clicked.connect(
@@ -840,6 +879,19 @@ class ListColumn(QFrame):
         self._scroll.setWidget(self._cards_host)
         root.addWidget(self._scroll, 1)
 
+        # 卡片拖拽插入指示线（拖拽期间临时插入布局对应间隙显示）
+        self._drop_indicator = QFrame()
+        self._drop_indicator.setObjectName("dropIndicator")
+        self._drop_indicator.setFixedHeight(3)
+        self._drop_indicator.hide()
+        self.reapply_frame_style()
+
+        # 拖拽到视口边缘的自动滚动（横向看板区 + 本列纵向）
+        self._drag_hovering = False
+        self._auto_scroll_timer = QTimer(self)
+        self._auto_scroll_timer.setInterval(AppConfig.DRAG_AUTO_SCROLL_MS)
+        self._auto_scroll_timer.timeout.connect(self._auto_scroll_tick)
+
         # 添加按钮
         self._add_btn = AddCardButton("+ 添加卡片")
         self._add_btn.clicked.connect(
@@ -943,6 +995,11 @@ class ListColumn(QFrame):
         self._add_btn = getattr(self, "_add_btn", None)
         if self._add_btn is not None:
             self._add_btn.reapply()
+        indicator = getattr(self, "_drop_indicator", None)
+        if indicator is not None:
+            indicator.setStyleSheet(
+                f"QFrame#dropIndicator {{ background: {c['accent']};"
+                " border-radius: 2px; }")
 
     def minimumSizeHint(self):
         return QSize(AppConfig.LIST_WIDTH, 200)
@@ -978,25 +1035,104 @@ class ListColumn(QFrame):
                 return i
         return len(self._card_widgets)
 
+    # ── 拖拽落点指示线 + 视口边缘自动滚动 ───────────────────
+
+    def _column_y_from_event(self, event) -> int:
+        """把 dragEvent 的列内坐标换算为全局 y（落点判定用）"""
+        return (event.position().toPoint().y()
+                + self.mapToGlobal(QPoint(0, 0)).y())
+
+    def _update_drop_indicator_at(self, global_y: int) -> None:
+        """把插入指示线移到 global_y 对应的卡片间隙（位置不变则跳过）"""
+        index = self._drop_index_from_y(global_y)
+        current = self._cards_layout.indexOf(self._drop_indicator)
+        if current == index:
+            return
+        if current >= 0:
+            self._cards_layout.removeWidget(self._drop_indicator)
+        self._cards_layout.insertWidget(index, self._drop_indicator)
+        self._drop_indicator.show()
+
+    def _hide_drop_indicator(self) -> None:
+        current = self._cards_layout.indexOf(self._drop_indicator)
+        if current >= 0:
+            self._cards_layout.removeWidget(self._drop_indicator)
+        self._drop_indicator.hide()
+
+    def _board_scroll_area(self) -> QScrollArea | None:
+        """父链上的看板横向滚动区（列自身的纵向滚动区不在父链上）"""
+        p = self.parent()
+        while p is not None:
+            if isinstance(p, QScrollArea):
+                return p
+            p = p.parent()
+        return None
+
+    def _auto_scroll_tick(self) -> None:
+        """按鼠标全局位置滚动：看板横向 + 本列纵向（贴视口边缘时）
+
+        纵向滚动会改变卡片的全局 y，滚动后需同步刷新插入线位置。
+        """
+        if not self._drag_hovering:
+            return
+        gp = QCursor.pos()
+        edge = AppConfig.DRAG_AUTO_SCROLL_EDGE_PX
+        step = AppConfig.DRAG_AUTO_SCROLL_STEP
+
+        board_scroll = self._board_scroll_area()
+        if board_scroll is not None:
+            vp = board_scroll.viewport()
+            if vp.rect().contains(vp.mapFromGlobal(gp)):
+                local = vp.mapFromGlobal(gp)
+                sb = board_scroll.horizontalScrollBar()
+                if local.x() < edge:
+                    sb.setValue(sb.value() - step)
+                elif local.x() > vp.width() - edge:
+                    sb.setValue(sb.value() + step)
+
+        vp2 = self._scroll.viewport()
+        if vp2.rect().contains(vp2.mapFromGlobal(gp)):
+            local2 = vp2.mapFromGlobal(gp)
+            vb = self._scroll.verticalScrollBar()
+            if local2.y() < edge:
+                vb.setValue(vb.value() - step)
+            elif local2.y() > vp2.height() - edge:
+                vb.setValue(vb.value() + step)
+        self._update_drop_indicator_at(gp.y())
+
     def dragEnterEvent(self, event) -> None:
         if event.mimeData().hasFormat(MIME_CARD):
+            self._drag_hovering = True
+            self._update_drop_indicator_at(self._column_y_from_event(event))
+            self._auto_scroll_timer.start()
             event.acceptProposedAction()
         elif event.mimeData().hasFormat(MIME_LIST):
             self._set_drop_highlight(True)
             event.acceptProposedAction()
 
     def dragMoveEvent(self, event) -> None:
-        if (event.mimeData().hasFormat(MIME_CARD)
-                or event.mimeData().hasFormat(MIME_LIST)):
+        if event.mimeData().hasFormat(MIME_CARD):
+            self._drag_hovering = True
+            self._update_drop_indicator_at(self._column_y_from_event(event))
+            if not self._auto_scroll_timer.isActive():
+                self._auto_scroll_timer.start()
+            event.acceptProposedAction()
+        elif event.mimeData().hasFormat(MIME_LIST):
             event.acceptProposedAction()
 
     def dragLeaveEvent(self, event) -> None:
         self._set_drop_highlight(False)
+        self._drag_hovering = False
+        self._auto_scroll_timer.stop()
+        self._hide_drop_indicator()
         super().dragLeaveEvent(event)
 
     def dropEvent(self, event) -> None:
         mime = event.mimeData()
         if mime.hasFormat(MIME_CARD):
+            self._drag_hovering = False
+            self._auto_scroll_timer.stop()
+            self._hide_drop_indicator()
             card_id = bytes(mime.data(MIME_CARD)).decode("utf-8")
             index = self._drop_index_from_y(
                 event.position().toPoint().y()
@@ -1098,7 +1234,11 @@ class BoardView(QWidget):
         self._search_edit = QLineEdit()
         self._search_edit.setPlaceholderText("搜索卡片…")
         self._search_edit.setClearButtonEnabled(True)
-        self._search_edit.setFixedWidth(190)
+        # 弹性宽度：空间富余时舒展、不足时收缩到最小宽，避免工具栏被挤出窗口
+        self._search_edit.setMinimumWidth(120)
+        self._search_edit.setMaximumWidth(360)
+        self._search_edit.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                        QSizePolicy.Policy.Fixed)
         self._search_edit.setAccessibleName("搜索卡片")
         # 逐键输入只重启防抖计时器，停顿后才过滤（避免大板每键全树刷新）
         self._search_timer = QTimer(self)
@@ -1107,6 +1247,8 @@ class BoardView(QWidget):
         self._search_timer.timeout.connect(self._apply_filter)
         self._search_edit.textChanged.connect(self._on_search_edited)
         self._toolbar_layout.addWidget(self._search_edit)
+        # 搜索框参与剩余空间分配（与 stats 之后的 stretch 平分）
+        self._toolbar_layout.setStretchFactor(self._search_edit, 1)
 
         self._add_list_btn = AddCardButton("+ 添加列表")
         self._add_list_btn.setFixedWidth(96)
@@ -1185,6 +1327,19 @@ class BoardView(QWidget):
         self._lists_layout.addStretch(1)
         self._scroll.setWidget(self._lists_host)
         root.addWidget(self._scroll, 1)
+
+        # 空看板引导：无任何列表时覆盖在列表区上方居中，可穿透鼠标
+        self._empty_hint = QLabel(
+            "看板还是空的\n点击右上角「+ 添加列表」创建第一列", self)
+        self._empty_hint.setAlignment(Qt.AlignCenter)
+        self._empty_hint.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._empty_hint.setStyleSheet(
+            f"color: {AppTheme.colors()['text_secondary']};"
+            " font-size: 15px; background: transparent;")
+        self._empty_hint.hide()
+
+        # 看板内轻提示（删除/撤销等操作反馈，见 toast.py）
+        self._toast = Toast(self)
 
         self.reapply_theme()
         AppTheme.register(self.reapply_theme)
@@ -1267,6 +1422,9 @@ class BoardView(QWidget):
             QPushButton:checked {{ background: {c['accent']}; color: white; }}
         """)
         self._add_list_btn.reapply()
+        self._empty_hint.setStyleSheet(
+            f"color: {c['text_secondary']}; font-size: 15px;"
+            " background: transparent;")
         for col in self._columns:
             col.reapply_frame_style()
             col._header.reapply_theme()
@@ -1328,6 +1486,7 @@ class BoardView(QWidget):
 
         self.update_stats(lists)
         self._set_today_count(sum(len(v or []) for v in visibles.values()))
+        self._update_empty_hint(lists)
         sb.setValue(scroll_pos)
 
     def _search_query(self) -> str:
@@ -1368,6 +1527,10 @@ class BoardView(QWidget):
             col.set_visible_cards(visible)
             total += len(visible or [])
         self._set_today_count(total)
+        if self._search_query():
+            self._stats_label.setText(f"匹配 {total} 张")
+        else:
+            self.update_stats(self._lists)
 
     def _set_today_count(self, n: int) -> None:
         self._today_btn.setText(f"⭐ 今日 {n}")
@@ -1429,9 +1592,37 @@ class BoardView(QWidget):
         return col
 
     def update_stats(self, lists: list[BoardList]) -> None:
+        q = self._search_query()
+        if q:
+            # 搜索进行中：统计改为匹配数（刷新也不会切回默认文案）
+            total = sum(len(self._visible_cards_for(l) or []) for l in lists)
+            self._stats_label.setText(f"匹配 {total} 张")
+            return
         total = sum(len(l.cards) for l in lists)
         done = sum(1 for l in lists for card in l.cards if card.done)
         self._stats_label.setText(f"{total} 张卡片 · 完成 {done}")
+
+    def _update_empty_hint(self, lists: list[BoardList]) -> None:
+        """无任何列表时显示空看板引导（覆盖列表区，可穿透鼠标）"""
+        if lists:
+            self._empty_hint.hide()
+        else:
+            self._empty_hint.setGeometry(self.rect())
+            self._empty_hint.show()
+            self._empty_hint.raise_()
+
+    def resizeEvent(self, event) -> None:
+        """空状态引导与 toast 跟随窗口尺寸重定位"""
+        super().resizeEvent(event)
+        if self._empty_hint.isVisible():
+            self._empty_hint.setGeometry(self.rect())
+        if self._toast.isVisible():
+            self._toast.move((self.width() - self._toast.width()) // 2,
+                             self.height() - self._toast.height() - 20)
+
+    def show_toast(self, text: str) -> None:
+        """显示看板内轻提示（折叠态由控制器改走托盘通知）"""
+        self._toast.show_message(text)
 
     # ── 卡片信号 → 带 list_id 转发 ────────────────────────
 

@@ -142,7 +142,9 @@ class AppConfig:
     # 展开态（看板）
     BOARD_WIDTH = 1080
     BOARD_HEIGHT = 640
-    BOARD_MIN_WIDTH = 760
+    # 最小宽度需容纳工具栏全部控件（含搜索框最小宽），否则窄窗口下
+    # 右侧按钮会被挤出窗口
+    BOARD_MIN_WIDTH = 980
     BOARD_MIN_HEIGHT = 480
     BOARD_MAX_WIDTH = 1920
     BOARD_MAX_HEIGHT = 1200
@@ -154,8 +156,11 @@ class AppConfig:
     # ── 交互 ──────────────────────────────────────────────────────
     CARD_DRAG_THRESHOLD = 10    # 卡片按下后超过该位移才判定为拖拽（像素）
     LIST_DRAG_THRESHOLD = 10    # 列表头按下后超过该位移才判定为整列拖拽（像素）
-    CARD_DELETE_BTN_H = 14      # 卡片右上角悬浮删除按钮的命中尺寸
+    CARD_DELETE_BTN_H = 20      # 卡片右上角悬浮删除按钮的命中尺寸
     EDGE_CURSOR_POLL_MS = 150   # Windows 展开态光标轮询间隔（系统缩放后事件链可能断裂）
+    DRAG_AUTO_SCROLL_EDGE_PX = 44    # 卡片拖拽距视口该距离内触发自动滚动（像素）
+    DRAG_AUTO_SCROLL_STEP = 20       # 自动滚动每帧位移（像素）
+    DRAG_AUTO_SCROLL_MS = 30         # 自动滚动帧间隔（毫秒）
 
     # ── 桌宠随机小动作动画时长（ms）───────────────────────────────
     TILT_PHASE_MS = (260, 320, 300)      # 歪头三段（歪出/歪回/回正）
@@ -225,6 +230,16 @@ class AppConfig:
         "red":    ("#FFDADA", "#B91C1C"),
         "purple": ("#EBDBFF", "#6D28D9"),
         "teal":   ("#D2F2F0", "#0F766E"),
+    }
+
+    # ── 标签色中文名（卡片色条 / 对话框色块的悬浮提示）──────────
+    LABEL_NAMES = {
+        "blue": "蓝色",
+        "green": "绿色",
+        "orange": "橙色",
+        "red": "红色",
+        "purple": "紫色",
+        "teal": "青色",
     }
 
     # ── 列表（Trello 列）配色点缀 ───────────────────────────

@@ -14,6 +14,7 @@ import logging
 from PySide6.QtCore import (
     QEasingCurve,
     QPoint,
+    QPointF,
     QPropertyAnimation,
     QRect,
     QSize,
@@ -21,13 +22,70 @@ from PySide6.QtCore import (
     QTimer,
     Signal,
 )
-from PySide6.QtGui import QCursor, QKeySequence, QMouseEvent, QScreen, QShortcut
+from PySide6.QtGui import (
+    QColor,
+    QCursor,
+    QKeySequence,
+    QMouseEvent,
+    QPainter,
+    QPen,
+    QScreen,
+    QShortcut,
+)
 from PySide6.QtWidgets import QApplication, QStackedWidget, QVBoxLayout, QWidget
 
 from app.config import AppConfig
 from app.views.theme import AppTheme
 
 logger = logging.getLogger(__name__)
+
+
+class _ResizeGrip(QWidget):
+    """macOS 看板右下角缩放把手（自绘三条斜线，拖动改窗口尺寸）
+
+    Windows 已有系统级边缘缩放，仅 macOS 使用；最小/最大尺寸由
+    expand() 设置的 setMinimumSize/setMaximumSize 约束。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(18, 18)
+        self.setCursor(Qt.SizeFDiagCursor)
+        self.setToolTip("拖动调整看板大小")
+        self._start_size = QSize()
+        self._start_global = QPoint()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        c = AppTheme.colors()
+        color = QColor(c["text_secondary"])
+        color.setAlpha(150)
+        pen = QPen(color, 1.3)
+        pen.setCapStyle(Qt.RoundCap)
+        painter.setPen(pen)
+        w, h = self.width(), self.height()
+        for i in (1, 5, 9):
+            painter.drawLine(QPointF(i, h - 1), QPointF(w - 1, i))
+        painter.end()
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.LeftButton:
+            self._start_size = self.window().size()
+            self._start_global = event.globalPosition().toPoint()
+            event.accept()
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if event.buttons() & Qt.LeftButton:
+            delta = event.globalPosition().toPoint() - self._start_global
+            win = self.window()
+            win.resize(self._start_size.width() + delta.x(),
+                       self._start_size.height() + delta.y())
+            event.accept()
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.LeftButton:
+            event.accept()
 
 
 class MainWindow(QWidget):
@@ -121,6 +179,11 @@ class MainWindow(QWidget):
             self._new_card_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
             self._new_card_shortcut.activated.connect(
                 self.new_card_shortcut.emit)
+
+        # macOS 无系统级边缘缩放：右下角自绘把手（仅展开态、非最大化时可见）
+        self._resize_grip = _ResizeGrip(self) if AppConfig.IS_MACOS else None
+        if self._resize_grip is not None:
+            self._resize_grip.hide()
 
         self._move_to_default_position()
 
@@ -262,6 +325,7 @@ class MainWindow(QWidget):
             self.setMaximumSize(AppConfig.BOARD_MAX_WIDTH,
                                 AppConfig.BOARD_MAX_HEIGHT)
         self.zoom_state_changed.emit(self._zoomed)
+        self._update_grip_visibility()
 
     # ── 拖拽 / 边缘缩放 ─────────────────────────────────
 
@@ -336,6 +400,8 @@ class MainWindow(QWidget):
                 and not self._zoomed):
             self._expanded_size = self.size()
             self._size_save_timer.start()
+        if self._resize_grip is not None and self._resize_grip.isVisible():
+            self._position_resize_grip()
         super().resizeEvent(event)
 
     def _flush_expanded_size(self) -> None:
@@ -394,6 +460,27 @@ class MainWindow(QWidget):
             self.setFixedSize(self._collapsed_size)
             self.unsetCursor()
             self._set_pet_idle(True)
+        self._update_grip_visibility()
+
+    # ── macOS 缩放把手 ─────────────────────────────────────
+
+    def _update_grip_visibility(self) -> None:
+        """缩放把手：仅展开态、非动画中、非最大化时显示"""
+        grip = self._resize_grip
+        if grip is None:
+            return
+        show = (self._mode == "expanded" and not self._animation_running
+                and not self._expanding and not self._zoomed)
+        grip.setVisible(show)
+        if show:
+            self._position_resize_grip()
+
+    def _position_resize_grip(self) -> None:
+        grip = self._resize_grip
+        if grip is None:
+            return
+        grip.move(self.width() - grip.width() - 6,
+                  self.height() - grip.height() - 6)
 
     def _visible_expand_delta(self, pet_geo: QRect, target: QSize,
                               screen: QScreen | None) -> QPoint:

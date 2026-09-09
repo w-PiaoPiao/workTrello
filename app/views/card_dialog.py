@@ -35,6 +35,7 @@ class LabelChip(QPushButton):
         self.setCheckable(True)
         self.setFixedSize(34, 22)
         self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip(AppConfig.LABEL_NAMES.get(key, key))
         self.reapply()
 
     def key(self) -> str:

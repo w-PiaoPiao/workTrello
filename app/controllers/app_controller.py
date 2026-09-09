@@ -391,7 +391,7 @@ class AppController(QObject):
             self._pomo_stop()          # 删除正专注的卡片时先结束番茄钟
         if self._store.load().remove_card(card_id) is None:
             return
-        self._after_data_change("已删除")
+        self._after_data_change("已删除 · " + self._undo_hint())
 
     def _on_card_move(self, card_id: str, target_list_id: str, index: int) -> None:
         """拖拽移动卡片（跨列表 / 列表内重排）
@@ -451,7 +451,7 @@ class AppController(QObject):
         # 空列表无卡片可丢，直接删除（撤销栈可恢复）
         self._push_undo()
         board.remove_list(list_id)
-        self._after_data_change("已删除列表")
+        self._after_data_change("已删除列表 · " + self._undo_hint())
 
     def _on_list_move(self, moved_id: str, target_id: str,
                       insert_before: bool) -> None:
@@ -488,7 +488,17 @@ class AppController(QObject):
         self._refresh_archive()
         self._schedule_save()
         if notify:
-            self._tray.show_notification(notify)
+            self._notify(notify)
+
+    def _notify(self, text: str) -> None:
+        """操作反馈：看板展开态走窗口内 toast，折叠/隐藏态走托盘气泡"""
+        if self._window.mode == "expanded":
+            self._board_view.show_toast(text)
+        else:
+            self._tray.show_notification(text)
+
+    def _undo_hint(self) -> str:
+        return "⌘Z 撤销" if AppConfig.IS_MACOS else "Ctrl+Z 撤销"
 
     # ── 桌宠状态联动 ──────────────────────────────────────
 
@@ -651,11 +661,12 @@ class AppController(QObject):
     def _on_undo_requested(self, notify_empty: bool = False) -> None:
         if not self._undo_stack:
             if notify_empty:
-                self._tray.show_notification("没有可撤销的操作")
+                self._notify("没有可撤销的操作")
             return
         doc = self._undo_stack.pop()
         self._store.replace_board(Board.from_dict(doc))
         self._after_data_change(None)
+        self._notify("已撤销上一步")
 
     # ── 截止提醒 ──────────────────────────────────────────
 

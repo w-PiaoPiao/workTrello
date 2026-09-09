@@ -8,9 +8,9 @@ macOS 交通灯窗口控制键
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QToolTip, QWidget
 
 
 class TrafficLights(QWidget):
@@ -24,6 +24,8 @@ class TrafficLights(QWidget):
     _GAP = 8.0
     _FILL = ((255, 95, 87), (254, 188, 46), (40, 200, 64))
     _SYMBOL = QColor(66, 44, 20, 175)
+    _TIP_TEXTS = ("退出应用", "折叠为桌宠", "最大化 / 还原")
+    _TIP_DELAY_MS = 600
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -32,6 +34,13 @@ class TrafficLights(QWidget):
         self.setMouseTracking(True)
         d = self._RADIUS * 2
         self.setFixedSize(int(d * 3 + self._GAP * 2) + 2, int(d) + 2)
+        # 悬停提示：延迟显示，hover 变更/离开时取消
+        self._tip_text = ""
+        self._tip_pos = QPointF()
+        self._tip_timer = QTimer(self)
+        self._tip_timer.setSingleShot(True)
+        self._tip_timer.setInterval(self._TIP_DELAY_MS)
+        self._tip_timer.timeout.connect(self._show_hover_tip)
 
     # ── 几何 ──────────────────────────────────────────────
 
@@ -89,16 +98,31 @@ class TrafficLights(QWidget):
 
     # ── 交互 ──────────────────────────────────────────────
 
+    def _show_hover_tip(self) -> None:
+        """延迟到点且仍悬停同一键：显示该键的功能提示"""
+        if self._hover >= 0 and self._tip_text:
+            pos = self.mapToGlobal(self._tip_pos.toPoint())
+            QToolTip.showText(pos, self._tip_text, self)
+
     def mouseMoveEvent(self, event) -> None:
         idx = self._index_at(event.position())
         if idx != self._hover:
             self._hover = idx
             self.update()
+            self._tip_timer.stop()
+            if idx < 0:
+                QToolTip.hideText()
+            else:
+                self._tip_text = self._TIP_TEXTS[idx]
+                self._tip_pos = event.position()
+                self._tip_timer.start()
 
     def leaveEvent(self, event) -> None:
         if self._hover != -1:
             self._hover = -1
             self.update()
+        self._tip_timer.stop()
+        QToolTip.hideText()
         super().leaveEvent(event)
 
     def mousePressEvent(self, event) -> None:
