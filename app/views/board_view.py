@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from datetime import date
 
@@ -61,6 +62,8 @@ from app.views.notes_popover import (
 )
 from app.views.theme import AppTheme
 from app.views.toast import Toast
+
+logger = logging.getLogger(__name__)
 
 MIME_LIST = "application/x-petboard-list"
 MIME_CARD = "application/x-petboard-card"
@@ -638,7 +641,12 @@ class ListHeader(QWidget):
         super().enterEvent(event)
 
     def leaveEvent(self, event) -> None:
-        if not self._menu.isOpen():
+        # 菜单用 exec() 弹出（阻塞）期间光标已离开列头，此时不能熄灭"⋯"，
+        # 否则菜单还开着按钮却灭了。QMenu 无 isOpen()（Qt6 只此一处判据是
+        # isVisible），调用不存在的 API 会抛 AttributeError——而展开列时列头
+        # 会因位置变化收到 Leave，异常直接从 setVisible 逸出并截断状态同步，
+        # 表现为"展开后添加卡片按钮不见了"。
+        if not self._menu.isVisible():
             self._menu_btn.set_active(False)
         super().leaveEvent(event)
 
@@ -1131,6 +1139,11 @@ class ListColumn(QFrame):
         添加按钮仍停留在折叠态 → 展开后列卡在 400px 居中且没有添加按钮。
         策略先于可见性设置，末尾强制同步重排父布局，保证任何时刻落盘的
         布局都是一致的最终态。
+
+        另一条截断路径：setVisible / 重排会**同步**派发 Enter/Leave 等事件
+        （展开时列头因位置变化收到 Leave，折叠时卡片收到 Hide），事件处理器
+        里抛出的异常会从 setVisible 逸出、跳过其后的全部同步。故逐项收敛
+        异常，先把最终态刷齐，再把首个异常交给日志——不再让 UI 停在中间态。
         """
         collapsed = self._collapsed
         # 折叠列高度收窄为标题栏（固定策略），未折叠列拉伸填满
@@ -1138,17 +1151,32 @@ class ListColumn(QFrame):
                              QSizePolicy.Fixed if collapsed
                              else QSizePolicy.Expanding)
         self.setSizePolicy(policy)
-        self._scroll.setVisible(not collapsed)
-        self._add_btn.setVisible(not collapsed)
+
+        first_error: BaseException | None = None
+
+        def step(fn) -> None:
+            nonlocal first_error
+            try:
+                fn()
+            except BaseException as exc:   # 事件处理器异常：记下后继续刷状态
+                if first_error is None:
+                    first_error = exc
+
+        step(lambda: self._scroll.setVisible(not collapsed))
+        step(lambda: self._add_btn.setVisible(not collapsed))
         # 过滤态(搜索/今日)落点不可靠,拖放保持禁用,不能被折叠切换覆盖
         self.setAcceptDrops(not collapsed and self._visible_cards is None)
-        self._header.set_collapsed_mark(collapsed)
+        step(lambda: self._header.set_collapsed_mark(collapsed))
         self.updateGeometry()
         host = self.parentWidget()
         lay = host.layout() if host is not None else None
         if lay is not None:
-            lay.invalidate()
-            lay.activate()   # 同步按最终态重排，不给中间态留渲染窗口
+            step(lay.invalidate)
+            step(lay.activate)   # 同步按最终态重排，不给中间态留渲染窗口
+        if first_error is not None:
+            logger.error("列 %s 折叠状态同步期间事件处理器抛异常"
+                         "（UI 已按最终态刷齐）", self._lst.id,
+                         exc_info=first_error)
 
     def toggle_collapsed(self) -> None:
         self.set_collapsed(not self._collapsed)

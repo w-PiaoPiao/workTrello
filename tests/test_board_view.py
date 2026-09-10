@@ -295,6 +295,69 @@ class BoardViewRefreshTest(unittest.TestCase):
         col0.toggle_collapsed()                       # 折叠又展开
         self.assertFalse(col0.acceptDrops())          # 仍禁用（A1 修复点）
 
+    def test_header_leave_event_does_not_raise(self):
+        """列头 leaveEvent 不得抛异常（QMenu 无 isOpen，误用会中断展开）"""
+        from PySide6.QtCore import QEvent
+        header = self.view._columns[0]._header
+        header._menu_btn.set_active(True)
+        header.leaveEvent(QEvent(QEvent.Leave))       # 修复前抛 AttributeError
+        self.assertFalse(header._menu_btn._active)    # 菜单未开 → 熄灭
+
+    def test_header_leave_keeps_menu_btn_while_menu_open(self):
+        """菜单弹出期间列头收到 Leave 不能熄灭"⋯"（isVisible 判据的意图）"""
+        from PySide6.QtCore import QEvent, QPoint
+        header = self.view._columns[0]._header
+        header._menu_btn.set_active(True)
+        header._menu.popup(QPoint(0, 0))
+        try:
+            self.assertTrue(header._menu.isVisible())
+            header.leaveEvent(QEvent(QEvent.Leave))
+            self.assertTrue(header._menu_btn._active)
+        finally:
+            header._menu.close()
+
+    def test_expand_with_cursor_on_header_restores_add_button(self):
+        """光标停在折叠列头上时展开：添加按钮/箭头/滚动区全部随最终态恢复
+
+        回归：展开时列头因位置变化同步收到 Leave，leaveEvent 里的异常会从
+        setVisible 逸出、截断其后的状态同步 → 列满高却没有"添加卡片"按钮、
+        箭头停在"▸"（用户截图症状）。此处按真实顺序派发鼠标事件复现。
+        """
+        from PySide6.QtTest import QTest
+        self.view.resize(1080, 640)
+        self.view.show()
+        QApplication.processEvents()
+
+        col = self.view._columns[0]
+        header = col._header
+        col.set_collapsed(True, save=False)
+        QApplication.processEvents()
+        QTest.mouseMove(header._collapse_btn,
+                        header._collapse_btn.rect().center())
+        QApplication.processEvents()
+        self.assertTrue(header.underMouse())          # 光标确实停在列头上
+
+        col.toggle_collapsed()                        # 展开（Leave 在过程内派发）
+        QApplication.processEvents()
+
+        self.assertFalse(col.is_collapsed())
+        self.assertFalse(col._scroll.isHidden())      # 卡片区回来
+        self.assertFalse(col._add_btn.isHidden())     # 添加按钮回来（回归点）
+        self.assertEqual(header._collapse_btn.text(), "▾")
+        self.assertFalse(header._menu_btn._active)    # 折叠态残留点亮不带走
+
+    def test_expand_survives_exception_in_child_event_handler(self):
+        """子控件事件处理器抛异常也不得截断折叠状态同步（防回归护栏）"""
+        col = self.view._columns[0]
+        col.set_collapsed(True, save=False)
+        # 模拟 showEvent/leaveEvent 之类的同步处理器抛错
+        col._scroll.showEvent = lambda e: (_ for _ in ()).throw(
+            RuntimeError("boom"))
+        col.toggle_collapsed()                        # 不得向外抛
+        self.assertFalse(col.is_collapsed())
+        self.assertFalse(col._add_btn.isHidden())     # 最终态仍刷齐
+        self.assertEqual(col._header._collapse_btn.text(), "▾")
+
     def test_refresh_same_order_skips_layout_reinsert(self):
         """顺序未变的数据刷新不再整列 remove+insert（单卡变更的原位更新）"""
         col = self.view._columns[0]
