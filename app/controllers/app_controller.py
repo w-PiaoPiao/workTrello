@@ -26,6 +26,7 @@ from app.config import AppConfig
 from app.models import json_io
 from app.models.board import Board, BoardList, BoardStore, Card
 from app.services.tray_service import TrayService
+from app.views import motion
 from app.views.archive_dialog import ArchiveDialog
 from app.views.board_view import BoardView
 from app.views.card_dialog import CardDialog
@@ -101,7 +102,7 @@ class AppController(QObject):
         # ── 主题 / 动画偏好恢复 ───────────────────────────
         AppTheme.set_mode(AppConfig.get_theme_mode())
         if not AppConfig.get_animation_enabled():
-            self._pet_view.set_animation_enabled(False)
+            self._on_pet_animation_toggled(False)
 
         # ── 窗口置顶偏好（show 之前应用，避免闪烁）────────
         on_top = AppConfig.get_always_on_top()
@@ -576,7 +577,15 @@ class AppController(QObject):
         AppConfig.save_theme_mode(AppTheme.mode())
 
     def _on_pet_animation_toggled(self, enabled: bool) -> None:
+        """"暂停动画"总开关：同时管住桌宠待机与全部过渡动效
+
+        Qt 6.10 的 QStyleHints 没有任何 motion/reduce 成员（已核实），
+        无法自动跟随系统辅助功能设置，应用内开关是唯一调节手段，
+        因此必须覆盖全部动画而不只是桌宠那几段。
+        """
         AppConfig.save_animation_enabled(enabled)
+        motion.set_enabled(enabled)
+        self._pet_view.set_animation_enabled(enabled)
         if enabled:
             self._window.start_collapsed_idle()
 

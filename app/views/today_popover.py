@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from app.config import AppConfig
 from app.models.board import BoardList, Card
+from app.views import motion
 from app.views.board_view import _CardCheckButton
 from app.views.theme import AppTheme
 
@@ -225,5 +226,8 @@ class TodayPopover(QWidget):
         x = anchor.center().x() - self.width() // 2
         x = max(geo.left() + 6, min(x, geo.right() - self.width() - 6))
         self.move(QPoint(x, y))
+        was_visible = self.isVisible()
         self.show()
         self.raise_()
+        if not was_visible:
+            motion.fade_in(self, AppConfig.POPOVER_ANIM_MS)

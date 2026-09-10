@@ -12,14 +12,19 @@ from __future__ import annotations
 
 import logging
 import math
+import zlib
 from datetime import date
+from functools import lru_cache
 
 import shiboken6
 from PySide6.QtCore import (
     QEvent,
+    QEasingCurve,
     QMimeData,
     QPoint,
     QPointF,
+    Property,
+    QPropertyAnimation,
     QRect,
     QRectF,
     QSize,
@@ -54,6 +59,7 @@ from PySide6.QtWidgets import (
 
 from app.config import AppConfig
 from app.models.board import BoardList, Card
+from app.views import motion
 from app.views.notes_popover import (
     hide_notes_popover,
     notes_pinned_for,
@@ -67,6 +73,8 @@ logger = logging.getLogger(__name__)
 
 MIME_LIST = "application/x-petboard-list"
 MIME_CARD = "application/x-petboard-card"
+
+_MAX_WIDGET_H = 16777215    # QWIDGETSIZE_MAX：清除动画期固定高度用
 
 
 def _clear_layout_recursive(layout) -> None:
@@ -85,6 +93,226 @@ def _clear_layout_recursive(layout) -> None:
         if w is not None:
             w.setParent(None)
             w.deleteLater()
+
+
+def _list_accent(list_id: str) -> str:
+    """按列 id 取点缀色
+
+    不能用内置 hash()：Python 字符串 hash 每进程随机化（同一 id 三次运行
+    可得到不同结果），取模后列表色点每次重启都会换色。crc32 跨进程稳定。
+    """
+    accents = AppConfig.LIST_ACCENTS
+    return accents[zlib.crc32(list_id.encode("utf-8")) % len(accents)]
+
+
+def _set_prop(widget: QWidget, name: str, value) -> None:
+    """设置动态属性并在值变化时重刷该控件样式
+
+    QSS 属性选择器（[done="true"] 等）只在重新 polish 后生效；这里只
+    polish 目标控件本身，不级联整棵子树，因此可以安全地按需调用。
+    """
+    if widget.property(name) == value:
+        return
+    widget.setProperty(name, value)
+    style = widget.style()
+    style.unpolish(widget)
+    style.polish(widget)
+    widget.update()
+
+
+# 卡片徽章底色随主题色键取值（tone 动态属性 → QSS 属性选择器）
+_BADGE_TONES = ("danger", "warning", "accent", "text_secondary")
+
+
+@lru_cache(maxsize=4)
+def _board_qss(mode: str) -> str:
+    """看板整块样式表（按主题模式缓存）
+
+    整块只设在 BoardView 一个控件上。此前逐列/逐卡各自 setStyleSheet，
+    嵌套设置会让同一批子控件被反复 re-polish：三层级联实测 300 张卡片
+    主题切换 285ms，合并为单次设置后只剩一遍 polish。
+    配色随主题变，故按 mode 缓存字符串，避免每次切换重新拼接。
+    """
+    c = AppConfig.DARK_COLORS if mode == "dark" else AppConfig.COLORS
+    badge_rules = "\n".join(
+        f'QLabel#cardBadge[tone="{tone}"] {{\n'
+        f'    background: {c["accent_soft"]};\n'
+        f'    color: {c[tone]};\n'
+        f'    border-radius: 6px;\n'
+        f'    padding: 2px 6px;\n'
+        f'    font-size: 11px;\n'
+        f'}}'
+        for tone in _BADGE_TONES)
+    return f"""
+        /* ── 工具条 ── */
+        QLabel#boardTitle {{
+            font-size: 17px;
+            font-weight: bold;
+            color: {c['text_primary']};
+            background: transparent;
+        }}
+        QLabel#boardStats {{
+            font-size: 12px;
+            color: {c['text_primary']};
+            background: rgba(128, 128, 128, 0.15);
+            border-radius: 8px;
+            padding: 3px 10px;
+        }}
+        QPushButton#boardThemeBtn {{
+            background: rgba(128, 128, 128, 0.15);
+            border: none;
+            border-radius: 17px;
+            color: {c['text_primary']};
+        }}
+        QPushButton#boardThemeBtn:hover {{
+            background: rgba(128, 128, 128, 0.30);
+        }}
+        QPushButton#boardCollapseBtn {{
+            background: rgba(128, 128, 128, 0.15);
+            border: none;
+            border-radius: 17px;
+            font-weight: bold;
+            color: {c['text_primary']};
+        }}
+        QPushButton#boardCollapseBtn:hover {{
+            background: rgba(128, 128, 128, 0.30);
+        }}
+        QPushButton#boardToolBtn {{
+            background: rgba(128, 128, 128, 0.15);
+            border: none;
+            border-radius: 9px;
+            padding: 5px 10px;
+            font-size: 12px;
+            color: {c['text_primary']};
+        }}
+        QPushButton#boardToolBtn:hover {{
+            background: rgba(128, 128, 128, 0.30);
+        }}
+        QPushButton#boardToolBtn:checked {{
+            background: {c['accent']};
+            color: white;
+        }}
+        QPushButton#addBoardBtn {{
+            background: transparent;
+            color: {c['text_secondary']};
+            border: 1.5px dashed {c['border']};
+            border-radius: 9px;
+            padding: 7px;
+            font-size: 12px;
+        }}
+        QPushButton#addBoardBtn:hover {{
+            background: {c['accent_soft']};
+            color: {c['accent']};
+            border: 1.5px dashed {c['accent']};
+        }}
+        QLabel#emptyBoardHint {{
+            color: {c['text_secondary']};
+            font-size: 15px;
+            background: transparent;
+        }}
+
+        /* ── 滚动区承载体 ── */
+        QWidget#listsHost, QWidget#cardsHost {{
+            background: transparent;
+        }}
+        QScrollArea#boardScroll, QScrollArea#columnScroll {{
+            background: transparent;
+        }}
+
+        /* ── 列表列 ── */
+        QFrame#listColumn {{
+            background: {c['bg_panel']};
+            border: 1px solid {c['border']};
+            border-radius: 14px;
+        }}
+        QFrame#listColumn[drop="true"] {{
+            border: 2px solid {c['accent']};
+        }}
+        QFrame#dropIndicator {{
+            background: {c['accent']};
+            border-radius: 2px;
+        }}
+        QLabel#listTitle {{
+            font-size: 14px;
+            font-weight: bold;
+            color: {c['text_primary']};
+            background: transparent;
+        }}
+        QLabel#listCount {{
+            color: {c['text_secondary']};
+            font-size: 11px;
+            background: rgba(128, 128, 128, 0.15);
+            border-radius: 8px;
+            padding: 1px 7px;
+        }}
+        QLabel#columnHint {{
+            color: {c['text_disabled']};
+            font-size: 12px;
+            background: transparent;
+        }}
+        QPushButton#listCollapseBtn {{
+            background: transparent;
+            color: {c['text_secondary']};
+            border: none;
+            border-radius: 12px;
+            font-size: 13px;
+            padding: 0;
+        }}
+        QPushButton#listCollapseBtn[collapsed="true"] {{
+            color: {c['text_primary']};
+        }}
+        QPushButton#listCollapseBtn:hover {{
+            background: rgba(128, 128, 128, 0.2);
+            color: {c['text_primary']};
+        }}
+        QPushButton#headerMenuBtn {{
+            background: transparent;
+            border: none;
+        }}
+        QLineEdit#renameEdit {{
+            background: {c['bg_card']};
+            font-size: 14px;
+            font-weight: bold;
+            color: {c['text_primary']};
+            padding: 0 4px;
+            border-radius: 6px;
+        }}
+
+        /* ── 卡片 ── */
+        QFrame#cardFrame {{
+            background: {c['bg_card']};
+            border: 1px solid {c['border']};
+            border-radius: 10px;
+        }}
+        QFrame#cardFrame:hover {{
+            border: 1px solid {c['accent']};
+        }}
+        QLabel#cardTitle {{
+            font-size: 13px;
+            font-weight: 500;
+            color: {c['text_primary']};
+            background: transparent;
+            border: none;
+        }}
+        QLabel#cardTitle[done="true"] {{
+            color: {c['text_secondary']};
+            text-decoration: line-through;
+        }}
+        QPushButton#cardDeleteBtn {{
+            background: rgba(128, 128, 128, 0.25);
+            color: {c['text_primary']};
+            border: none;
+            border-radius: {AppConfig.CARD_DELETE_BTN_H // 2}px;
+            font-size: 10px;
+            font-weight: bold;
+            padding: 0;
+        }}
+        QPushButton#cardDeleteBtn:hover {{
+            background: {c['danger']};
+            color: white;
+        }}
+        {badge_rules}
+    """
 
 
 def _fmt_due(due: str) -> tuple[str, bool]:
@@ -208,42 +436,27 @@ class CardWidget(QFrame):
             self.rebuild()
 
     def _content_fingerprint(self) -> tuple:
-        """卡片内容指纹，用于跳过未变化卡片的重建"""
+        """卡片内容指纹，用于跳过未变化卡片的重建
+
+        必须覆盖 rebuild() 实际渲染的每个字段：遗漏字段曾让优先级/重复/
+        番茄数变化时不重建，卡片一直显示旧徽章，直到其他字段变化才连带
+        刷新。tests/test_board_view.py 有字段覆盖断言兜底。
+        """
         c = self._card
-        return (c.title, c.done, c.due_date, bool(c.notes), tuple(c.labels))
+        return (c.title, c.done, c.due_date, bool(c.notes), tuple(c.labels),
+                c.priority, c.repeat, c.pomodoros)
 
     def reapply_style(self) -> None:
-        """主题切换后轻量刷新卡片背景/边框（不重建子控件，保留悬停状态）"""
-        c = AppTheme.colors()
-        self.setStyleSheet(f"""
-            QFrame#cardFrame {{
-                background: {c['bg_card']};
-                border: 1px solid {c['border']};
-                border-radius: 10px;
-            }}
-            QFrame#cardFrame:hover {{
-                border: 1px solid {c['accent']};
-            }}
-        """)
-        if self._delete_btn is not None:
-            btn = self._delete_btn
-            btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: rgba(128, 128, 128, 0.25);
-                    color: {c['text_primary']};
-                    border: none;
-                    border-radius: {AppConfig.CARD_DELETE_BTN_H // 2}px;
-                    font-size: 10px;
-                    font-weight: bold;
-                    padding: 0;
-                }}
-                QPushButton:hover {{ background: {c['danger']}; color: white; }}
-            """)
-            if not self._hovered and not btn.underMouse():
-                btn.hide()
+        """主题切换后同步卡片内部状态，不重建子控件（保留悬停状态）
+
+        配色由看板级样式表统一下发（见 _board_qss），这里只处理与配色无关
+        的状态：删除按钮显隐、勾选框与标题完成态。
+        """
+        btn = self._delete_btn
+        if btn is not None and not self._hovered and not btn.underMouse():
+            btn.hide()
         self._style_check()
         self._style_title()
-        self._style_meta_badges()
 
     def _style_check(self) -> None:
         """勾选框状态同步（自绘控件，done 变化时重绘）"""
@@ -252,36 +465,14 @@ class CardWidget(QFrame):
         self._check_btn.set_done(self._card.done)
 
     def _style_title(self) -> None:
-        """标题样式（颜色随主题切换）"""
+        """标题完成态：动态属性驱动 QSS 选择器（[done="true"]）
+
+        完成态用 text_secondary（而非更浅的 disabled），保证白卡上
+        删除线文字仍可读（对比度 ≥ 4.5:1）。
+        """
         if self._title_label is None:
             return
-        c = AppTheme.colors()
-        # 完成态用 text_secondary（而非更浅的 disabled），保证白卡上
-        # 删除线文字仍可读（对比度 ≥ 4.5:1）
-        self._title_label.setStyleSheet(f"""
-            QLabel {{
-                font-size: 13px;
-                font-weight: 500;
-                color: {c['text_secondary'] if self._card.done else c['text_primary']};
-                text-decoration: {'line-through;' if self._card.done else 'none;'}
-                background: transparent;
-                border: none;
-            }}
-        """)
-
-    def _style_meta_badges(self) -> None:
-        """底部日期/备注徽章样式（颜色随主题切换）"""
-        c = AppTheme.colors()
-        for badge, key in self._meta_badges:
-            badge.setStyleSheet(f"""
-                QLabel {{
-                    background: {c['accent_soft']};
-                    color: {c[key]};
-                    border-radius: 6px;
-                    padding: 2px 6px;
-                    font-size: 11px;
-                }}
-            """)
+        _set_prop(self._title_label, "done", bool(self._card.done))
 
     # ── 构建 UI ───────────────────────────────────────────
 
@@ -303,19 +494,10 @@ class CardWidget(QFrame):
         self._meta_badges = []
         self._notes_badge = None
 
-        c = AppTheme.colors()
         card = self._card
+        # 配色统一由 BoardView 的整块样式表下发（#cardFrame 等选择器），
+        # 此处只登记 objectName / 动态属性，不再设局部样式表
         self.setObjectName("cardFrame")
-        self.setStyleSheet(f"""
-            QFrame#cardFrame {{
-                background: {c['bg_card']};
-                border: 1px solid {c['border']};
-                border-radius: 10px;
-            }}
-            QFrame#cardFrame:hover {{
-                border: 1px solid {c['accent']};
-            }}
-        """)
 
         root = QVBoxLayout(self)
         # 左缘标签色条（paintEvent 绘制）：每条 4px，最多 4 条；留出横向空间不与标题重叠
@@ -339,6 +521,7 @@ class CardWidget(QFrame):
         title_row.addWidget(check)
 
         title = QLabel(card.title)
+        title.setObjectName("cardTitle")
         title.setWordWrap(True)
         self._title_label = title
         self._style_title()
@@ -347,22 +530,11 @@ class CardWidget(QFrame):
 
         # 右上角删除按钮：仅作 child 绝对定位（不占布局，不挤压标题），悬停卡片才出现
         self._delete_btn = QPushButton("✕", self)
+        self._delete_btn.setObjectName("cardDeleteBtn")
         self._delete_btn.setFixedSize(AppConfig.CARD_DELETE_BTN_H,
                                       AppConfig.CARD_DELETE_BTN_H)
         self._delete_btn.setCursor(Qt.PointingHandCursor)
         self._delete_btn.setToolTip("删除卡片")
-        self._delete_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: rgba(128, 128, 128, 0.25);
-                color: {c['text_primary']};
-                border: none;
-                border-radius: {AppConfig.CARD_DELETE_BTN_H // 2}px;
-                font-size: 10px;
-                font-weight: bold;
-                padding: 0;
-            }}
-            QPushButton:hover {{ background: {c['danger']}; color: white; }}
-        """)
         self._delete_btn.clicked.connect(
             lambda: self.signal_delete_requested.emit(self._card.id))
         self._delete_btn.hide()
@@ -392,9 +564,17 @@ class CardWidget(QFrame):
             # 卡片 ~236px 可用宽，超量徽章会溢出右缘：超出部分折叠为 "…"
             shown = meta_items[:AppConfig.CARD_META_BADGE_MAX]
             extra = len(meta_items) - len(shown)
-            for text, key, is_notes in shown:
+
+            def make_badge(text: str, tone: str) -> QLabel:
+                # tone 动态属性 → QSS 属性选择器（配色随主题，见 _board_qss）
                 badge = QLabel(text)
-                self._meta_badges.append((badge, key))
+                badge.setObjectName("cardBadge")
+                badge.setProperty("tone", tone)
+                self._meta_badges.append((badge, tone))
+                return badge
+
+            for text, key, is_notes in shown:
+                badge = make_badge(text, key)
                 if is_notes:
                     # 备注徽章：悬停弹备注全文预览，点击固定展示（本卡事件过滤处理）
                     self._notes_badge = badge
@@ -403,10 +583,7 @@ class CardWidget(QFrame):
                     badge.installEventFilter(self)
                 meta_row.addWidget(badge)
             if extra > 0:
-                badge = QLabel("…")
-                self._meta_badges.append((badge, "text_secondary"))
-                meta_row.addWidget(badge)
-            self._style_meta_badges()
+                meta_row.addWidget(make_badge("…", "text_secondary"))
             meta_row.addStretch(1)
             root.addLayout(meta_row)
 
@@ -494,8 +671,7 @@ class CardWidget(QFrame):
     def enterEvent(self, event) -> None:
         self._hovered = True
         if self._delete_btn is not None:
-            self._delete_btn.show()
-            self._delete_btn.raise_()
+            self._show_delete_btn()
         super().enterEvent(event)
 
     def leaveEvent(self, event) -> None:
@@ -503,6 +679,18 @@ class CardWidget(QFrame):
         if self._delete_btn is not None and not self._delete_btn.underMouse():
             self._delete_btn.hide()
         super().leaveEvent(event)
+
+    def _show_delete_btn(self) -> None:
+        """显示删除按钮（淡入；已有淡入在播或动画开关关闭则直接显示）
+
+        只在"新出现"时起播：enterEvent 在快速划过多张卡时会反复触发，
+        每次都重启动画会让按钮一直停在半透明。
+        """
+        btn = self._delete_btn
+        if not btn.isVisible():
+            btn.show()
+            motion.fade_in(btn, AppConfig.HOVER_ANIM_MS)
+        btn.raise_()
 
     # ── 拖拽 ──────────────────────────────────────────────
 
@@ -569,8 +757,7 @@ class ListHeader(QWidget):
         layout.setContentsMargins(12, 8, 10, 6)
         layout.setSpacing(6)
 
-        c = AppTheme.colors()
-        accent = AppConfig.LIST_ACCENTS[hash(board_list.id) % len(AppConfig.LIST_ACCENTS)]
+        accent = _list_accent(board_list.id)
 
         dot = QLabel()
         dot.setFixedSize(8, 8)
@@ -578,29 +765,15 @@ class ListHeader(QWidget):
         layout.addWidget(dot)
 
         self._title_label = _TitleLabel(board_list.title, self)
-        self._title_label.setStyleSheet(f"""
-            QLabel {{
-                font-size: 14px;
-                font-weight: bold;
-                color: {c['text_primary']};
-                background: transparent;
-            }}
-        """)
+        self._title_label.setObjectName("listTitle")
         layout.addWidget(self._title_label, 1)
 
         self._count_label = QLabel()
-        self._count_label.setStyleSheet(f"""
-            QLabel {{
-                color: {c['text_secondary']};
-                font-size: 11px;
-                background: rgba(128, 128, 128, 0.15);
-                border-radius: 8px;
-                padding: 1px 7px;
-            }}
-        """)
+        self._count_label.setObjectName("listCount")
         layout.addWidget(self._count_label)
 
         self._collapse_btn = QPushButton("▾")
+        self._collapse_btn.setObjectName("listCollapseBtn")
         self._collapse_btn.setFixedSize(24, 24)
         self._collapse_btn.setCursor(Qt.PointingHandCursor)
         self._collapse_btn.setToolTip("折叠 / 展开列表")
@@ -651,23 +824,14 @@ class ListHeader(QWidget):
         super().leaveEvent(event)
 
     def set_collapsed_mark(self, collapsed: bool) -> None:
-        """折叠态箭头：▸ 折叠 / ▾ 展开；折叠态加深颜色便于发现展开入口"""
-        c = AppTheme.colors()
+        """折叠态箭头：▸ 折叠 / ▾ 展开；折叠态加深颜色便于发现展开入口
+
+        颜色由 QSS 的动态属性选择器 [collapsed="true"] 决定，不再逐次
+        重设样式表（列头在展开/折叠时会同步收到 Leave，样式表重设会拖长
+        这条同步路径）。
+        """
         self._collapse_btn.setText("▸" if collapsed else "▾")
-        self._collapse_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent;
-                color: {c['text_primary'] if collapsed else c['text_secondary']};
-                border: none;
-                border-radius: 12px;
-                font-size: 13px;
-                padding: 0;
-            }}
-            QPushButton:hover {{
-                background: rgba(128, 128, 128, 0.2);
-                color: {c['text_primary']};
-            }}
-        """)
+        _set_prop(self._collapse_btn, "collapsed", bool(collapsed))
 
     def update_count(self, n: int) -> None:
         self._count_label.setText(str(n))
@@ -678,25 +842,7 @@ class ListHeader(QWidget):
         self._title_label.setText(board_list.title)
 
     def reapply_theme(self) -> None:
-        """主题切换后刷新头部颜色（标题/计数随主题变化）"""
-        c = AppTheme.colors()
-        self._title_label.setStyleSheet(f"""
-            QLabel {{
-                font-size: 14px;
-                font-weight: bold;
-                color: {c['text_primary']};
-                background: transparent;
-            }}
-        """)
-        self._count_label.setStyleSheet(f"""
-            QLabel {{
-                color: {c['text_secondary']};
-                font-size: 11px;
-                background: rgba(128, 128, 128, 0.15);
-                border-radius: 8px;
-                padding: 1px 7px;
-            }}
-        """)
+        """主题切换后同步头部状态（配色由看板级样式表统一下发）"""
         col = self.parent()
         self.set_collapsed_mark(
             col.is_collapsed() if isinstance(col, ListColumn) else False)
@@ -713,6 +859,7 @@ class ListHeader(QWidget):
         edit.installEventFilter(self)
         global _ACTIVE_RENAME
         _ACTIVE_RENAME = edit
+        _sync_rename_filter(self)   # 编辑器已存在 → 装上点击守卫
         edit.show()
         edit.setFocus()
 
@@ -778,17 +925,7 @@ class _RenameEdit(QLineEdit):
     def __init__(self, header: "ListHeader"):
         super().__init__(header._lst.title, header._title_label)
         self._header = header
-        c = AppTheme.colors()
-        self.setStyleSheet(f"""
-            QLineEdit {{
-                background: {c['bg_card']};
-                font-size: 14px;
-                font-weight: bold;
-                color: {c['text_primary']};
-                padding: 0 4px;
-                border-radius: 6px;
-            }}
-        """)
+        self.setObjectName("renameEdit")
         self.returnPressed.connect(self.commit)
         # 注意：不挂 editingFinished（失焦提交）——Qt.Tool 窗口焦点链不可靠，
         # 关闭时机统一由点击过滤器 / Esc / 折叠 / 隐藏等显式路径驱动
@@ -800,6 +937,7 @@ class _RenameEdit(QLineEdit):
         _ACTIVE_RENAME = None
         new_title = self.text().strip()
         self.deleteLater()
+        _sync_rename_filter(self)   # 编辑器已关闭 → 卸掉点击守卫
         if new_title and new_title != self._header._lst.title:
             self._header.signal_title_changed.emit(
                 self._header._lst.id, new_title)
@@ -811,9 +949,20 @@ class _RenameEdit(QLineEdit):
         _ACTIVE_RENAME = None
         self.blockSignals(True)
         self.deleteLater()
+        _sync_rename_filter(self)
 
 
 _ACTIVE_RENAME: "_RenameEdit | None" = None
+
+
+def _sync_rename_filter(widget) -> None:
+    """把"是否有重命名编辑器"的状态同步给所在 BoardView（安装/卸载过滤器）"""
+    p = widget.parent()
+    while p is not None:
+        if isinstance(p, BoardView):
+            p._attach_rename_filter()
+            return
+        p = p.parent()
 
 
 def finish_active_rename(cancel: bool = False) -> bool:
@@ -879,7 +1028,8 @@ class _HeaderMenuButton(QPushButton):
         painter.end()
 
     def reapply(self) -> None:
-        self.setStyleSheet("QPushButton { background: transparent; border: none; }")
+        """配色由看板级样式表下发（#headerMenuBtn），此处仅重绘"""
+        self.update()
 
     def mouseDoubleClickEvent(self, event) -> None:
         header = self.parent()
@@ -949,6 +1099,8 @@ class ListColumn(QFrame):
     signal_list_move = Signal(str, str, bool)  # moved_list_id, target_list_id, insert_before
     signal_collapsed_changed = Signal(str, bool)  # list_id, collapsed
 
+    COLLAPSED_HEIGHT = 52        # 折叠态高度（仅剩标题栏）
+
     def __init__(self, board_list: BoardList, parent=None):
         super().__init__(parent)
         self._lst = board_list
@@ -956,10 +1108,11 @@ class ListColumn(QFrame):
         self._hint: QLabel | None = None
         self._collapsed = False
         self._visible_cards: list[Card] | None = None   # None=显示全部（过滤态为子集）
+        self._collapse_anim: QPropertyAnimation | None = None
+        self._anim_height = float(self.COLLAPSED_HEIGHT)  # 折叠过渡的高度插值目标
         self.setAcceptDrops(True)
 
         self.setObjectName("listColumn")
-        self.reapply_frame_style()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(6, 4, 6, 8)
@@ -972,17 +1125,13 @@ class ListColumn(QFrame):
 
         # 卡片滚动区
         self._scroll = QScrollArea()
+        self._scroll.setObjectName("columnScroll")
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.NoFrame)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._scroll.setStyleSheet("QScrollArea { background: transparent; }")
         self._scroll.viewport().setAutoFillBackground(False)
         self._cards_host = QWidget()
         self._cards_host.setObjectName("cardsHost")
-        # 无选择器规则会级联到所有后代（曾把重命名编辑器的背景压成透明，
-        # 表现为列标题文字透过编辑器显示），必须用 #objectName 限定自身
-        self._cards_host.setStyleSheet(
-            "QWidget#cardsHost { background: transparent; }")
         self._cards_layout = QVBoxLayout(self._cards_host)
         self._cards_layout.setContentsMargins(2, 2, 2, 2)
         self._cards_layout.setSpacing(8)
@@ -995,7 +1144,6 @@ class ListColumn(QFrame):
         self._drop_indicator.setObjectName("dropIndicator")
         self._drop_indicator.setFixedHeight(3)
         self._drop_indicator.hide()
-        self.reapply_frame_style()
 
         # 拖拽到视口边缘的自动滚动（横向看板区 + 本列纵向）
         self._drag_hovering = False
@@ -1054,16 +1202,16 @@ class ListColumn(QFrame):
         reusable: dict[str, CardWidget] = {
             cw.card().id: cw for cw in self._card_widgets}
         ordered: list[CardWidget] = []
+        appeared: list[CardWidget] = []
         for card in cards:
             cw = reusable.pop(card.id, None)
             if cw is None:
                 cw = self._make_card_widget(card)
+                appeared.append(cw)
             else:
                 cw.update_from_model(card)
             ordered.append(cw)
-        for gone in reusable.values():
-            gone.setParent(None)
-            gone.deleteLater()
+        self._dispose_card_widgets(list(reusable.values()))
         # 顺序未变（勾选完成/编辑保存等单卡变更）→ 布局无需重插；
         # 仅增删/移动造成顺序变化时才 remove+insert 保序
         if [cw.card().id for cw in self._card_widgets] != [c.id for c in cards]:
@@ -1072,17 +1220,20 @@ class ListColumn(QFrame):
                 self._cards_layout.insertWidget(i, cw)
         self._card_widgets = ordered
 
+        # 新增卡片淡入：只在数量可控时播放，批量出现（搜索/过滤/导入）直接显示
+        if 0 < len(appeared) <= AppConfig.ANIM_BATCH_LIMIT:
+            for cw in appeared:
+                motion.fade_in(cw, AppConfig.CARD_ANIM_MS)
+
         # 空列提示
         if not cards:
             if self._hint is None:
                 hint_text = ("没有匹配的卡片" if self._visible_cards is not None
                              else "还没有卡片，点击下方添加")
                 hint = QLabel(hint_text)
+                hint.setObjectName("columnHint")
                 hint.setAlignment(Qt.AlignCenter)
                 hint.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-                hint.setStyleSheet(
-                    f"color: {AppTheme.colors()['text_disabled']};"
-                    "font-size: 12px; background: transparent;")
                 self._hint = hint
                 self._cards_layout.insertWidget(0, hint)
         elif self._hint is not None:
@@ -1092,45 +1243,144 @@ class ListColumn(QFrame):
 
         self._header.update_count(len(cards))
 
+    def _dispose_card_widgets(self, widgets: list[CardWidget]) -> None:
+        """移除卡片控件：少量走淡出（延后销毁），批量直接销毁
+
+        退场动画必须延后 deleteLater——立刻销毁会让动画还没播控件就没了。
+        先脱离布局再原地淡出：脱离布局的控件保持最后几何位置继续绘制，
+        因此呈现为"原地消失"而不是跳位。
+        """
+        animate = (motion.enabled() and 0 < len(widgets)
+                   <= AppConfig.ANIM_BATCH_LIMIT and self.isVisible())
+        for cw in widgets:
+            self._cards_layout.removeWidget(cw)
+            if animate:
+                cw.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+                cw.setParent(self._cards_host)   # 同父调用不改几何，仅确保归属
+                motion.fade_out(cw, AppConfig.CARD_EXIT_ANIM_MS,
+                                on_finished=cw.deleteLater)
+            else:
+                cw.setParent(None)
+                cw.deleteLater()
+
     # ── 样式 ──────────────────────────────────────────────
 
     def reapply_frame_style(self) -> None:
-        c = AppTheme.colors()
-        self.setStyleSheet(f"""
-            QFrame#listColumn {{
-                background: {c['bg_panel']};
-                border: 1px solid {c['border']};
-                border-radius: 14px;
-            }}
-        """)
-        self._add_btn = getattr(self, "_add_btn", None)
-        if self._add_btn is not None:
-            self._add_btn.reapply()
-        indicator = getattr(self, "_drop_indicator", None)
-        if indicator is not None:
-            indicator.setStyleSheet(
-                f"QFrame#dropIndicator {{ background: {c['accent']};"
-                " border-radius: 2px; }")
+        """配色由看板级样式表下发；此处只同步拖放高亮属性"""
+        self._set_drop_highlight(self.property("drop") is True)
 
     def minimumSizeHint(self):
-        return QSize(AppConfig.LIST_WIDTH, 52 if self._collapsed else 200)
+        return QSize(AppConfig.LIST_WIDTH,
+                     self.COLLAPSED_HEIGHT if self._collapsed else 200)
 
     def sizeHint(self):
-        return QSize(AppConfig.LIST_WIDTH, 52 if self._collapsed else 400)
+        return QSize(AppConfig.LIST_WIDTH,
+                     self.COLLAPSED_HEIGHT if self._collapsed else 400)
 
     # ── 列折叠（隐藏卡片区，仅剩标题栏） ────────────────────
 
     def is_collapsed(self) -> bool:
         return self._collapsed
 
-    def set_collapsed(self, collapsed: bool, save: bool = True) -> None:
-        """切换列折叠；save=True 时通知控制器持久化状态"""
+    def set_collapsed(self, collapsed: bool, save: bool = True,
+                      animate: bool = True) -> None:
+        """切换列折叠；save=True 时通知控制器持久化状态
+
+        animate=False 供初始状态恢复（_make_column）使用，避免建列时播动画。
+        """
         if collapsed == self._collapsed:
             return
         self._collapsed = collapsed
-        self._apply_collapsed_ui()
+        if animate and motion.enabled() and self.isVisible():
+            self._start_collapse_anim(collapsed)
+        else:
+            self._stop_collapse_anim(finalize=True)
         if save:
             self.signal_collapsed_changed.emit(self._lst.id, collapsed)
+
+    # ── 折叠过渡（只动高度，状态机在终点一次刷齐）───────────────
+    #
+    # 0.1.1 修复的"嵌合态"事故根因是"状态同步执行到一半被打断"。因此这里
+    # 的动画只是纯视觉层：中间帧只改高度，其余状态一律在终点由
+    # _apply_collapsed_ui() 一次性刷齐，不产生任何新的中间状态组合。
+
+    def _get_column_height(self) -> float:
+        return float(self._anim_height)
+
+    def _set_column_height(self, value: float) -> None:
+        self._anim_height = value
+        self.setFixedHeight(max(1, int(round(value))))
+
+    columnHeight = Property(float, _get_column_height, _set_column_height)
+
+    def _expanded_height(self) -> int:
+        """展开态目标高度：填满列表区可用高度"""
+        host = self.parentWidget()
+        lay = host.layout() if host is not None else None
+        if host is None or lay is None:
+            return max(self.height(), self.COLLAPSED_HEIGHT)
+        m = lay.contentsMargins()
+        return max(self.COLLAPSED_HEIGHT,
+                   host.height() - m.top() - m.bottom())
+
+    def _start_collapse_anim(self, collapsed: bool) -> None:
+        """起播折叠/展开过渡：只插值高度，终点才同步状态机"""
+        self._stop_collapse_anim(finalize=False)
+        start_h = self.height() or self.COLLAPSED_HEIGHT
+        end_h = (self.COLLAPSED_HEIGHT if collapsed
+                 else self._expanded_height())
+
+        # 方向性状态立即生效（箭头/拖放/内容可见性），几何交给动画终点。
+        # setVisible 会同步派发 Enter/Leave，事件处理器可能抛异常，逐项收敛。
+        def guarded(fn) -> None:
+            try:
+                fn()
+            except BaseException:
+                logger.exception("列 %s 折叠过渡的事件处理器抛异常", self._lst.id)
+
+        guarded(lambda: self._header.set_collapsed_mark(collapsed))
+        guarded(lambda: self.setAcceptDrops(
+            not collapsed and self._visible_cards is None))
+        if not collapsed:
+            # 展开：先恢复内容可见，随高度增长逐层露出（超出部分被裁剪）
+            guarded(lambda: self._scroll.setVisible(True))
+            guarded(lambda: self._add_btn.setVisible(True))
+
+        anim = QPropertyAnimation(self, b"columnHeight", self)
+        anim.setDuration(AppConfig.COLLAPSE_ANIM_MS)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.setStartValue(float(start_h))
+        anim.setEndValue(float(end_h))
+        anim.finished.connect(self._on_collapse_anim_finished)
+        self._collapse_anim = anim
+        anim.start()
+
+    def _on_collapse_anim_finished(self) -> None:
+        self._collapse_anim = None
+        self._finish_collapse_anim()
+
+    def _finish_collapse_anim(self) -> None:
+        """结束过渡：清掉动画期的固定高度，把状态机按最终态一次刷齐"""
+        self.setMinimumHeight(0)
+        self.setMaximumHeight(_MAX_WIDGET_H)
+        self._apply_collapsed_ui()
+
+    def _stop_collapse_anim(self, finalize: bool) -> None:
+        """停掉进行中的折叠动画（finalize=True 时顺带刷齐最终态）"""
+        anim = self._collapse_anim
+        if anim is not None:
+            self._collapse_anim = None
+            anim.finished.disconnect(self._on_collapse_anim_finished)
+            anim.stop()
+            anim.deleteLater()
+        if finalize:
+            self._finish_collapse_anim()
+
+    def hideEvent(self, event) -> None:
+        """隐藏时收尾进行中的折叠动画，避免停在中间高度"""
+        if self._collapse_anim is not None:
+            self._stop_collapse_anim(finalize=True)
+        super().hideEvent(event)
 
     def _apply_collapsed_ui(self) -> None:
         """把 _collapsed 对应的全部 UI 状态一次性刷齐（幂等）
@@ -1188,18 +1438,12 @@ class ListColumn(QFrame):
         return self._visible_cards is not None
 
     def _set_drop_highlight(self, on: bool) -> None:
-        """整列拖拽悬停时的落点高亮（accent 边框）"""
-        if on:
-            c = AppTheme.colors()
-            self.setStyleSheet(f"""
-                QFrame#listColumn {{
-                    background: {c['bg_panel']};
-                    border: 2px solid {c['accent']};
-                    border-radius: 14px;
-                }}
-            """)
-        else:
-            self.reapply_frame_style()
+        """整列拖拽悬停时的落点高亮（accent 边框）
+
+        用动态属性 [drop="true"] 驱动 QSS，不再整块重设样式表——拖拽过程中
+        dragEnter/dragLeave 会频繁切换，重设样式表会让整列子树反复 re-polish。
+        """
+        _set_prop(self, "drop", bool(on))
 
     def _drop_index_from_y(self, y_global: int) -> int:
         """根据全局 y 坐标计算插入位置（卡片序号）"""
@@ -1324,30 +1568,16 @@ class ListColumn(QFrame):
 
 
 class AddCardButton(QPushButton):
-    """带主题样式的添加卡片按钮"""
+    """添加卡片/列表按钮（样式由看板级样式表按 objectName 下发）"""
 
     def __init__(self, text: str, parent=None):
         super().__init__(text, parent)
+        self.setObjectName("addBoardBtn")
         self.setCursor(Qt.PointingHandCursor)
-        self.reapply()
 
     def reapply(self) -> None:
-        c = AppTheme.colors()
-        self.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent;
-                color: {c['text_secondary']};
-                border: 1.5px dashed {c['border']};
-                border-radius: 9px;
-                padding: 7px;
-                font-size: 12px;
-            }}
-            QPushButton:hover {{
-                background: {c['accent_soft']};
-                color: {c['accent']};
-                border: 1.5px dashed {c['accent']};
-            }}
-        """)
+        """配色由看板级样式表统一下发，此处仅触发重绘"""
+        self.update()
 
 
 class BoardView(QWidget):
@@ -1394,13 +1624,16 @@ class BoardView(QWidget):
         self._toolbar_layout.setSpacing(10)
 
         self._title_label = QLabel("🗂 我的看板")
+        self._title_label.setObjectName("boardTitle")
         self._toolbar_layout.addWidget(self._title_label)
 
         self._stats_label = QLabel()
+        self._stats_label.setObjectName("boardStats")
         self._toolbar_layout.addWidget(self._stats_label)
         # 注意：不加中间 stretch——弹性全部留给搜索框（右侧控件固定聚集）
 
         self._today_btn = QPushButton("⭐ 今日")
+        self._today_btn.setObjectName("boardToolBtn")
         self._today_btn.setCheckable(True)
         self._today_btn.setCursor(Qt.PointingHandCursor)
         self._today_btn.setToolTip("只显示未完成的：星标 / 已逾期 / 今天截止")
@@ -1433,18 +1666,21 @@ class BoardView(QWidget):
         self._toolbar_layout.addWidget(self._add_list_btn)
 
         self._archive_btn = QPushButton("归档")
+        self._archive_btn.setObjectName("boardToolBtn")
         self._archive_btn.setCursor(Qt.PointingHandCursor)
         self._archive_btn.setToolTip("查看已归档卡片并恢复")
         self._archive_btn.clicked.connect(self.signal_archive_open.emit)
         self._toolbar_layout.addWidget(self._archive_btn)
 
         self._export_btn = QPushButton("导出")
+        self._export_btn.setObjectName("boardToolBtn")
         self._export_btn.setCursor(Qt.PointingHandCursor)
         self._export_btn.setToolTip("导出为 Markdown / CSV")
         self._export_btn.clicked.connect(self._show_export_menu)
         self._toolbar_layout.addWidget(self._export_btn)
 
         self._theme_btn = _ThemeToggleButton()
+        self._theme_btn.setObjectName("boardThemeBtn")
         self._theme_btn.setCursor(Qt.PointingHandCursor)
         self._theme_btn.setFixedSize(34, 34)
         self._theme_btn.setToolTip("切换浅色 / 深色主题")
@@ -1452,6 +1688,7 @@ class BoardView(QWidget):
         self._toolbar_layout.addWidget(self._theme_btn)
 
         self._collapse_btn = QPushButton("－")
+        self._collapse_btn.setObjectName("boardCollapseBtn")
         self._collapse_btn.setCursor(Qt.PointingHandCursor)
         self._collapse_btn.setFixedSize(34, 34)
         self._collapse_btn.setToolTip("折叠为桌宠")
@@ -1489,6 +1726,7 @@ class BoardView(QWidget):
 
         # ── 列表区（横向滚动） ────────────────────────────
         self._scroll = QScrollArea()
+        self._scroll.setObjectName("boardScroll")
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.NoFrame)
         self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -1496,8 +1734,6 @@ class BoardView(QWidget):
         self._scroll.viewport().setAutoFillBackground(False)
         self._lists_host = QWidget()
         self._lists_host.setObjectName("listsHost")
-        self._lists_host.setStyleSheet(
-            "QWidget#listsHost { background: transparent; }")
         self._lists_layout = QHBoxLayout(self._lists_host)
         self._lists_layout.setContentsMargins(16, 4, 16, 12)
         self._lists_layout.setSpacing(12)
@@ -1508,20 +1744,35 @@ class BoardView(QWidget):
         # 空看板引导：无任何列表时覆盖在列表区上方居中，可穿透鼠标
         self._empty_hint = QLabel(
             "看板还是空的\n点击右上角「+ 添加列表」创建第一列", self)
+        self._empty_hint.setObjectName("emptyBoardHint")
         self._empty_hint.setAlignment(Qt.AlignCenter)
         self._empty_hint.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self._empty_hint.setStyleSheet(
-            f"color: {AppTheme.colors()['text_secondary']};"
-            " font-size: 15px; background: transparent;")
         self._empty_hint.hide()
 
         # 看板内轻提示（删除/撤销等操作反馈，见 toast.py）
         self._toast = Toast(self)
 
+        # 全局过滤器只在重命名编辑器存在期间安装（见 _attach_rename_filter）：
+        # 常态挂载会让全应用每个事件都过一遍 Python，实测 +23µs/事件
+        self._rename_filter_installed = False
         self.reapply_theme()
         AppTheme.register(self.reapply_theme)
-        # 点击看板任意非编辑器位置 → 提交并关闭重命名编辑器
-        QApplication.instance().installEventFilter(self)
+
+    # ── 重命名编辑器关闭守卫（按需安装的全局事件过滤器）────────
+
+    def _attach_rename_filter(self) -> None:
+        """按 _ACTIVE_RENAME 的有无安装/卸载全局事件过滤器"""
+        need = _ACTIVE_RENAME is not None
+        if need == self._rename_filter_installed:
+            return
+        app = QApplication.instance()
+        if app is None:
+            return
+        if need:
+            app.installEventFilter(self)
+        else:
+            app.removeEventFilter(self)
+        self._rename_filter_installed = need
 
     def eventFilter(self, obj, event) -> bool:
         if (event.type() == QEvent.MouseButtonPress
@@ -1530,11 +1781,15 @@ class BoardView(QWidget):
                 and obj is not _ACTIVE_RENAME
                 and not _ACTIVE_RENAME.isAncestorOf(obj)):
             finish_active_rename()
+            self._attach_rename_filter()   # 编辑器已关闭 → 卸掉过滤器
         return super().eventFilter(obj, event)
 
     def finish_rename(self, cancel: bool = False) -> bool:
         """关闭当前列表重命名编辑器（cancel=True 丢弃修改）；返回是否有关闭"""
-        return finish_active_rename(cancel)
+        closed = finish_active_rename(cancel)
+        if closed:
+            self._attach_rename_filter()
+        return closed
 
     def set_zoom_state(self, zoomed: bool) -> None:
         """同步最大化/还原图标状态（macOS 无此控件，空操作）"""
@@ -1544,76 +1799,22 @@ class BoardView(QWidget):
     # ── 主题 ──────────────────────────────────────────────
 
     def reapply_theme(self) -> None:
-        c = AppTheme.colors()
-        self._title_label.setStyleSheet(f"""
-            QLabel {{
-                font-size: 17px;
-                font-weight: bold;
-                color: {c['text_primary']};
-                background: transparent;
-            }}
-        """)
-        self._stats_label.setStyleSheet(f"""
-            QLabel {{
-                font-size: 12px;
-                color: {c['text_primary']};
-                background: rgba(128, 128, 128, 0.15);
-                border-radius: 8px;
-                padding: 3px 10px;
-            }}
-        """)
-        icon_color = c["text_primary"]
+        """主题切换：整块样式表设一次，再同步各控件与配色无关的状态
+
+        此前逐控件 setStyleSheet，嵌套设置会让同一批子控件反复 re-polish。
+        实测 300 张卡片下 reapply_theme() 285ms，其中列/卡片各占一半；
+        配色改为看板级统一下发后，整棵子树只 polish 一遍。
+        """
+        # 1) 整块配色一次设完（字符串按主题模式缓存）
+        qss = _board_qss(AppTheme.mode())
+        if self.styleSheet() != qss:
+            self.setStyleSheet(qss)
+
+        # 2) 与配色无关的状态
         self._theme_btn.set_mode(AppTheme.mode())
-        self._theme_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: rgba(128, 128, 128, 0.15);
-                border: none;
-                border-radius: 17px;
-                color: {icon_color};
-            }}
-            QPushButton:hover {{ background: rgba(128, 128, 128, 0.30); }}
-        """)
-        self._collapse_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: rgba(128, 128, 128, 0.15);
-                border: none;
-                border-radius: 17px;
-                font-weight: bold;
-                color: {icon_color};
-            }}
-            QPushButton:hover {{ background: rgba(128, 128, 128, 0.30); }}
-        """)
         if self._window_controls is not None:
             self._window_controls.reapply()
-        # 工具栏文字按钮（今日/归档/导出）统一灰底 pill 样式
-        for btn in (self._archive_btn, self._export_btn):
-            btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: rgba(128, 128, 128, 0.15);
-                    border: none;
-                    border-radius: 9px;
-                    padding: 5px 10px;
-                    font-size: 12px;
-                    color: {c['text_primary']};
-                }}
-                QPushButton:hover {{ background: rgba(128, 128, 128, 0.30); }}
-            """)
-        self._today_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: rgba(128, 128, 128, 0.15);
-                border: none;
-                border-radius: 9px;
-                padding: 5px 10px;
-                font-size: 12px;
-                color: {c['text_primary']};
-            }}
-            QPushButton:hover {{ background: rgba(128, 128, 128, 0.30); }}
-            QPushButton:checked {{ background: {c['accent']}; color: white; }}
-        """)
-        self._add_list_btn.reapply()
-        self._empty_hint.setStyleSheet(
-            f"color: {c['text_secondary']}; font-size: 15px;"
-            " background: transparent;")
+        self._attach_rename_filter()
         for col in self._columns:
             col.reapply_frame_style()
             col._header.reapply_theme()
@@ -1650,9 +1851,10 @@ class BoardView(QWidget):
         visibles = {lst.id: self._visible_cards_for(lst) for lst in lists}
 
         by_id = {col.list_id(): col for col in self._columns}
+        prev_order = [col.list_id() for col in self._columns]
         ordered_cols: list[ListColumn] = []
         kept: set[str] = set()
-        for i, lst in enumerate(lists):
+        for lst in lists:
             col = by_id.get(lst.id)
             if col is None:
                 col = self._make_column(lst)
@@ -1660,8 +1862,12 @@ class BoardView(QWidget):
                 col.set_list(lst, visibles[lst.id])
                 kept.add(lst.id)
             ordered_cols.append(col)
-            self._lists_layout.removeWidget(col)
-            self._lists_layout.insertWidget(i, col)
+        # 列顺序未变（单卡变更/编辑保存等）→ 布局无需重插；仅增删列或
+        # 拖拽重排造成顺序变化时才 remove+insert 保序（与卡片同一策略）
+        if prev_order != [col.list_id() for col in ordered_cols]:
+            for i, col in enumerate(ordered_cols):
+                self._lists_layout.removeWidget(col)
+                self._lists_layout.insertWidget(i, col)
         for list_id, col in by_id.items():
             if list_id not in kept:
                 self._columns.remove(col)
@@ -1791,9 +1997,9 @@ class BoardView(QWidget):
         col.signal_card_archive.connect(self.signal_card_archive)
         col.signal_collapsed_changed.connect(self.signal_list_collapsed)
         self._columns.append(col)
-        # 恢复上次折叠状态（save=False 不触发持久化回调）
+        # 恢复上次折叠状态（save=False 不触发持久化回调；建列时不播动画）
         if board_list.id in AppConfig.get_collapsed_lists():
-            col.set_collapsed(True, save=False)
+            col.set_collapsed(True, save=False, animate=False)
         return col
 
     def update_stats(self, lists: list[BoardList]) -> None:

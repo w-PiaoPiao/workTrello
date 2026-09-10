@@ -19,6 +19,8 @@ from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout
 
 from app.views.theme import AppTheme
+from app.views import motion
+from app.config import AppConfig
 
 _HIDE_DELAY_MS = 160   # 徽章→浮层移动时的容忍延迟
 
@@ -120,6 +122,7 @@ class NotesPopover(QFrame):
         same = (self.isVisible()
                 and self._body.text() == text
                 and self._recent_anchor == anchor_global)
+        was_visible = self.isVisible()
         if not same:
             self.reapply_style()
             self._body.setText(text)
@@ -134,6 +137,9 @@ class NotesPopover(QFrame):
         self._hide_timer.stop()
         self.show()
         self.raise_()
+        # 淡入只在"从无到有"时播放；锚点变化等重定位不重播，避免闪烁
+        if not was_visible:
+            motion.fade_in(self, AppConfig.POPOVER_ANIM_MS)
 
     def schedule_hide(self) -> None:
         """徽章/浮层 leave：延迟关闭（固定展示中不自动关闭），

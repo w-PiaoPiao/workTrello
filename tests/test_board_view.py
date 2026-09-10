@@ -54,6 +54,17 @@ class BoardViewRefreshTest(unittest.TestCase):
         """手动触发搜索防抖计时器（离屏无事件循环，直接驱动到点逻辑）"""
         self.view._search_timer.timeout.emit()
 
+    def _settle(self, ms: int = 400) -> None:
+        """跑事件循环直到折叠动画结束（过渡动画的最终态断言需要）
+
+        动画是新增的纯视觉层：状态机在终点才由 _apply_collapsed_ui 一次刷齐，
+        因此"最终态"断言必须等到动画结束再取，否则取到的是中间帧。
+        """
+        from PySide6.QtCore import QEventLoop, QTimer
+        loop = QEventLoop()
+        QTimer.singleShot(ms, loop.quit)
+        loop.exec()
+
     # ── 复用性 ────────────────────────────────────────────
 
     def test_same_data_reuses_widgets(self):
@@ -100,9 +111,13 @@ class BoardViewRefreshTest(unittest.TestCase):
         self.view.refresh(self.lists)
         self.assertIs(col._card_widgets[0], cw_a)      # 壳复用
         self.assertTrue(cw_a._card.done)
-        self.assertIn("line-through", cw_a._title_label.styleSheet())
+        # 完成态由 QSS 属性选择器 [done="true"] 驱动（配色统一由看板级样式表下发）
+        self.assertEqual(cw_a._title_label.property("done"), True)
+        self.assertIn('QLabel#cardTitle[done="true"]',
+                      self.view.styleSheet())
         self.assertIs(col._card_widgets[1], cw_b)      # 未变卡不重建
         self.assertFalse(cw_b._card.done)
+        self.assertFalse(cw_b._title_label.property("done"))
 
     def test_fingerprint_skips_rebuild(self):
         cw = self.view._columns[0]._card_widgets[0]
@@ -127,6 +142,98 @@ class BoardViewRefreshTest(unittest.TestCase):
         cw.update_from_model(cw._card)
         self.assertIsNot(cw._delete_btn, first_btn)
         self.assertNotIn(first_btn, cw.findChildren(QPushButton))
+
+    # ── 指纹字段覆盖（防"改了不刷新"） ────────────────────
+
+    def _badges(self, cw):
+        return [b.text() for b, _ in cw._meta_badges]
+
+    def test_fingerprint_covers_every_rendered_field(self):
+        """指纹必须覆盖 rebuild 渲染的每个字段
+
+        回归护栏：指纹曾漏掉 priority/repeat/pomodoros，导致这三项变化时
+        卡片不重建、持续显示旧徽章，直到其他字段变化才连带刷新。
+        """
+        # rebuild 会渲染进徽章的模型字段 → 必须全部参与指纹
+        cw = self.view._columns[0]._card_widgets[0]
+        rendered = {"title", "done", "due_date", "labels",
+                    "priority", "repeat", "pomodoros"}
+        fp = cw._content_fingerprint()
+        before = fp
+        # 逐个改动渲染字段，每个都必须让指纹变化
+        for field in rendered:
+            card = Card(title="A", id="fp-probe")
+            original = getattr(card, field)
+            if isinstance(original, bool):
+                probe = not original
+            elif isinstance(original, list):
+                probe = ["blue"]
+            elif isinstance(original, int):
+                probe = original + 1
+            elif original is None:
+                probe = "2026-01-01"
+            elif field == "due_date":
+                probe = "2026-01-01"
+            elif field == "repeat":
+                probe = "daily"
+            else:
+                probe = str(original) + "x"
+            setattr(card, field, probe)
+            cw._card = card
+            self.assertNotEqual(cw._content_fingerprint(), before,
+                                f"字段 {field} 未参与指纹")
+        # notes 只以 bool 参与（正文变化不重建，见 update_from_model）
+        cw._card = Card(title="A", id="fp-probe", notes="")
+        no_notes = cw._content_fingerprint()
+        cw._card = Card(title="A", id="fp-probe", notes="有备注了")
+        self.assertNotEqual(cw._content_fingerprint(), no_notes,
+                            "notes 的有/无未参与指纹")
+
+    def test_priority_change_refreshes_badge(self):
+        """优先级变化立即刷新徽章（回归：指纹曾漏 priority）"""
+        lists = make_lists([("待办", ["A"])])
+        lists[0].cards[0].priority = 2
+        self.view.refresh(lists)
+        cw = self.view._columns[0]._card_widgets[0]
+        self.assertEqual(self._badges(cw), ["P2"])
+        lists[0].cards[0].priority = 1
+        self.view.refresh(lists)
+        self.assertEqual(self._badges(cw), ["P1"],
+                         "优先级变化后徽章仍是旧值")
+
+    def test_pomodoro_count_refreshes_badge(self):
+        """番茄数变化立即刷新徽章（回归：指纹曾漏 pomodoros）"""
+        lists = make_lists([("待办", ["A"])])
+        self.view.refresh(lists)
+        cw = self.view._columns[0]._card_widgets[0]
+        self.assertEqual(self._badges(cw), [])
+        lists[0].cards[0].pomodoros = 3
+        self.view.refresh(lists)
+        self.assertIn("🍅 ×3", self._badges(cw),
+                      "番茄数变化后徽章未刷新")
+
+    def test_repeat_change_refreshes_badge(self):
+        """重复周期变化立即刷新徽章（回归：指纹曾漏 repeat）"""
+        lists = make_lists([("待办", ["A"])])
+        self.view.refresh(lists)
+        cw = self.view._columns[0]._card_widgets[0]
+        self.assertEqual(self._badges(cw), [])
+        lists[0].cards[0].repeat = "daily"
+        lists[0].cards[0].due_date = "2026-01-01"
+        self.view.refresh(lists)
+        self.assertTrue(any("每日" in t for t in self._badges(cw)),
+                        "重复周期变化后徽章未刷新")
+
+    def test_badge_tone_tracks_semantic_color(self):
+        """徽章语义色经 tone 动态属性下发（P1 红 / P2 橙 / 逾期红）"""
+        lists = make_lists([("待办", ["A"])])
+        lists[0].cards[0].priority = 1
+        lists[0].cards[0].due_date = "2020-01-01"   # 早已逾期
+        self.view.refresh(lists)
+        cw = self.view._columns[0]._card_widgets[0]
+        tones = [tone for _b, tone in cw._meta_badges]
+        self.assertEqual(tones[0], "danger")        # P1 → 红
+        self.assertEqual(tones[1], "danger")        # 逾期 → 红
 
     # ── 模型对象重指向（备份恢复场景） ────────────────────
 
@@ -331,6 +438,7 @@ class BoardViewRefreshTest(unittest.TestCase):
         col = self.view._columns[0]
         header = col._header
         col.set_collapsed(True, save=False)
+        self._settle()                                # 等折叠动画走完，光标才会落在折叠后的列头上
         QApplication.processEvents()
         QTest.mouseMove(header._collapse_btn,
                         header._collapse_btn.rect().center())
@@ -338,13 +446,19 @@ class BoardViewRefreshTest(unittest.TestCase):
         self.assertTrue(header.underMouse())          # 光标确实停在列头上
 
         col.toggle_collapsed()                        # 展开（Leave 在过程内派发）
+        self._settle()                                # 等过渡动画走完再取最终态
         QApplication.processEvents()
 
         self.assertFalse(col.is_collapsed())
         self.assertFalse(col._scroll.isHidden())      # 卡片区回来
         self.assertFalse(col._add_btn.isHidden())     # 添加按钮回来（回归点）
         self.assertEqual(header._collapse_btn.text(), "▾")
-        self.assertFalse(header._menu_btn._active)    # 折叠态残留点亮不带走
+        # 展开后列头已离开光标 → 残留点亮必须带走
+        self.assertFalse(header.underMouse())
+        self.assertFalse(header._menu_btn._active)
+        # 动画期的固定高度必须清除，否则列被钉死在过渡终点高度
+        self.assertEqual(col.maximumHeight(), 16777215)
+        self.assertIsNone(col._collapse_anim)
 
     def test_expand_survives_exception_in_child_event_handler(self):
         """子控件事件处理器抛异常也不得截断折叠状态同步（防回归护栏）"""
@@ -354,9 +468,133 @@ class BoardViewRefreshTest(unittest.TestCase):
         col._scroll.showEvent = lambda e: (_ for _ in ()).throw(
             RuntimeError("boom"))
         col.toggle_collapsed()                        # 不得向外抛
+        self._settle()
         self.assertFalse(col.is_collapsed())
         self.assertFalse(col._add_btn.isHidden())     # 最终态仍刷齐
         self.assertEqual(col._header._collapse_btn.text(), "▾")
+
+    # ── 过渡动画 ──────────────────────────────────────────
+
+    def test_collapse_animates_then_settles(self):
+        """折叠走过渡动画：起播后由动画驱动，终点刷齐最终态"""
+        from app.views import motion
+        col = self.view._columns[0]
+        self.view.show()
+        self._settle(50)
+        col.set_collapsed(True)                       # save=True 走真实路径
+        self.assertIsNotNone(col._collapse_anim)      # 动画已起播
+        self.assertTrue(col.is_collapsed())           # 逻辑状态已切换
+        self.assertIsNotNone(col._cards_host)         # 内容仍存活，随高度收窄
+        self._settle()                                # 等动画走完
+        self.assertIsNone(col._collapse_anim)
+        self.assertTrue(col._scroll.isHidden())       # 终点才隐藏内容
+        self.assertEqual(col.height(), col.COLLAPSED_HEIGHT)
+        self.assertEqual(col.maximumHeight(), 16777215)
+        self.assertEqual(col.minimumHeight(), 0)
+
+    def test_animation_toggle_disables_transitions(self):
+        """"暂停动画"总开关关闭 → 折叠瞬时生效（无动画对象）"""
+        from app.config import AppConfig
+        from app.views import motion
+        original = motion.enabled()
+        try:
+            motion.set_enabled(False)
+            col = self.view._columns[0]
+            self.view.show()
+            self._settle(50)
+            col.set_collapsed(True, save=False)
+            self.assertIsNone(col._collapse_anim)     # 无动画
+            self.assertTrue(col.is_collapsed())
+            self.assertTrue(col._scroll.isHidden())   # 状态立即到位
+            col.set_collapsed(False, save=False)
+            self.assertIsNone(col._collapse_anim)
+            self.assertFalse(col._scroll.isHidden())
+        finally:
+            motion.set_enabled(original)
+
+    def test_collapse_animation_interrupted_by_hide(self):
+        """折叠动画进行中隐藏列：收尾为最终态，不停在中间高度"""
+        col = self.view._columns[0]
+        self.view.show()
+        self._settle(50)
+        col.set_collapsed(True, save=False)
+        self.assertIsNotNone(col._collapse_anim)
+        col.hide()                                    # 模拟列表被移除/隐藏
+        self._settle(50)
+        self.assertIsNone(col._collapse_anim)
+        self.assertEqual(col.maximumHeight(), 16777215)
+
+    def test_new_card_fades_in(self):
+        """新增卡片淡入：透明度真的从低到高，且结束后摘掉 effect"""
+        from PySide6.QtWidgets import QGraphicsOpacityEffect
+        from app.config import AppConfig
+        from app.views import motion
+        col = self.view._columns[0]
+        self.view.show()
+        self._settle(50)
+        self.lists[0].cards.insert(0, Card(title="新卡"))
+        self.view.refresh(self.lists)
+        fresh = col._card_widgets[0]
+        self.assertIsNotNone(getattr(fresh, "_motion_fade", None))
+        # 起点必须是"接近全透明"——曾因起点被设成 1.0 导致 1.0→1.0 空动画
+        eff = fresh.graphicsEffect()
+        self.assertIsInstance(eff, QGraphicsOpacityEffect)
+        self.assertLess(eff.opacity(), 0.9)
+        self._settle(300)                             # 等淡入走完
+        # 淡入结束必须摘掉临时 effect，否则控件持续走离屏渲染
+        self.assertIsNone(fresh.graphicsEffect())
+        self.assertIsNone(getattr(fresh, "_motion_fade", None))
+        # 批量新增（搜索清空/导入）超过 ANIM_BATCH_LIMIT → 不播动画
+        n = AppConfig.ANIM_BATCH_LIMIT + 2
+        self.lists[0].cards = [Card(title=f"bulk{i}") for i in range(n)]
+        self.view.refresh(self.lists)
+        for cw in col._card_widgets:
+            self.assertIsNone(getattr(cw, "_motion_fade", None))
+
+    def test_fade_in_then_interrupt_settles_to_opaque(self):
+        """淡入被新动画打断：从当前值续接，并最终收在完全不透明"""
+        from app.views import motion
+        from app.views.board_view import CardWidget
+        w = CardWidget(Card(title="x"))
+        w.resize(100, 40)
+        try:
+            motion.fade_in(w, 200)
+            self._settle(60)
+            self.assertLess(w.graphicsEffect().opacity(), 1.0)   # 淡入途中
+            motion.fade_in(w, 200)                    # 打断：从当前值续接
+            self._settle(300)
+            self.assertIsNone(w.graphicsEffect())     # 结束已摘除
+            self.assertIsNone(getattr(w, "_motion_fade", None))
+        finally:
+            w.deleteLater()
+
+    def test_removed_card_fades_out_before_delete(self):
+        """删除卡片先淡出再销毁（动画期间控件仍存活，否则动画播不出来）"""
+        from app.views import motion
+        col = self.view._columns[0]
+        self.view.show()
+        self._settle(50)
+        gone = col._card_widgets[0]
+        gone_id = gone.card().id
+        self.lists[0].cards = self.lists[0].cards[1:]
+        self.view.refresh(self.lists)
+        self.assertNotIn(gone, col._card_widgets)      # 已脱离列
+        self.assertIsNotNone(getattr(gone, "_motion_fade", None))
+        self.assertEqual(gone.card().id, gone_id)      # 尚未销毁，仍可读模型
+        motion.fade(gone, 0.0, 0, on_finished=gone.deleteLater)
+
+    def test_delete_button_fades_in_on_hover(self):
+        """悬停卡片：删除按钮先 show 再淡入"""
+        from PySide6.QtCore import QPointF
+        from PySide6.QtGui import QEnterEvent
+        from app.views import motion
+        cw = self.view._columns[0]._card_widgets[0]
+        self.view.show()
+        self._settle(50)
+        cw.enterEvent(QEnterEvent(QPointF(5, 5), QPointF(5, 5), QPointF(5, 5)))
+        self.assertTrue(cw._delete_btn.isVisible())
+        self.assertIsNotNone(getattr(cw._delete_btn, "_motion_fade", None))
+        motion.fade(cw._delete_btn, 1.0, 0)           # 收尾，避免残留 effect
 
     def test_refresh_same_order_skips_layout_reinsert(self):
         """顺序未变的数据刷新不再整列 remove+insert（单卡变更的原位更新）"""
@@ -386,6 +624,52 @@ class BoardViewRefreshTest(unittest.TestCase):
         finally:
             bv.finish_active_rename(cancel=True)
         self.assertIsNone(bv._ACTIVE_RENAME)
+
+    def test_rename_filter_installed_only_while_editing(self):
+        """全局事件过滤器仅在重命名编辑器存在期间安装
+
+        常态挂载会让全应用每个事件都过一遍 Python（实测 +23µs/事件），
+        故按需装卸；本测试锁住该行为，防止改回常驻安装。
+        """
+        import app.views.board_view as bv
+        self.assertFalse(self.view._rename_filter_installed)
+        header = self.view._columns[0]._header
+        header._start_rename()
+        try:
+            self.assertIsNotNone(bv._ACTIVE_RENAME)
+            self.assertTrue(self.view._rename_filter_installed)
+        finally:
+            bv.finish_active_rename(cancel=True)
+        self.assertIsNone(bv._ACTIVE_RENAME)
+        self.assertFalse(self.view._rename_filter_installed)
+
+    def test_refresh_same_order_skips_column_reinsert(self):
+        """列顺序未变的刷新不再整列 remove+insert（与卡片同一策略）"""
+        col = self.view._columns[0]
+        calls = []
+        orig = self.view._lists_layout.removeWidget
+        self.view._lists_layout.removeWidget = (
+            lambda w: (calls.append(1), orig(w)))
+        try:
+            self.view.refresh(self.lists)          # 顺序未变 → 布局零操作
+            self.assertEqual(calls, [])
+            self.assertEqual([c.list_id() for c in self.view._columns],
+                             [l.id for l in self.lists])
+            self.view.refresh([self.lists[1], self.lists[0]])   # 顺序变化 → 重排
+            self.assertGreater(len(calls), 0)
+            self.assertEqual([c.list_id() for c in self.view._columns],
+                             [self.lists[1].id, self.lists[0].id])
+        finally:
+            self.view._lists_layout.removeWidget = orig
+        self.assertIs(col, self.view._columns[1])   # 列控件仍复用
+
+    def test_split_stylesheet_applied_once_on_board(self):
+        """配色集中在 BoardView 一处下发（避免逐控件嵌套样式表重复 re-polish）"""
+        self.assertIn("QFrame#listColumn", self.view.styleSheet())
+        self.assertIn("QFrame#cardFrame", self.view.styleSheet())
+        cw = self.view._columns[0]._card_widgets[0]
+        self.assertEqual(cw.styleSheet(), "")       # 卡片不再自设配色
+        self.assertEqual(cw._title_label.styleSheet(), "")
 
     # ── 整列拖拽 ──────────────────────────────────────────
 
