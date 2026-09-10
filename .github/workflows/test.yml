@@ -1,0 +1,39 @@
+name: 测试
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    # 矩阵与 release.yml 保持一致（Windows / macOS 为实际发布平台）。
+    # 不纳入 Linux：发布产物不含 Linux，且 ubuntu-latest 上运行 PySide6
+    # 需要额外 apt 系统库（libGL/libegl/libxkbcommon 等），未验证前不引入
+    # 可能常红的任务。
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+          - os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 运行测试（离屏）
+        env:
+          QT_QPA_PLATFORM: offscreen
+          # 隔离用户数据目录：测试不得读写真实看板
+          PET_BOARD_DATA_DIR: ${{ runner.temp }}/petboard-test-data
+        run: python -m unittest discover -s tests -t . -v
