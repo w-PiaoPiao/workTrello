@@ -37,6 +37,7 @@ def main() -> int:
         sys.executable, "-m", "PyInstaller",
         "--onefile", "--windowed",
         "--name", name,
+        "--icon", "assets/app.ico",
         "--exclude-module", "PySide6.QtWebEngineCore",
         "--exclude-module", "PySide6.QtWebEngineWidgets",
         "--exclude-module", "PySide6.QtQml",

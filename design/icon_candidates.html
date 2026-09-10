@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>桌宠看板 peTTrello · 应用图标候选</title>
+<style>
+  :root {
+    --page-bg: #0e1118;
+    --card-bg: #171b26;
+    --card-border: #262c3d;
+    --text-main: #e8ecf6;
+    --text-dim: #98a2bd;
+    --accent: #5b8dff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    background: var(--page-bg);
+    color: var(--text-main);
+    padding: 36px 28px 96px;
+    min-height: 100vh;
+  }
+  header { max-width: 1180px; margin: 0 auto 8px; }
+  h1 {
+    font-size: 26px;
+    background: linear-gradient(120deg, #7ca8ff, #b48cff 60%, #ff9db4);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    letter-spacing: 1px;
+  }
+  .sub { color: var(--text-dim); margin-top: 8px; font-size: 14px; line-height: 1.7; }
+  .sub b { color: #c6d2f2; font-weight: 600; }
+  .toolbar {
+    max-width: 1180px; margin: 18px auto 20px;
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  }
+  .toolbar .label { color: var(--text-dim); font-size: 13px; margin-right: 2px; }
+  .bg-btn {
+    border: 1px solid var(--card-border);
+    background: var(--card-bg); color: var(--text-dim);
+    padding: 7px 16px; border-radius: 20px; cursor: pointer; font-size: 13px;
+    transition: all .15s;
+  }
+  .bg-btn:hover { color: var(--text-main); border-color: #3a4260; }
+  .bg-btn.active { background: linear-gradient(120deg, #3d6fe0, #7c5cd6); color: #fff; border-color: transparent; }
+  .grid {
+    max-width: 1180px; margin: 0 auto;
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(255px, 1fr));
+    gap: 18px;
+  }
+  .tile {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 18px; padding: 18px;
+    cursor: pointer; position: relative;
+    transition: transform .15s, box-shadow .15s, border-color .15s;
+  }
+  .tile:hover { transform: translateY(-3px); border-color: #3d4a6e; box-shadow: 0 12px 30px rgba(0,0,0,.35); }
+  .tile.selected {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent), 0 12px 30px rgba(64,110,255,.25);
+  }
+  .tile .num {
+    position: absolute; top: 12px; left: 14px;
+    font-size: 12px; color: var(--text-dim);
+    background: rgba(255,255,255,.06); border: 1px solid var(--card-border);
+    padding: 2px 9px; border-radius: 12px; z-index: 2;
+  }
+  .tile.selected .num { background: var(--accent); color: #fff; border-color: transparent; }
+  .check {
+    position: absolute; top: 10px; right: 12px; z-index: 2;
+    width: 24px; height: 24px; border-radius: 50%;
+    background: var(--accent); color: #fff;
+    display: none; align-items: center; justify-content: center; font-size: 14px;
+  }
+  .tile.selected .check { display: flex; }
+  .preview {
+    border-radius: 14px; padding: 26px 0;
+    display: flex; align-items: center; justify-content: center;
+    margin-bottom: 12px; transition: background .2s;
+    background: linear-gradient(135deg, #f7f9ff, #e8edf8);
+  }
+  .preview.dark { background: #14161f; }
+  .preview.split { background: linear-gradient(90deg, #f7f9ff 0 50%, #14161f 50% 100%); }
+  .sizes {
+    display: flex; align-items: flex-end; justify-content: center; gap: 22px;
+    border-radius: 10px; padding: 12px 0 8px; margin-bottom: 12px; transition: background .2s;
+    background: linear-gradient(135deg, #f7f9ff, #e8edf8);
+  }
+  .sizes.dark { background: #14161f; }
+  .sizes.split { background: linear-gradient(90deg, #f7f9ff 0 50%, #14161f 50% 100%); }
+  .sizes .cap { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .sizes .cap span { font-size: 10px; color: #8a94ad; }
+  .tile h3 { font-size: 16px; margin: 2px 0 4px; }
+  .tile h3 em { font-style: normal; font-size: 11px; color: var(--accent); margin-left: 8px; }
+  .tile .tag { font-size: 13px; color: var(--text-dim); line-height: 1.6; }
+  .tile .note {
+    margin-top: 8px; font-size: 11.5px; color: #7d88a6; line-height: 1.55;
+    border-top: 1px dashed var(--card-border); padding-top: 8px;
+  }
+  .bar {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    background: rgba(18, 22, 33, .92); backdrop-filter: blur(10px);
+    border-top: 1px solid var(--card-border);
+    padding: 14px 28px; display: flex; align-items: center; gap: 16px;
+    z-index: 10;
+  }
+  .bar .sel { flex: 1; font-size: 14px; color: var(--text-dim); }
+  .bar .sel b { color: #fff; font-size: 15px; }
+  .bar button {
+    background: linear-gradient(120deg, #3d6fe0, #7c5cd6);
+    color: #fff; border: none; padding: 9px 22px; border-radius: 10px;
+    cursor: pointer; font-size: 14px;
+  }
+  .bar button:hover { filter: brightness(1.12); }
+  .tip { font-size: 12px; color: #6b7694; }
+</style>
+</head>
+<body>
+<header>
+  <h1>桌宠看板 peTTrello — 应用图标候选</h1>
+  <div class="sub">
+    点击卡片选择心仪的图标（也可按键盘 <b>1–8</b>）。右上可切换预览背景，下方小图测试 <b>48 / 32 / 16 px</b>（托盘、任务栏）下的可辨识度。
+    选好后把编号告诉我，我来生成 <b>.ico / .icns</b> 并接入托盘、窗口和打包流程。
+  </div>
+</header>
+
+<div class="toolbar">
+  <span class="label">预览背景：</span>
+  <button class="bg-btn active" data-bg="light">浅色</button>
+  <button class="bg-btn" data-bg="dark">深色</button>
+  <button class="bg-btn" data-bg="split">左浅右深</button>
+  <span class="tip" style="margin-left:auto">快捷键：1–8 选择 · L/D/S 切背景</span>
+</div>
+
+<div class="grid" id="grid"></div>
+
+<div class="bar">
+  <div class="sel" id="selText">尚未选择 —— 点击上方任意候选图标</div>
+  <button id="copyBtn">复制我的选择</button>
+</div>
+
+<script>
+/* ---------- 通用元素 ---------- */
+const SQ = 'M32 0C9.6 0 0 9.6 0 32c0 22.4 9.6 32 32 32 22.4 0 32-9.6 32-32C64 9.6 54.4 0 32 0Z';
+let uidCounter = 0;
+const uid = () => 'u' + (++uidCounter);
+
+function lg(id, c1, c2, x1 = 0, y1 = 0, x2 = 1, y2 = 1) {
+  return `<linearGradient id="${id}" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}">
+    <stop offset="0" stop-color="${c1}"/><stop offset="1" stop-color="${c2}"/></linearGradient>`;
+}
+
+/* ---------- 八款候选 ---------- */
+const ICONS = [
+  {
+    id: 'pet-face', name: '奶糖桌宠', tag: '桌宠本宠 —— 一只白团子顶着看板天线',
+    note: '识别度最高的方向：眼睛在 16px 依然清晰。天线小球暗示"看板/提醒"。',
+    draw(u) {
+      return `${lg(u + '-bg', '#4F8DFF', '#7C5CFF')}
+      <path d="${SQ}" fill="url(#${u}-bg)"/>
+      <ellipse cx="22" cy="13" rx="21" ry="12" fill="#fff" opacity=".14"/>
+      <line x1="32" y1="17.5" x2="32" y2="12.5" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/>
+      <circle cx="32" cy="10.4" r="2.7" fill="#fff"/>
+      <rect x="12" y="16" width="40" height="32" rx="15" fill="#fff" opacity=".97"/>
+      <circle cx="25.5" cy="31" r="4" fill="#2B2F3A"/><circle cx="38.5" cy="31" r="4" fill="#2B2F3A"/>
+      <circle cx="24.2" cy="29.7" r="1.4" fill="#fff"/><circle cx="37.2" cy="29.7" r="1.4" fill="#fff"/>
+      <ellipse cx="18.5" cy="37.5" rx="3.6" ry="2.2" fill="#FFB3C1" opacity=".85"/>
+      <ellipse cx="45.5" cy="37.5" rx="3.6" ry="2.2" fill="#FFB3C1" opacity=".85"/>
+      <path d="M29.5 38.5 Q32 41.5 34.5 38.5" stroke="#2B2F3A" stroke-width="2" fill="none" stroke-linecap="round"/>`;
+    }
+  },
+  {
+    id: 'kanban-cards', name: '三卡看板', tag: '经典看板符号的精修版 —— 中间卡片点亮',
+    note: '最"看板"的一版，行业通用语言。16px 下三根白柱依然分明。',
+    draw(u) {
+      return `${lg(u + '-bg', '#3D7BFF', '#8B5CF6')}
+      <path d="${SQ}" fill="url(#${u}-bg)"/>
+      <ellipse cx="20" cy="12" rx="20" ry="12" fill="#fff" opacity=".13"/>
+      <rect x="11.5" y="20" width="11" height="26" rx="3.5" fill="#fff" opacity=".97"/>
+      <rect x="14.5" y="25" width="5" height="2.2" rx="1.1" fill="#C7D3F0"/>
+      <rect x="14.5" y="29.5" width="5" height="2.2" rx="1.1" fill="#C7D3F0" opacity=".8"/>
+      <rect x="14.5" y="34" width="5" height="2.2" rx="1.1" fill="#C7D3F0" opacity=".55"/>
+      <rect x="26.5" y="14" width="11" height="32" rx="3.5" fill="#FFD166"/>
+      <rect x="29.5" y="19" width="5" height="2.2" rx="1.1" fill="#fff" opacity=".85"/>
+      <rect x="29.5" y="23.5" width="5" height="2.2" rx="1.1" fill="#fff" opacity=".6"/>
+      <rect x="29.5" y="28" width="5" height="2.2" rx="1.1" fill="#fff" opacity=".4"/>
+      <rect x="41.5" y="23" width="11" height="23" rx="3.5" fill="#fff" opacity=".97"/>
+      <rect x="44.5" y="28" width="5" height="2.2" rx="1.1" fill="#C7D3F0"/>
+      <rect x="44.5" y="32.5" width="5" height="2.2" rx="1.1" fill="#C7D3F0" opacity=".8"/>`;
+    }
+  },
+  {
+    id: 'traffic-board', name: '夜航看板', tag: '深色底 + 红黄绿状态灯 —— 呼应交通灯提醒',
+    note: '唯一深色底候选，在浅色任务栏里跳脱；状态灯呼应"逾期/今日/完成"。',
+    draw(u) {
+      return `${lg(u + '-bg', '#232A4D', '#4A3F8F')}
+      <path d="${SQ}" fill="url(#${u}-bg)"/>
+      <rect x="10" y="14" width="44" height="36" rx="8" fill="#fff" opacity=".1"/>
+      <rect x="10" y="14" width="44" height="36" rx="8" fill="none" stroke="#fff" stroke-opacity=".22"/>
+      <circle cx="19.75" cy="20" r="2.6" fill="#FF6B6B"/>
+      <circle cx="32" cy="20" r="2.6" fill="#FFC53D"/>
+      <circle cx="44.25" cy="20" r="2.6" fill="#3DDC97"/>
+      <rect x="16" y="25" width="7.5" height="20" rx="2.5" fill="#fff" opacity=".92"/>
+      <rect x="28.25" y="25" width="7.5" height="20" rx="2.5" fill="#fff" opacity=".92"/>
+      <rect x="40.5" y="25" width="7.5" height="20" rx="2.5" fill="#fff" opacity=".92"/>`;
+    }
+  },
+  {
+    id: 'pomodoro', name: '番茄卡片', tag: '白卡上一颗小番茄 —— 番茄钟专注',
+    note: '暖色系与其他候选区分度大；番茄特征在应用内出现频率很高。',
+    draw(u) {
+      return `${lg(u + '-bg', '#FF9057', '#F43F5E')}
+      <path d="${SQ}" fill="url(#${u}-bg)"/>
+      <ellipse cx="22" cy="12" rx="20" ry="11" fill="#fff" opacity=".14"/>
+      <rect x="14" y="17" width="36" height="30" rx="7" fill="#fff"/>
+      <rect x="31" y="21.5" width="2" height="3.4" rx="1" fill="#2FA872"/>
+      <path d="M32 24.6C30.2 22.4 27.8 21.9 25.4 22.8 26.9 24.9 29.3 25.6 32 24.6Z" fill="#34C98E"/>
+      <path d="M32 24.6C33.8 22.4 36.2 21.9 38.6 22.8 37.1 24.9 34.7 25.6 32 24.6Z" fill="#34C98E"/>
+      <circle cx="32" cy="32.5" r="8.5" fill="#F43F5E"/>
+      <ellipse cx="29" cy="29.5" rx="2.6" ry="1.7" fill="#fff" opacity=".55"/>
+      <rect x="20" y="43.3" width="24" height="2.4" rx="1.2" fill="#E4EAF6"/>`;
+    }
+  },
+  {
+    id: 'star-focus', name: '今日聚焦', tag: '一颗圆角星星 —— 对应工具栏「⭐ 今日」',
+    note: '符号最简洁，品牌蓝底白星，16px 极清晰；但"看板"属性弱。',
+    draw(u) {
+      return `${lg(u + '-bg', '#4F8DFF', '#7C5CFF')}
+      <path d="${SQ}" fill="url(#${u}-bg)"/>
+      <ellipse cx="32" cy="34" rx="18" ry="16" fill="#fff" opacity=".22"/>
+      <path d="M32 18 L36 28.5 L47.2 29.06 L38.5 36.1 L41.4 46.9 L32 40.8 L22.6 46.9 L25.5 36.1 L16.8 29.06 L28 28.5 Z"
+        fill="#fff" stroke="#fff" stroke-width="2.6" stroke-linejoin="round"/>`;
+    }
+  },
+  {
+    id: 'monogram', name: '字母 P', tag: 'peTTrello 的首字母 + 黄色小卡点缀',
+    note: '最"产品 logo"的一版，克制耐看；小尺寸最稳，但个性稍弱。',
+    draw(u) {
+      return `${lg(u + '-bg', '#3D7BFF', '#8B5CF6')}
+      <path d="${SQ}" fill="url(#${u}-bg)"/>
+      <ellipse cx="22" cy="12" rx="20" ry="12" fill="#fff" opacity=".13"/>
+      <rect x="20" y="15" width="9.5" height="34" rx="4.2" fill="#fff"/>
+      <path d="M29.5 15 H35 a10.5 10.5 0 0 1 0 21 H29.5 Z M29.5 20.5 H34.5 a5 5 0 0 1 0 10 H29.5 Z"
+        fill="#fff" fill-rule="evenodd"/>
+      <circle cx="41.5" cy="45" r="4.2" fill="#FFD166"/>`;
+    }
+  },
+  {
+    id: 'snow-pet', name: '雪团宠物', tag: '猫耳雪团 + 蓝围巾 —— 对应"雪团"皮肤',
+    note: '浅冰蓝底候选，笑眼弧线很有亲和力；肤色浅，浅色背景下略吃灰。',
+    draw(u) {
+      return `${lg(u + '-bg', '#BFE3FF', '#8FC7FF')}
+      <path d="${SQ}" fill="url(#${u}-bg)"/>
+      <path d="M20.5 26 L23 12.5 L31 19.5 Z" fill="#fff" stroke="#fff" stroke-width="3" stroke-linejoin="round"/>
+      <path d="M43.5 26 L41 12.5 L33 19.5 Z" fill="#fff" stroke="#fff" stroke-width="3" stroke-linejoin="round"/>
+      <path d="M23 21.5 L24 15.8 L28 19.6 Z" fill="#FFC9D6"/>
+      <path d="M41 21.5 L40 15.8 L36 19.6 Z" fill="#FFC9D6"/>
+      <circle cx="32" cy="36" r="16.5" fill="#fff"/>
+      <path d="M24.5 35.5 q2.6 3 5.2 0" stroke="#2B2F3A" stroke-width="2.2" fill="none" stroke-linecap="round"/>
+      <path d="M34.3 35.5 q2.6 3 5.2 0" stroke="#2B2F3A" stroke-width="2.2" fill="none" stroke-linecap="round"/>
+      <ellipse cx="23" cy="40.5" rx="3" ry="2" fill="#FFB3C1"/>
+      <ellipse cx="41" cy="40.5" rx="3" ry="2" fill="#FFB3C1"/>
+      <path d="M30.6 39.8 q1.4 1.7 2.8 0" stroke="#2B2F3A" stroke-width="1.9" fill="none" stroke-linecap="round"/>
+      <rect x="23.5" y="46.5" width="17" height="4.6" rx="2.3" fill="#5B8DFF"/>
+      <rect x="36.5" y="50.5" width="4.5" height="6.5" rx="2.2" fill="#5B8DFF"/>`;
+    }
+  },
+  {
+    id: 'peek-pet', name: '桌宠探头', tag: '桌宠从看板后探头 —— 一图讲完产品故事',
+    note: '信息量最足的"桌宠+看板"组合；推荐用在不小于 24px 的场景。',
+    draw(u) {
+      return `${lg(u + '-bg', '#38BDF8', '#6366F1')}
+      <path d="${SQ}" fill="url(#${u}-bg)"/>
+      <path d="M23.5 19 L25.5 8.5 L31.5 14.5 Z" fill="#fff" stroke="#fff" stroke-width="2.5" stroke-linejoin="round"/>
+      <path d="M40.5 19 L38.5 8.5 L32.5 14.5 Z" fill="#fff" stroke="#fff" stroke-width="2.5" stroke-linejoin="round"/>
+      <path d="M25.4 16.2 L26.2 11.8 L29 14.6 Z" fill="#FFB3C1"/>
+      <path d="M38.6 16.2 L37.8 11.8 L35 14.6 Z" fill="#FFB3C1"/>
+      <circle cx="32" cy="24" r="12.5" fill="#fff"/>
+      <circle cx="27.8" cy="23.5" r="2.1" fill="#2B2F3A"/><circle cx="36.2" cy="23.5" r="2.1" fill="#2B2F3A"/>
+      <circle cx="27.1" cy="22.8" r=".8" fill="#fff"/><circle cx="35.5" cy="22.8" r=".8" fill="#fff"/>
+      <ellipse cx="24" cy="27" rx="2.4" ry="1.5" fill="#FFB3C1" opacity=".9"/>
+      <ellipse cx="40" cy="27" rx="2.4" ry="1.5" fill="#FFB3C1" opacity=".9"/>
+      <rect x="10" y="29" width="44" height="23" rx="7" fill="#fff"/>
+      <rect x="16" y="34.5" width="9.5" height="12" rx="2" fill="#C9D8F6"/>
+      <rect x="27.2" y="34.5" width="9.5" height="12" rx="2" fill="#C9D8F6"/>
+      <rect x="38.4" y="34.5" width="9.5" height="12" rx="2" fill="#C9D8F6"/>
+      <circle cx="24" cy="29.5" r="3.1" fill="#fff" stroke="#D7E3F8" stroke-width="1.2"/>
+      <circle cx="40" cy="29.5" r="3.1" fill="#fff" stroke="#D7E3F8" stroke-width="1.2"/>`;
+    }
+  }
+];
+
+/* ---------- 渲染 ---------- */
+function svgOf(icon, size) {
+  const u = uid();
+  return `<svg viewBox="0 0 64 64" width="${size}" height="${size}" xmlns="http://www.w3.org/2000/svg">${icon.draw(u)}</svg>`;
+}
+
+const grid = document.getElementById('grid');
+grid.innerHTML = ICONS.map((icon, i) => `
+  <section class="tile" data-i="${i}" data-id="${icon.id}">
+    <span class="num">${i + 1}</span>
+    <span class="check">✓</span>
+    <div class="preview">${svgOf(icon, 112)}</div>
+    <div class="sizes">
+      <span class="cap">${svgOf(icon, 48)}<span>48px</span></span>
+      <span class="cap">${svgOf(icon, 32)}<span>32px</span></span>
+      <span class="cap">${svgOf(icon, 16)}<span>16px</span></span>
+    </div>
+    <h3>${icon.name}<em>${icon.id}</em></h3>
+    <p class="tag">${icon.tag}</p>
+    <p class="note">${icon.note}</p>
+  </section>`).join('');
+
+/* ---------- 交互 ---------- */
+let selected = -1;
+const selText = document.getElementById('selText');
+
+function select(i) {
+  selected = i;
+  document.querySelectorAll('.tile').forEach(t =>
+    t.classList.toggle('selected', +t.dataset.i === i));
+  const icon = ICONS[i];
+  selText.innerHTML = `当前选择：<b>「${icon.name}」</b>（${i + 1} / ${ICONS.length} · ${icon.id}）—— 点「复制我的选择」后把结果发回给我`;
+}
+
+grid.addEventListener('click', e => {
+  const tile = e.target.closest('.tile');
+  if (tile) select(+tile.dataset.i);
+});
+
+document.querySelectorAll('.bg-btn').forEach(btn => {
+  btn.addEventListener('click', () => setBg(btn.dataset.bg));
+});
+
+function setBg(mode) {
+  document.querySelectorAll('.bg-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.bg === mode));
+  document.querySelectorAll('.preview, .sizes').forEach(el => {
+    el.classList.remove('dark', 'split');
+    if (mode !== 'light') el.classList.add(mode);
+  });
+}
+
+document.getElementById('copyBtn').addEventListener('click', async () => {
+  if (selected < 0) { selText.innerHTML = '<b>还没选呢</b> —— 先点击一个候选图标'; return; }
+  const icon = ICONS[selected];
+  const text = `我选择图标「${icon.name}」（${selected + 1}/${ICONS.length} · ${icon.id}）`;
+  try {
+    await navigator.clipboard.writeText(text);
+    selText.innerHTML = `已复制：<b>${text}</b>`;
+  } catch {
+    selText.innerHTML = `请手动记录：<b>${text}</b>`;
+  }
+});
+
+document.addEventListener('keydown', e => {
+  const n = parseInt(e.key, 10);
+  if (n >= 1 && n <= ICONS.length) select(n - 1);
+  const k = e.key.toLowerCase();
+  if (k === 'l') setBg('light');
+  if (k === 'd') setBg('dark');
+  if (k === 's') setBg('split');
+});
+</script>
+</body>
+</html>

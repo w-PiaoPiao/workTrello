@@ -27,6 +27,9 @@ def main():
     app.setOrganizationName("Personal")
     app.setQuitOnLastWindowClosed(False)
 
+    from app.services.app_icon import create_app_icon
+    app.setWindowIcon(create_app_icon())
+
     app.setStyle("Fusion")
 
     # macOS：动态激活策略——交互时接管菜单栏（切到 regular），

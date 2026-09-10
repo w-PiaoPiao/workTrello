@@ -14,6 +14,7 @@ echo "打包: $name"
 
 pyinstaller --windowed \
     --name "$name" \
+    --icon "assets/app.icns" \
     --exclude-module PySide6.QtWebEngineCore \
     --exclude-module PySide6.QtWebEngineWidgets \
     --exclude-module PySide6.QtQml \

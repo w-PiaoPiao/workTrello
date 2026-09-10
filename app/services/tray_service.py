@@ -4,11 +4,12 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
+from PySide6.QtCore import QObject, Signal
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from app.config import AppConfig
+from app.services.app_icon import create_app_icon
 
 
 class TrayService(QObject):
@@ -24,7 +25,7 @@ class TrayService(QObject):
         super().__init__(parent)
 
         self._tray = QSystemTrayIcon(parent)
-        self._tray.setIcon(self._create_icon())
+        self._tray.setIcon(create_app_icon())
         self._tray.setToolTip(AppConfig.APP_NAME)
 
         self._menu = QMenu()
@@ -90,47 +91,3 @@ class TrayService(QObject):
             else:
                 self.signal_show_requested.emit()
 
-    @staticmethod
-    def _create_icon() -> QIcon:
-        """托盘图标：渐变圆角方块上的看板小卡图形"""
-        icon = QIcon()
-
-        for size in (48, 32, 24, 16):
-            pixmap = QPixmap(size, size)
-            pixmap.fill(QColor(0, 0, 0, 0))
-            painter = QPainter(pixmap)
-            painter.setRenderHint(QPainter.Antialiasing)
-
-            s = size
-            m = max(1, s // 16)
-            inner = s - 2 * m
-
-            # 背景圆角方块（蓝紫渐变感：主色 + 顶部高光）
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor("#2F6BFF"))
-            painter.drawRoundedRect(m, m, inner, inner, inner // 4, inner // 4)
-            painter.setBrush(QColor(255, 255, 255, 42))
-            painter.drawRoundedRect(m, m, inner, inner // 3, inner // 4, inner // 4)
-
-            if s >= 24:
-                # 三张看板小卡（错落排列）
-                card_w = max(3, s // 7)
-                card_h = max(4, s // 3)
-                y0 = s * 0.30
-                for i, x0 in enumerate(
-                        (s * 0.20, s * 0.40, s * 0.60)):
-                    painter.setBrush(QColor(255, 255, 255, 235))
-                    painter.drawRoundedRect(
-                        int(x0), int(y0 + (i % 2) * s * 0.06),
-                        card_w, card_h, 1, 1)
-            else:
-                # 16px：单张白卡
-                painter.setBrush(QColor(255, 255, 255, 235))
-                painter.drawRoundedRect(
-                    int(s * 0.28), int(s * 0.30),
-                    int(s * 0.44), int(s * 0.44), 2, 2)
-
-            painter.end()
-            icon.addPixmap(pixmap)
-
-        return icon
