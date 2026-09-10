@@ -56,6 +56,11 @@ class _Theme(QObject):
         except Exception:
             pass
         self._listeners: list = []
+        # 是否已把调色板/QSS 下发到 QApplication。没有它时 set_mode 会被
+        # "模式未变"短路掉，而首次启动恰好是"未变"（浅色→浅色），全局
+        # 样式就永远不下发——此前靠 MainWindow 复制一份窗口级 QSS 兜底，
+        # 那份副本又会在切主题时盖住已更新的 app 级规则。
+        self._applied = False
 
     # ── 模式 ──────────────────────────────────────────────
 
@@ -68,7 +73,9 @@ class _Theme(QObject):
             mode = "dark" if _default_dark() else "light"
         if mode not in ("light", "dark"):
             mode = "light"
-        if mode == self._mode:
+        # 模式相同仅在"确实已下发过"时才算无事可做：首次调用必须真正
+        # apply()，否则全局 QSS 永远是空的
+        if mode == self._mode and self._applied:
             return
         self._mode = mode
         self.apply()
@@ -83,6 +90,7 @@ class _Theme(QObject):
             app.setPalette(self._build_palette())
             app.setStyleSheet(self.global_qss())
         self._sync_native_appearance()
+        self._applied = True
         for cb in list(self._listeners):
             try:
                 cb()
@@ -217,12 +225,12 @@ class _Theme(QObject):
                 margin: 2px;
             }}
             QScrollBar::handle:vertical {{
-                background: rgba(128, 128, 128, 0.35);
+                background: {c['scroll_handle']};
                 border-radius: 4px;
                 min-height: 30px;
             }}
             QScrollBar::handle:vertical:hover {{
-                background: rgba(128, 128, 128, 0.55);
+                background: {c['scroll_handle_hover']};
             }}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
                 height: 0;
@@ -233,7 +241,7 @@ class _Theme(QObject):
                 margin: 2px;
             }}
             QScrollBar::handle:horizontal {{
-                background: rgba(128, 128, 128, 0.35);
+                background: {c['scroll_handle']};
                 border-radius: 4px;
                 min-width: 30px;
             }}

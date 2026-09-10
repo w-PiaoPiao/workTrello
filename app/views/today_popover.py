@@ -72,12 +72,29 @@ class TodayPopover(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setFixedWidth(280)
         self._rows: list[tuple[str, str, QWidget]] = []   # (list_id, card_id, row)
+        self._items: list[tuple[BoardList, Card]] = []    # 缓存供主题切换后重建
         self._built = False
+        AppTheme.register(self._on_theme_changed)
+
+    # ── 主题 ──────────────────────────────────────────────
+
+    def _on_theme_changed(self) -> None:
+        """主题切换：外壳与每行的配色都是构建时的快照，需重刷
+
+        与 archive_dialog.reapply_theme 同一意图。外壳布局保留不重建
+        （QWidget 同一时刻只能有一个布局，重建会告警），只重设样式并按
+        缓存数据重建行。
+        """
+        if not self._built:
+            return
+        self._apply_style()
+        self.set_items(self._items)
 
     # ── 数据注入 ──────────────────────────────────────────
 
     def set_items(self, items: list[tuple[BoardList, Card]]) -> None:
         self._rebuild_row_widget()
+        self._items = list(items)
         layout = self._rows_layout
         while layout.count():
             item = layout.takeAt(0)
@@ -156,7 +173,6 @@ class TodayPopover(QWidget):
         if self._built:
             return
         self._built = True
-        c = AppTheme.colors()
         self.setStyleSheet("""
             QScrollArea { background: transparent; }
             QWidget#rowsHost { background: transparent; }
@@ -165,13 +181,6 @@ class TodayPopover(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         frame = QFrame(self)
         frame.setObjectName("popFrame")
-        frame.setStyleSheet(f"""
-            QFrame#popFrame {{
-                background: {c['bg_card']};
-                border: 1px solid {c['border']};
-                border-radius: 12px;
-            }}
-        """)
         outer.addWidget(frame)
 
         root = QVBoxLayout(frame)
@@ -184,23 +193,14 @@ class TodayPopover(QWidget):
             "font-size: 13px; font-weight: bold; background: transparent;")
         head.addWidget(self._title_label)
         head.addStretch(1)
-        close = QPushButton("✕")
-        close.setFixedSize(22, 22)
-        close.setCursor(Qt.PointingHandCursor)
-        close.setStyleSheet(f"""
-            QPushButton {{
-                background: rgba(128, 128, 128, 0.25);
-                color: {c['text_primary']};
-                border: none;
-                border-radius: 11px;
-                font-size: 10px;
-            }}
-            QPushButton:hover {{ background: {c['danger']}; color: white; }}
-        """)
-        close.clicked.connect(self.close)
-        head.addWidget(close)
+        self._close_btn = QPushButton("✕")
+        self._close_btn.setFixedSize(22, 22)
+        self._close_btn.setCursor(Qt.PointingHandCursor)
+        self._close_btn.clicked.connect(self.close)
+        head.addWidget(self._close_btn)
         root.addLayout(head)
 
+        self._frame = frame
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.NoFrame)
@@ -213,6 +213,28 @@ class TodayPopover(QWidget):
         self._rows_layout.setSpacing(6)
         self._scroll.setWidget(self._rows_host)
         root.addWidget(self._scroll, 1)
+        self._apply_style()
+
+    def _apply_style(self) -> None:
+        """外壳（面板 + 关闭钮）配色；行配色在 _make_row 里各自快照"""
+        c = AppTheme.colors()
+        self._frame.setStyleSheet(f"""
+            QFrame#popFrame {{
+                background: {c['bg_card']};
+                border: 1px solid {c['border']};
+                border-radius: 12px;
+            }}
+        """)
+        self._close_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {c['mask']};
+                color: {c['text_primary']};
+                border: none;
+                border-radius: 11px;
+                font-size: 10px;
+            }}
+            QPushButton:hover {{ background: {c['danger']}; color: white; }}
+        """)
 
     def show_below(self, anchor: QRect) -> None:
         """在主窗口(anchor 全局矩形)上方/下方弹出，屏幕内夹紧"""

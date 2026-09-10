@@ -372,7 +372,7 @@ class BoardViewRefreshTest(unittest.TestCase):
         self.assertEqual([cw.card().title for cw in col0._card_widgets],
                          ["星标卡", "今天到期"])
         self.assertFalse(col0.acceptDrops())          # 过滤态禁用拖放
-        self.assertIn("⭐ 今日 2", self.view._today_btn.text())
+        self.assertIn("今日 2", self.view._today_btn.text())
         # 优先级：高优先级置顶；同级星标提权（主动标注优先于被动"今天截止"）
         self.lists[0].cards.insert(0, Card(title="高优先卡", starred=True,
                                            priority=1))
@@ -430,6 +430,7 @@ class BoardViewRefreshTest(unittest.TestCase):
         setVisible 逸出、截断其后的状态同步 → 列满高却没有"添加卡片"按钮、
         箭头停在"▸"（用户截图症状）。此处按真实顺序派发鼠标事件复现。
         """
+        from PySide6.QtCore import QPoint
         from PySide6.QtTest import QTest
         self.view.resize(1080, 640)
         self.view.show()
@@ -453,7 +454,12 @@ class BoardViewRefreshTest(unittest.TestCase):
         self.assertFalse(col._scroll.isHidden())      # 卡片区回来
         self.assertFalse(col._add_btn.isHidden())     # 添加按钮回来（回归点）
         self.assertEqual(header._collapse_btn.text(), "▾")
-        # 展开后列头已离开光标 → 残留点亮必须带走
+        # 列改为顶部对齐 + 内容高度后，展开不再移动列头，光标可能仍在其上；
+        # 点亮态必须与真实悬停一致——不能出现"没悬停却亮着"的残留
+        self.assertEqual(header._menu_btn._active, header.underMouse())
+        # 光标移开（列表区左上边距处）→ 残留点亮必须带走
+        QTest.mouseMove(self.view._scroll.viewport(), QPoint(2, 2))
+        QApplication.processEvents()
         self.assertFalse(header.underMouse())
         self.assertFalse(header._menu_btn._active)
         # 动画期的固定高度必须清除，否则列被钉死在过渡终点高度
@@ -751,6 +757,126 @@ class BoardViewRefreshTest(unittest.TestCase):
         cw.signal_card_archive.emit(cw.card().id)
         self.assertEqual(received["pomo"], cw.card().id)
         self.assertEqual(received["archive"], cw.card().id)
+
+    # ── 列高随内容收缩 ────────────────────────────────────
+
+    def test_column_height_hugs_content(self):
+        """列高 = 内容自然高度：短列不留空面板，长列顶到可用高度上限
+
+        回归：此前列被拉伸满高，卡片少时列底是一大片空面板、"添加卡片"
+        被顶到最底。改用 AlignTop + sizeHint 后列应贴合内容。
+        """
+        self.view.resize(1080, 640)
+        self.view.show()
+        self._settle(60)
+        # 1 卡列 vs 2 卡列：内容多的列更高，且都不超过可用高度
+        short_col, tall_col = self.view._columns[1], self.view._columns[0]
+        avail = short_col._expanded_height()
+        self.assertLess(short_col.height(), tall_col.height())
+        self.assertLessEqual(tall_col.height(), avail)
+        # 列高必须恰好装下内容（误差容许布局 1px 取整）
+        for col in (short_col, tall_col):
+            self.assertLessEqual(abs(col.height() - col._content_height()), 2)
+        self.view.hide()
+
+    def test_column_grows_when_card_added(self):
+        """加卡后列高跟着长（refresh_cards 触发 updateGeometry）"""
+        self.view.resize(1080, 640)
+        self.view.show()
+        self._settle(60)
+        col = self.view._columns[1]
+        before = col.height()
+        self.lists[1].cards.append(Card(title="新增卡"))
+        self.view.refresh(self.lists)
+        self.view.repaint()
+        self._settle(60)
+        self.assertGreater(col.height(), before)
+        self.view.hide()
+
+    def test_column_fits_content_without_scrollbar(self):
+        """恰好装下内容时不得冒出纵向滚动条（滚动条会挤窄卡片）"""
+        self.view.resize(1080, 640)
+        self.view.show()
+        self._settle(60)
+        for col in self.view._columns:
+            vbar = col._scroll.verticalScrollBar()
+            self.assertFalse(vbar.isVisible(),
+                             f"列 {col.list_id()} 出现多余纵向滚动条")
+        self.view.hide()
+
+    # ── 徽章按实际宽度取舍 ────────────────────────────────
+
+    def test_meta_badges_shrink_to_card_width(self):
+        """徽章装不下时折叠为 "…"，且不把卡片撑得比列内可视宽还宽
+
+        回归：Label 最小宽=文本宽，"P1+逾期+重复+备注+番茄"会把卡片撑到
+        316px，而列内可视宽仅 258px（列横向滚动条关闭）→ 徽章被裁。
+        """
+        self.view.resize(1080, 640)
+        self.view.show()
+        card = Card(title="最坏组合", priority=1, due_date="2020-01-01",
+                    repeat="weekly", notes="有备注", pomodoros=12)
+        card.labels = ["blue", "green", "red", "purple"]
+        self.lists[0].cards.append(card)
+        self.view.refresh(self.lists)
+        self.view.repaint()
+        self._settle(60)
+
+        cw = self.view._columns[0]._card_widgets[-1]
+        # 卡片宽度不得超过列内可视宽
+        self.assertLessEqual(cw.width(), self.view._columns[0]._scroll
+                             .viewport().width())
+        # 装不下的徽章被隐藏，并显示 "…" 指示
+        visible = [b for b, _ in cw._meta_badges if b.isVisible()]
+        self.assertLess(len(visible), len(cw._meta_badges))
+        self.assertTrue(cw._more_badge.isVisible())
+        # 可见徽章总宽不得超出卡片可用宽
+        m = cw.layout().contentsMargins()
+        need = (sum(b.sizeHint().width() for b in visible)
+                + 6 * max(0, len(visible) - 1)
+                + 6 + cw._more_badge.sizeHint().width())
+        self.assertLessEqual(need, cw.width() - m.left() - m.right())
+        self.view.hide()
+
+    def test_meta_badges_fit_are_all_shown(self):
+        """宽裕时徽章全显示、不出现 "…"（上限内且放得下）"""
+        self.view.resize(1400, 700)
+        self.view.show()
+        self._settle(60)
+        card = Card(title="两枚", priority=2, due_date="2030-01-01")
+        self.lists[0].cards.append(card)
+        self.view.refresh(self.lists)
+        self.view.repaint()
+        self._settle(60)
+        cw = self.view._columns[0]._card_widgets[-1]
+        self.assertTrue(all(b.isVisible() for b, _ in cw._meta_badges))
+        self.assertFalse(cw._more_badge.isVisible())
+        self.view.hide()
+
+    def test_more_badge_absent_for_cards_without_meta(self):
+        """无任何元信息的卡片不应创建 "…" 徽章"""
+        cw = self.view._columns[0]._card_widgets[0]
+        self.assertIsNone(cw._more_badge)
+
+    def test_meta_badges_reevaluate_on_resize(self):
+        """卡片变窄 → 徽章重新取舍（resizeEvent 重算）"""
+        self.view.resize(1080, 640)
+        self.view.show()
+        self._settle(60)
+        card = Card(title="窄卡", priority=1, due_date="2020-01-01",
+                    repeat="weekly", notes="备注", pomodoros=5)
+        self.lists[0].cards.append(card)
+        self.view.refresh(self.lists)
+        self.view.repaint()
+        self._settle(60)
+        cw = self.view._columns[0]._card_widgets[-1]
+        self.assertTrue(cw._more_badge.isVisible())      # 窄列 → 折叠
+        # 直接放大卡片：重排后应放下更多徽章
+        cw.resize(600, cw.height())
+        self.view.repaint()
+        shown = len([b for b, _ in cw._meta_badges if b.isVisible()])
+        self.assertGreater(shown, 0)
+        self.view.hide()
 
 
 if __name__ == "__main__":

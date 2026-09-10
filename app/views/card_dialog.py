@@ -197,7 +197,7 @@ class CardDialog(QDialog):
             self._done_check.setChecked(card.done)
         row.addWidget(self._done_check, 1, 1)
 
-        self._star_check = QCheckBox("⭐ 加入今日聚焦")
+        self._star_check = QCheckBox("加入今日聚焦")
         self._star_check.setToolTip("星标后卡片会出现在「今日聚焦」视图和桌宠角标中")
         if card:
             self._star_check.setChecked(card.starred)

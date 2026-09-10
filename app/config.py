@@ -223,7 +223,8 @@ class AppConfig:
     CARD_DRAG_THRESHOLD = 10    # 卡片按下后超过该位移才判定为拖拽（像素）
     LIST_DRAG_THRESHOLD = 10    # 列表头按下后超过该位移才判定为整列拖拽（像素）
     CARD_DELETE_BTN_H = 20      # 卡片右上角悬浮删除按钮的命中尺寸
-    CARD_META_BADGE_MAX = 4     # 卡片底部信息行最多显示的徽章数（超出折叠为 …）
+    CARD_META_BADGE_MAX = 4     # 卡片信息行徽章数硬上限（实际显示几个另按卡片
+    #                             实宽决定，装不下折成 …，见 _fit_meta_badges）
     EDGE_CURSOR_POLL_MS = 150   # Windows 展开态光标轮询间隔（系统缩放后事件链可能断裂）
     DRAG_AUTO_SCROLL_EDGE_PX = 44    # 卡片拖拽距视口该距离内触发自动滚动（像素）
     DRAG_AUTO_SCROLL_STEP = 20       # 自动滚动每帧位移（像素）
@@ -266,6 +267,15 @@ class AppConfig:
         "board_bg_start": "#5B8DEF",
         "board_bg_mid": "#7C6CE8",
         "board_bg_end": "#B46BE8",
+        # 工具栏「玻璃白」：白色半透明面浮在渐变背景上（浅色主题）
+        "glass": "rgba(255, 255, 255, 0.70)",
+        "glass_hover": "rgba(255, 255, 255, 0.92)",
+        # 面板内中性遮罩（列计数、卡片删除钮等叠在列/卡面上）
+        "mask": "rgba(128, 128, 128, 0.15)",
+        "mask_hover": "rgba(128, 128, 128, 0.30)",
+        # 滚动条把手
+        "scroll_handle": "rgba(128, 128, 128, 0.35)",
+        "scroll_handle_hover": "rgba(128, 128, 128, 0.55)",
     }
 
     # ── 颜色（深色）──────────────────────────────────────────
@@ -287,6 +297,13 @@ class AppConfig:
         "board_bg_start": "#1B2233",
         "board_bg_mid": "#221B36",
         "board_bg_end": "#2E1B3A",
+        # 工具栏「玻璃白」：深色下为低透明白，靠提亮而非变灰区分层级
+        "glass": "rgba(255, 255, 255, 0.12)",
+        "glass_hover": "rgba(255, 255, 255, 0.20)",
+        "mask": "rgba(128, 128, 128, 0.15)",
+        "mask_hover": "rgba(128, 128, 128, 0.30)",
+        "scroll_handle": "rgba(128, 128, 128, 0.35)",
+        "scroll_handle_hover": "rgba(128, 128, 128, 0.55)",
     }
 
     # ── 卡片标签色板（key → (背景, 文字)）────────────────────

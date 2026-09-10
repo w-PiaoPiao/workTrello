@@ -154,31 +154,31 @@ def _board_qss(mode: str) -> str:
         QLabel#boardStats {{
             font-size: 12px;
             color: {c['text_primary']};
-            background: rgba(128, 128, 128, 0.15);
+            background: {c['glass']};
             border-radius: 8px;
             padding: 3px 10px;
         }}
         QPushButton#boardThemeBtn {{
-            background: rgba(128, 128, 128, 0.15);
+            background: {c['glass']};
             border: none;
             border-radius: 17px;
             color: {c['text_primary']};
         }}
         QPushButton#boardThemeBtn:hover {{
-            background: rgba(128, 128, 128, 0.30);
+            background: {c['glass_hover']};
         }}
         QPushButton#boardCollapseBtn {{
-            background: rgba(128, 128, 128, 0.15);
+            background: {c['glass']};
             border: none;
             border-radius: 17px;
             font-weight: bold;
             color: {c['text_primary']};
         }}
         QPushButton#boardCollapseBtn:hover {{
-            background: rgba(128, 128, 128, 0.30);
+            background: {c['glass_hover']};
         }}
         QPushButton#boardToolBtn {{
-            background: rgba(128, 128, 128, 0.15);
+            background: {c['glass']};
             border: none;
             border-radius: 9px;
             padding: 5px 10px;
@@ -186,11 +186,25 @@ def _board_qss(mode: str) -> str:
             color: {c['text_primary']};
         }}
         QPushButton#boardToolBtn:hover {{
-            background: rgba(128, 128, 128, 0.30);
+            background: {c['glass_hover']};
         }}
         QPushButton#boardToolBtn:checked {{
             background: {c['accent']};
             color: white;
+        }}
+        /* 搜索框：与工具按钮同一玻璃面，不再是一整条纯白 */
+        QLineEdit#boardSearch {{
+            background: {c['glass']};
+            border: 1px solid transparent;
+            border-radius: 9px;
+            padding: 6px 10px;
+            color: {c['text_primary']};
+        }}
+        /* 聚焦态必须自设：id 选择器优先级高于全局 QLineEdit:focus，
+           不写这条则聚焦边框被吃掉、看不出光标在框内 */
+        QLineEdit#boardSearch:focus {{
+            background: {c['glass_hover']};
+            border: 1.5px solid {c['accent']};
         }}
         QPushButton#addBoardBtn {{
             background: transparent;
@@ -241,7 +255,7 @@ def _board_qss(mode: str) -> str:
         QLabel#listCount {{
             color: {c['text_secondary']};
             font-size: 11px;
-            background: rgba(128, 128, 128, 0.15);
+            background: {c['mask']};
             border-radius: 8px;
             padding: 1px 7px;
         }}
@@ -262,7 +276,7 @@ def _board_qss(mode: str) -> str:
             color: {c['text_primary']};
         }}
         QPushButton#listCollapseBtn:hover {{
-            background: rgba(128, 128, 128, 0.2);
+            background: {c['mask_hover']};
             color: {c['text_primary']};
         }}
         QPushButton#headerMenuBtn {{
@@ -299,7 +313,7 @@ def _board_qss(mode: str) -> str:
             text-decoration: line-through;
         }}
         QPushButton#cardDeleteBtn {{
-            background: rgba(128, 128, 128, 0.25);
+            background: {c['mask']};
             color: {c['text_primary']};
             border: none;
             border-radius: {AppConfig.CARD_DELETE_BTN_H // 2}px;
@@ -398,6 +412,8 @@ class CardWidget(QFrame):
         self._title_label: QLabel | None = None
         self._meta_badges: list[tuple[QLabel, str]] = []
         self._notes_badge: QLabel | None = None    # "≡ 有备注"徽章（悬停弹备注预览）
+        self._more_badge: QLabel | None = None     # 装不下的徽章用 "…" 提示
+        self._fit_state: tuple = ()                # 徽章显示组合缓存（避免重复重排）
         self._fingerprint: tuple = ()
         self._focusing_id: str | None = None    # 当前正在专注的卡片 id
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -424,6 +440,15 @@ class CardWidget(QFrame):
 
     def card(self) -> Card:
         return self._card
+
+    def minimumSizeHint(self):
+        """最小宽度不吃徽章行：QLabel 的最小宽=文本宽，若把徽章算进来，
+        "P1+逾期+重复+备注+番茄"这类组合会把卡片撑到 316px，而列内可视宽
+        只有 258px——列横向滚动条是关闭的，超出部分直接被裁掉。
+        宽度由列视图给足，显示哪几个徽章交给 _fit_meta_badges 按实宽取舍。
+        """
+        base = super().minimumSizeHint()
+        return QSize(0, base.height())
 
     def update_from_model(self, card: Card) -> None:
         """增量刷新：重指向模型对象；内容指纹未变则跳过重建"""
@@ -493,6 +518,8 @@ class CardWidget(QFrame):
         self._title_label = None
         self._meta_badges = []
         self._notes_badge = None
+        self._more_badge = None
+        self._fit_state = ()
 
         card = self._card
         # 配色统一由 BoardView 的整块样式表下发（#cardFrame 等选择器），
@@ -561,9 +588,6 @@ class CardWidget(QFrame):
         if meta_items:
             meta_row = QHBoxLayout()
             meta_row.setSpacing(6)
-            # 卡片 ~236px 可用宽，超量徽章会溢出右缘：超出部分折叠为 "…"
-            shown = meta_items[:AppConfig.CARD_META_BADGE_MAX]
-            extra = len(meta_items) - len(shown)
 
             def make_badge(text: str, tone: str) -> QLabel:
                 # tone 动态属性 → QSS 属性选择器（配色随主题，见 _board_qss）
@@ -573,7 +597,10 @@ class CardWidget(QFrame):
                 self._meta_badges.append((badge, tone))
                 return badge
 
-            for text, key, is_notes in shown:
+            # 全部徽章先建出来，实际显示几个由 _fit_meta_badges() 按卡片
+            # 真实宽度决定（"P1+逾期+重复+备注"最坏组合约 281px，已超出
+            # 列内可用宽约 229px，写死数量仍会溢出裁切）
+            for text, key, is_notes in meta_items:
                 badge = make_badge(text, key)
                 if is_notes:
                     # 备注徽章：悬停弹备注全文预览，点击固定展示（本卡事件过滤处理）
@@ -582,10 +609,16 @@ class CardWidget(QFrame):
                     badge.setToolTip("悬停预览 · 点击固定")
                     badge.installEventFilter(self)
                 meta_row.addWidget(badge)
-            if extra > 0:
-                meta_row.addWidget(make_badge("…", "text_secondary"))
+            # 折叠指示：装不下的徽章数用 "…" 提示。不进 _meta_badges
+            # （它是"真实徽章"清单，备注预览/语义色断言都按它遍历）
+            self._more_badge = QLabel("…")
+            self._more_badge.setObjectName("cardBadge")
+            self._more_badge.setProperty("tone", "text_secondary")
+            self._more_badge.setVisible(False)
+            meta_row.addWidget(self._more_badge)
             meta_row.addStretch(1)
             root.addLayout(meta_row)
+        self._fit_meta_badges()
 
         # 底部弹性：防止上面的控件（如徽章）被布局纵向拉伸满整个卡片
         root.addStretch(1)
@@ -604,9 +637,9 @@ class CardWidget(QFrame):
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        # 裁剪到圆角轮廓内，色条端头跟随卡片圆角
+        # 裁剪到圆角轮廓内，色条端头跟随卡片圆角（与 #cardFrame 的 10px 对齐）
         clip = QPainterPath()
-        clip.addRoundedRect(1, 1, self.width() - 2, self.height() - 2, 9, 9)
+        clip.addRoundedRect(1, 1, self.width() - 2, self.height() - 2, 10, 10)
         painter.setClipPath(clip)
         x = 1.0
         for key in labels:
@@ -617,12 +650,55 @@ class CardWidget(QFrame):
             x += 4.0
         painter.end()
 
+    def _fit_meta_badges(self) -> None:
+        """按卡片真实宽度决定显示哪几个徽章，装不下折成 "…"
+
+        写死"最多 4 个"不够：最坏组合（P1 + 逾期 + 重复 + 备注）实测约
+        281px，超出列内可用宽（272 列宽下卡片约 254px，去掉色条/内边距
+        约 229px），徽章会顶破卡片右缘被裁。这里按实际宽度取舍，
+        窗口/列宽变化后由 resizeEvent 重新计算。
+        """
+        if self._more_badge is None:
+            return
+        m = self.layout().contentsMargins() if self.layout() is not None else None
+        avail = self.width() - (m.left() + m.right() if m is not None else 0) \
+            - self.frameWidth() * 2
+        if avail <= 0:      # 尚未布局（新建卡片），宽度确定后由 resizeEvent 补算
+            return
+        spacing = 6
+        widths = [b.sizeHint().width() for b, _ in self._meta_badges]
+        n = len(widths)
+
+        def total(k: int) -> int:
+            return sum(widths[:k]) + spacing * max(0, k - 1)
+
+        cap = AppConfig.CARD_META_BADGE_MAX
+        if n <= cap and total(n) <= avail:
+            visible, more = n, False
+        else:
+            ellipsis_w = self._more_badge.sizeHint().width()
+            visible = 0
+            for k in range(min(n, cap), 0, -1):
+                if total(k) + spacing + ellipsis_w <= avail:
+                    visible = k
+                    break
+            more = visible < n
+
+        state = (visible, more)
+        if state == self._fit_state:
+            return
+        self._fit_state = state
+        for i, (badge, _tone) in enumerate(self._meta_badges):
+            badge.setVisible(i < visible)
+        self._more_badge.setVisible(more)
+
     def resizeEvent(self, event) -> None:
-        """跟随卡片把删除按钮钉在右上角"""
+        """跟随卡片把删除按钮钉在右上角；顺带按新宽度重排徽章"""
         super().resizeEvent(event)
         if self._delete_btn is not None:
             self._delete_btn.move(
                 self.width() - self._delete_btn.width() - 6, 6)
+        self._fit_meta_badges()
 
     # ── 备注悬浮预览 ──────────────────────────────────────
 
@@ -1110,6 +1186,11 @@ class ListColumn(QFrame):
         self._visible_cards: list[Card] | None = None   # None=显示全部（过滤态为子集）
         self._collapse_anim: QPropertyAnimation | None = None
         self._anim_height = float(self.COLLAPSED_HEIGHT)  # 折叠过渡的高度插值目标
+        # 以下三者在构造后半段才建立；sizeHint 可能在构造途中被查询，
+        # 先占位避免 _content_height 取到未定义属性
+        self._header: ListHeader | None = None
+        self._scroll: QScrollArea | None = None
+        self._add_btn: AddCardButton | None = None
         self.setAcceptDrops(True)
 
         self.setObjectName("listColumn")
@@ -1242,6 +1323,8 @@ class ListColumn(QFrame):
             self._hint = None
 
         self._header.update_count(len(cards))
+        # 列高随内容收缩：卡片增删都要重算 sizeHint，否则列高停在旧值
+        self.updateGeometry()
 
     def _dispose_card_widgets(self, widgets: list[CardWidget]) -> None:
         """移除卡片控件：少量走淡出（延后销毁），批量直接销毁
@@ -1270,12 +1353,62 @@ class ListColumn(QFrame):
         self._set_drop_highlight(self.property("drop") is True)
 
     def minimumSizeHint(self):
-        return QSize(AppConfig.LIST_WIDTH,
-                     self.COLLAPSED_HEIGHT if self._collapsed else 200)
+        """下界统一为折叠高度：展开态若钉死 200，短列就会留出空白"""
+        return QSize(AppConfig.LIST_WIDTH, self.COLLAPSED_HEIGHT)
 
     def sizeHint(self):
+        """展开态返回内容自然高度，折叠态仅剩标题栏
+
+        配合布局项的对齐（Qt.AlignTop）让列"多高就多高"：卡片少时列下方
+        直接露出看板背景，不再是拉满整屏的空面板；内容超过可视高度时由
+        Qt 按可用空间自然钳住（列内滚动接管溢出）。
+
+        这里刻意只报内容高度、不按可用高度预先截断：sizeHint 一旦依赖
+        父级高度，父布局在窗口展开动画中会缓存旧值，长列会停在动画期的
+        矮高度上再也不长（实测停在 408px 而非 568px）。
+        """
         return QSize(AppConfig.LIST_WIDTH,
-                     self.COLLAPSED_HEIGHT if self._collapsed else 400)
+                     self.COLLAPSED_HEIGHT if self._collapsed
+                     else self._content_height())
+
+    def _content_height(self) -> int:
+        """列内容自然高度（列头 + 卡片区 + 添加按钮 + 布局间距 + 边框）
+
+        不能直接用 layout().sizeHint()：它以 QScrollArea 的 minimumSizeHint
+        (88px) 为地板，对"卡片区实际只需 42px"的短列会多算出一大截空白。
+        故按各部件显式求和，卡片区取 _cards_host 的自然高度；实测把列压到
+        该高度后 scroll 仍能正常渲染（88 只是软下限，布局可下压）。
+
+        边框必须计入：QSS 的 1px 边框占掉上下各 1px，不算进来则"恰好装下
+        内容"的列会短 2px，触发一根多余的纵向滚动条——滚动条又把卡片挤窄，
+        徽章行随之被裁。
+        """
+        lay = self.layout()
+        if (lay is None or self._cards_host is None or self._header is None
+                or self._add_btn is None):
+            return self.COLLAPSED_HEIGHT
+        m = lay.contentsMargins()
+        return (self.frameWidth() * 2
+                + m.top() + m.bottom()
+                + self._header.sizeHint().height()
+                + self._cards_host.sizeHint().height()
+                + self._add_btn.sizeHint().height()
+                + lay.spacing() * 2)
+
+    def _expanded_target_height(self) -> int:
+        """展开态目标高度 = min(内容自然高度, 列表区可用高度)"""
+        return max(self.COLLAPSED_HEIGHT,
+                   min(self._expanded_height(), self._content_height()))
+
+    def _expanded_height(self) -> int:
+        """展开态可用上限：列表区可视高度（折叠动画的展开终点也用它）"""
+        host = self.parentWidget()
+        lay = host.layout() if host is not None else None
+        if host is None or lay is None:
+            return max(self.height(), self.COLLAPSED_HEIGHT)
+        m = lay.contentsMargins()
+        return max(self.COLLAPSED_HEIGHT,
+                   host.height() - m.top() - m.bottom())
 
     # ── 列折叠（隐藏卡片区，仅剩标题栏） ────────────────────
 
@@ -1313,22 +1446,12 @@ class ListColumn(QFrame):
 
     columnHeight = Property(float, _get_column_height, _set_column_height)
 
-    def _expanded_height(self) -> int:
-        """展开态目标高度：填满列表区可用高度"""
-        host = self.parentWidget()
-        lay = host.layout() if host is not None else None
-        if host is None or lay is None:
-            return max(self.height(), self.COLLAPSED_HEIGHT)
-        m = lay.contentsMargins()
-        return max(self.COLLAPSED_HEIGHT,
-                   host.height() - m.top() - m.bottom())
-
     def _start_collapse_anim(self, collapsed: bool) -> None:
         """起播折叠/展开过渡：只插值高度，终点才同步状态机"""
         self._stop_collapse_anim(finalize=False)
         start_h = self.height() or self.COLLAPSED_HEIGHT
         end_h = (self.COLLAPSED_HEIGHT if collapsed
-                 else self._expanded_height())
+                 else self._expanded_target_height())
 
         # 方向性状态立即生效（箭头/拖放/内容可见性），几何交给动画终点。
         # setVisible 会同步派发 Enter/Leave，事件处理器可能抛异常，逐项收敛。
@@ -1623,7 +1746,7 @@ class BoardView(QWidget):
         self._toolbar_layout.setContentsMargins(18, 8, right_margin, 8)
         self._toolbar_layout.setSpacing(10)
 
-        self._title_label = QLabel("🗂 我的看板")
+        self._title_label = QLabel("我的看板")
         self._title_label.setObjectName("boardTitle")
         self._toolbar_layout.addWidget(self._title_label)
 
@@ -1632,7 +1755,7 @@ class BoardView(QWidget):
         self._toolbar_layout.addWidget(self._stats_label)
         # 注意：不加中间 stretch——弹性全部留给搜索框（右侧控件固定聚集）
 
-        self._today_btn = QPushButton("⭐ 今日")
+        self._today_btn = QPushButton("今日")
         self._today_btn.setObjectName("boardToolBtn")
         self._today_btn.setCheckable(True)
         self._today_btn.setCursor(Qt.PointingHandCursor)
@@ -1642,6 +1765,7 @@ class BoardView(QWidget):
         self._toolbar_layout.addWidget(self._today_btn)
 
         self._search_edit = QLineEdit()
+        self._search_edit.setObjectName("boardSearch")
         self._search_edit.setPlaceholderText("搜索卡片…")
         self._search_edit.setClearButtonEnabled(True)
         # 弹性宽度：空间富余时舒展、不足时收缩到最小宽，避免工具栏被挤出窗口
@@ -1867,7 +1991,8 @@ class BoardView(QWidget):
         if prev_order != [col.list_id() for col in ordered_cols]:
             for i, col in enumerate(ordered_cols):
                 self._lists_layout.removeWidget(col)
-                self._lists_layout.insertWidget(i, col)
+                # AlignTop 让布局项取 sizeHint（内容高度）而非拉伸填满整列区
+                self._lists_layout.insertWidget(i, col, 0, Qt.AlignTop)
         for list_id, col in by_id.items():
             if list_id not in kept:
                 self._columns.remove(col)
@@ -1933,7 +2058,7 @@ class BoardView(QWidget):
             self.update_stats(self._lists)
 
     def _set_today_count(self, n: int) -> None:
-        self._today_btn.setText(f"⭐ 今日 {n}")
+        self._today_btn.setText(f"今日 {n}")
 
     def set_today_mode(self, on: bool) -> None:
         """供菜单栏同步：切换今日聚焦模式（toggled 会触发过滤与信号）"""

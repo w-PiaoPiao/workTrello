@@ -162,6 +162,38 @@ class NotesBadgeTest(unittest.TestCase):
         pop.grab()
         pop.hide_now()
 
+    # ── 今日清单浮窗的主题跟随 ────────────────────────────
+
+    def test_today_popover_follows_theme(self):
+        """切主题后今日浮窗配色跟随（回归：此前未注册主题回调，配色冻结）
+
+        浮窗外壳与每行的配色都是构建时的快照，必须由 AppTheme.register
+        的回调重刷；只测外壳不足以覆盖"行还是旧主题"的情形。
+        """
+        from app.views.theme import AppTheme
+        from app.views.today_popover import TodayPopover
+        from datetime import date
+        card = Card(title="今日卡", due_date=date.today().isoformat())
+        lst = BoardList(title="待办", cards=[card])
+        pop = TodayPopover()
+        try:
+            pop.set_items([(lst, card)])
+            AppTheme.set_mode("dark")
+            self.assertIn(AppTheme.colors()["bg_card"],
+                          pop._frame.styleSheet())          # 外壳已跟随
+            dark_row = pop._rows[0][2]
+            self.assertIn(AppTheme.colors()["text_primary"],
+                          dark_row.findChildren(type(pop._title_label))[0]
+                          .styleSheet())                     # 行文字已跟随
+            # 行仍是同一份数据（重建后行数不减）
+            self.assertEqual(len(pop._rows), 1)
+            AppTheme.set_mode("light")
+            self.assertIn(AppTheme.colors()["bg_card"],
+                          pop._frame.styleSheet())
+        finally:
+            pop.close()
+            pop.deleteLater()
+
 
 class PopoverUnitTest(unittest.TestCase):
     def setUp(self):

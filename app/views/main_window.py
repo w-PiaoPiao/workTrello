@@ -153,9 +153,8 @@ class MainWindow(QWidget):
         layout.addWidget(self._stack)
         self.setLayout(layout)
 
-        self.setStyleSheet(AppTheme.global_qss())
-        AppTheme.register(lambda: self.setStyleSheet(AppTheme.global_qss()))
-
+        # 全局样式由 AppTheme.apply() 在应用级下发；此处不再设窗口级副本，
+        # 否则切换主题时它会在 app 级规则之上再盖一层旧配色的同款 QSS
         self._collapsed_size = QSize(AppConfig.PET_WIDTH, AppConfig.PET_HEIGHT)
         self._expanded_size = self._load_expanded_size()
 
