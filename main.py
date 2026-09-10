@@ -20,6 +20,13 @@ def main():
         datefmt="%H:%M:%S",
     )
 
+    # 打包版 console=False 看不到 stderr：Qt 事件处理器里抛出的异常
+    # 会被 PySide6 吞掉，钩到日志里才能事后定位（如列折叠嵌合态问题）
+    def _log_uncaught(tp, val, tb):
+        logging.error("未处理异常", exc_info=(tp, val, tb))
+
+    sys.excepthook = _log_uncaught
+
     from PySide6.QtWidgets import QApplication
 
     app = QApplication(sys.argv)

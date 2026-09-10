@@ -20,6 +20,7 @@ from PySide6.QtCore import (
     QPoint,
     QPointF,
     QRect,
+    QRectF,
     QSize,
     Qt,
     QTimer,
@@ -314,23 +315,13 @@ class CardWidget(QFrame):
         """)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(10, 8, 10, 8)
+        # 左缘标签色条（paintEvent 绘制）：每条 4px，最多 4 条；留出横向空间不与标题重叠
+        stripe_n = min(len(card.labels), 4)
+        root.setContentsMargins(max(10, stripe_n * 4 + 7), 8, 10, 8)
         root.setSpacing(6)
-
-        # 标签色条
         if card.labels:
-            labels_row = QHBoxLayout()
-            labels_row.setSpacing(4)
-            for key in card.labels[:6]:
-                bg, fg = AppTheme.label_style(key)
-                chip = QLabel()
-                chip.setFixedSize(30, 8)
-                chip.setToolTip(AppConfig.LABEL_NAMES.get(key, key))
-                chip.setStyleSheet(
-                    f"background: {bg}; border-radius: 3px;")
-                labels_row.addWidget(chip)
-            labels_row.addStretch(1)
-            root.addLayout(labels_row)
+            names = [AppConfig.LABEL_NAMES.get(k, k) for k in card.labels]
+            self.setToolTip("标签：" + "、".join(names))
 
         # 标题行（勾选 + 文本）
         title_row = QHBoxLayout()
@@ -424,6 +415,27 @@ class CardWidget(QFrame):
         if self._hovered and self._delete_btn is not None:
             self._delete_btn.show()
             self._delete_btn.raise_()
+
+    def paintEvent(self, event) -> None:
+        """左缘标签色条：贴卡片左边缘的竖向色条，明显且不占布局行"""
+        super().paintEvent(event)
+        labels = self._card.labels[:4]
+        if not labels:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        # 裁剪到圆角轮廓内，色条端头跟随卡片圆角
+        clip = QPainterPath()
+        clip.addRoundedRect(1, 1, self.width() - 2, self.height() - 2, 9, 9)
+        painter.setClipPath(clip)
+        x = 1.0
+        for key in labels:
+            # 用标签的饱和前景色（fg）而非浅底色，保证色条醒目；
+            # 深浅主题下同一饱和色都清晰
+            _, fg = AppConfig.LABEL_COLORS.get(key, ("#E5E7EB", "#374151"))
+            painter.fillRect(QRectF(x, 0, 4, self.height()), QColor(fg))
+            x += 4.0
+        painter.end()
 
     def resizeEvent(self, event) -> None:
         """跟随卡片把删除按钮钉在右上角"""
@@ -586,7 +598,7 @@ class ListHeader(QWidget):
         layout.addWidget(self._count_label)
 
         self._collapse_btn = QPushButton("▾")
-        self._collapse_btn.setFixedSize(20, 20)
+        self._collapse_btn.setFixedSize(24, 24)
         self._collapse_btn.setCursor(Qt.PointingHandCursor)
         self._collapse_btn.setToolTip("折叠 / 展开列表")
         self._collapse_btn.clicked.connect(self._on_collapse_clicked)
@@ -596,7 +608,7 @@ class ListHeader(QWidget):
         self._menu_btn.setToolTip("列表操作")
         self._menu_btn.clicked.connect(self._show_menu)
         layout.addWidget(self._menu_btn)
-        self._menu_btn.hide()   # 悬停列头才显示（与卡片删除按钮同款降低密度）
+        # 不隐藏、只"幽灵化"：布局空间常驻，悬停才点亮，避免列头高度闪动
 
         # 列表操作菜单
         self._menu = QMenu(self)
@@ -607,6 +619,9 @@ class ListHeader(QWidget):
         self._act_rename.triggered.connect(self._start_rename)
         self._act_delete.triggered.connect(
             lambda: self.signal_delete_requested.emit(self._lst.id))
+        # 菜单关闭后按光标实际位置决定是否保持点亮（避免菜单开着时误熄灭）
+        self._menu.aboutToHide.connect(
+            lambda: self._menu_btn.set_active(self.underMouse()))
 
     def _show_menu(self) -> None:
         self._menu.exec(self._menu_btn.mapToGlobal(
@@ -618,13 +633,13 @@ class ListHeader(QWidget):
             col.toggle_collapsed()
 
     def enterEvent(self, event) -> None:
-        """悬停列头显示"⋯"菜单按钮"""
-        self._menu_btn.show()
+        """悬停列头点亮"⋯"菜单按钮"""
+        self._menu_btn.set_active(True)
         super().enterEvent(event)
 
     def leaveEvent(self, event) -> None:
-        if not self._menu_btn.underMouse():
-            self._menu_btn.hide()
+        if not self._menu.isOpen():
+            self._menu_btn.set_active(False)
         super().leaveEvent(event)
 
     def set_collapsed_mark(self, collapsed: bool) -> None:
@@ -636,10 +651,14 @@ class ListHeader(QWidget):
                 background: transparent;
                 color: {c['text_primary'] if collapsed else c['text_secondary']};
                 border: none;
-                font-size: 10px;
+                border-radius: 12px;
+                font-size: 13px;
                 padding: 0;
             }}
-            QPushButton:hover {{ color: {c['text_primary']}; }}
+            QPushButton:hover {{
+                background: rgba(128, 128, 128, 0.2);
+                color: {c['text_primary']};
+            }}
         """)
 
     def update_count(self, n: int) -> None:
@@ -670,16 +689,9 @@ class ListHeader(QWidget):
                 padding: 1px 7px;
             }}
         """)
-        self._collapse_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent;
-                color: {c['text_secondary']};
-                border: none;
-                font-size: 10px;
-                padding: 0;
-            }}
-            QPushButton:hover {{ color: {c['text_primary']}; }}
-        """)
+        col = self.parent()
+        self.set_collapsed_mark(
+            col.is_collapsed() if isinstance(col, ListColumn) else False)
         self._menu_btn.reapply()
 
     def _start_rename(self, event=None) -> None:
@@ -725,6 +737,15 @@ class ListHeader(QWidget):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
+        # 折叠列：单击头部任意处（按住未拖动）即展开，让"▸"有够大的命中区
+        if (event.button() == Qt.LeftButton
+                and self._drag_press_pos is not None
+                and _ACTIVE_RENAME is None):
+            col = self.parent()
+            if (isinstance(col, ListColumn) and col.is_collapsed()
+                    and self.childAt(event.position().toPoint())
+                    is not self._title_label):
+                col.toggle_collapsed()
         self._drag_press_pos = None
         super().mouseReleaseEvent(event)
 
@@ -811,16 +832,31 @@ def finish_active_rename(cancel: bool = False) -> bool:
 
 
 class _HeaderMenuButton(QPushButton):
-    """列表头部自绘"⋯"按钮（无文本，避免样式表被全局 QPushButton 规则改写）"""
+    """列表头部自绘"⋯"按钮（无文本，避免样式表被全局 QPushButton 规则改写）
+
+    幽灵模式：布局位置常驻（不改变列头高度），仅在列头悬停时绘制圆点，
+    未点亮时对鼠标穿透（点击落到列头自身）。
+    """
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(22, 22)
+        self._active = False
+        self.setFixedSize(24, 24)
         self.setCursor(Qt.PointingHandCursor)
         self.setObjectName("headerMenuBtn")
         self.reapply()
 
+    def set_active(self, on: bool) -> None:
+        if on == self._active:
+            return
+        self._active = on
+        # 未点亮时穿透鼠标，避免"看不见却挡住列头拖拽/点击"
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, not on)
+        self.update()
+
     def paintEvent(self, event) -> None:
+        if not self._active:
+            return
         c = AppTheme.colors()
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -829,8 +865,9 @@ class _HeaderMenuButton(QPushButton):
         painter.setBrush(QColor(c["text_secondary"])
                          if not hovered else QColor(c["text_primary"]))
         y = self.height() // 2
+        x = self.width() // 2 - 1
         for i in (-1, 0, 1):
-            painter.drawEllipse(self.width() - 15, y - 1 + i * 4, 3, 3)
+            painter.drawEllipse(x, y - 1 + i * 4, 3, 3)
         painter.end()
 
     def reapply(self) -> None:
@@ -1083,19 +1120,35 @@ class ListColumn(QFrame):
         if collapsed == self._collapsed:
             return
         self._collapsed = collapsed
-        self._scroll.setVisible(not collapsed)
-        self._add_btn.setVisible(not collapsed)
-        # 过滤态(搜索/今日)落点不可靠,拖放保持禁用,不能被折叠切换覆盖
-        self.setAcceptDrops(not collapsed and self._visible_cards is None)
+        self._apply_collapsed_ui()
+        if save:
+            self.signal_collapsed_changed.emit(self._lst.id, collapsed)
+
+    def _apply_collapsed_ui(self) -> None:
+        """把 _collapsed 对应的全部 UI 状态一次性刷齐（幂等）
+
+        曾出现"执行到一半被打断"的嵌合态：滚动区已显示但尺寸策略/箭头/
+        添加按钮仍停留在折叠态 → 展开后列卡在 400px 居中且没有添加按钮。
+        策略先于可见性设置，末尾强制同步重排父布局，保证任何时刻落盘的
+        布局都是一致的最终态。
+        """
+        collapsed = self._collapsed
         # 折叠列高度收窄为标题栏（固定策略），未折叠列拉伸填满
         policy = QSizePolicy(QSizePolicy.Preferred,
                              QSizePolicy.Fixed if collapsed
                              else QSizePolicy.Expanding)
         self.setSizePolicy(policy)
+        self._scroll.setVisible(not collapsed)
+        self._add_btn.setVisible(not collapsed)
+        # 过滤态(搜索/今日)落点不可靠,拖放保持禁用,不能被折叠切换覆盖
+        self.setAcceptDrops(not collapsed and self._visible_cards is None)
         self._header.set_collapsed_mark(collapsed)
         self.updateGeometry()
-        if save:
-            self.signal_collapsed_changed.emit(self._lst.id, collapsed)
+        host = self.parentWidget()
+        lay = host.layout() if host is not None else None
+        if lay is not None:
+            lay.invalidate()
+            lay.activate()   # 同步按最终态重排，不给中间态留渲染窗口
 
     def toggle_collapsed(self) -> None:
         self.set_collapsed(not self._collapsed)
