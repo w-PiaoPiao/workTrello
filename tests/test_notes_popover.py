@@ -7,6 +7,7 @@
 """
 
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -19,8 +20,8 @@ os.environ["PET_BOARD_DATA_DIR"] = tempfile.mkdtemp()
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from PySide6.QtCore import QEvent, QPoint, Qt
-from PySide6.QtGui import QMouseEvent
+from PySide6.QtCore import QEvent, QPoint, QRect, Qt
+from PySide6.QtGui import QColor, QMouseEvent
 from PySide6.QtWidgets import QApplication
 
 _qapp = QApplication.instance() or QApplication([])
@@ -65,6 +66,12 @@ class NotesBadgeTest(unittest.TestCase):
         self.assertIsNotNone(c1._notes_badge)
         self.assertEqual(c1._notes_badge.text(), "≡ 有备注")
         self.assertIsNone(c2._notes_badge)      # 无备注无徽章
+
+    def test_badge_has_no_native_tooltip(self):
+        """徽章不挂原生 tooltip：否则悬停约 700ms 后系统再弹一个提示窗，
+        压在自绘备注浮层上造成双重叠字（提示语已移入浮层内的提示行）"""
+        c1, *_ = self._cards()
+        self.assertEqual(c1._notes_badge.toolTip(), "")
 
     def test_hover_shows_full_notes(self):
         c1, *_ = self._cards()
@@ -195,6 +202,132 @@ class NotesBadgeTest(unittest.TestCase):
             pop.deleteLater()
 
 
+class PopoverAppearanceTest(unittest.TestCase):
+    """浮层配色与可读性：底色必须不透明
+
+    回归背景：浮层此前复用看板列的 bg_panel（rgba 白 0.86 / 深色 0.92），
+    叠加 WA_TranslucentBackground 后，下方卡片文字约有 14% 透上来，与备注
+    正文叠成重影，正文基本读不出来。这里锁死"底色不透明"。
+    """
+
+    def setUp(self):
+        _reset_popover()
+
+    def tearDown(self):
+        hide_notes_popover()
+        _reset_popover()
+
+    @staticmethod
+    def _panel(pop):
+        """承载外观的面板控件（重构前外观直接设在浮层自身）"""
+        return getattr(pop, "_panel", pop)
+
+    def _background(self, qss: str) -> str:
+        m = re.search(r"background:\s*([^;]+);", qss)
+        self.assertIsNotNone(m, f"样式表里没有 background 声明: {qss!r}")
+        return m.group(1).strip()
+
+    def test_popover_background_is_opaque(self):
+        """底色解析后 alpha 必须为 255
+
+        注：离屏下 render()/grab() 不对 WA_TranslucentBackground 的顶层窗
+        合成内容（实测恒返回全透明），故按 QSS 口径断言而非像素比对。
+        """
+        pop = notes_popover()
+        pop.show_for("备注正文", QRect(400, 400, 60, 18))
+        bg = self._background(self._panel(pop).styleSheet())
+        col = QColor(bg)
+        self.assertTrue(col.isValid(), f"无法解析的底色 {bg!r}")
+        self.assertEqual(col.alpha(), 255,
+                         f"浮层底色 {bg} 半透明，下方卡片文字会透上来")
+
+    def test_popover_bg_token_opaque_in_both_themes(self):
+        """专属底色 token 在深浅主题下都是不透明色"""
+        from app.views.theme import AppTheme
+        try:
+            for mode in ("light", "dark"):
+                AppTheme.set_mode(mode)
+                c = AppTheme.colors()
+                self.assertIn("popover_bg", c, f"{mode} 主题缺少 popover_bg")
+                col = QColor(c["popover_bg"])
+                self.assertTrue(col.isValid(), c["popover_bg"])
+                self.assertEqual(col.alpha(), 255,
+                                 f"{mode} 的 popover_bg 必须不透明")
+        finally:
+            AppTheme.set_mode("light")
+
+    def test_popover_uses_dedicated_border(self):
+        """用专属重色描边，而非卡片那套 10% 透明度的细边
+
+        白底浮层压在白卡上时，10% 的描边几乎看不出边界，观感上"糊在一起"。
+        """
+        from app.views.theme import AppTheme
+        pop = notes_popover()
+        pop.show_for("备注正文", QRect(400, 400, 60, 18))
+        qss = self._panel(pop).styleSheet()
+        c = AppTheme.colors()
+        self.assertIn(c["popover_border"], qss, "未使用专属 popover_border")
+        self.assertNotEqual(c["popover_border"], c["border"])
+
+    def test_hint_visible_only_when_hovering(self):
+        """「点击徽章固定」提示只在悬停态出现
+
+        悬停 → 固定 的切换中，正文与锚点都没变，若重建短路判定漏掉提示行
+        状态，提示会赖着不走。
+        """
+        pop = notes_popover()
+        anchor = QRect(400, 400, 60, 18)
+        pop.show_for("备注正文", anchor)
+        self.assertFalse(pop._hint.isHidden(), "悬停态应显示「点击徽章固定」提示")
+        pop.show_pinned("card-hint", "备注正文", anchor)
+        self.assertTrue(pop._hint.isHidden(), "固定态不该再提示点击固定")
+        pop.hide_now()
+
+
+class PopoverPlacementTest(unittest.TestCase):
+    """浮层定位：上方优先（盖住本卡下缘，不压下一张卡），边界自动翻转/夹紧"""
+
+    def setUp(self):
+        _reset_popover()
+        self.avail = QApplication.primaryScreen().availableGeometry()
+
+    def tearDown(self):
+        hide_notes_popover()
+        _reset_popover()
+
+    def _show(self, anchor: QRect, text: str = "第一行\n09-08 14:30 完成 A\n第二行"):
+        pop = notes_popover()
+        pop.show_for(text, anchor)
+        return pop
+
+    def test_panel_sits_above_badge(self):
+        """默认弹在徽章上方，且不与徽章所在行重叠"""
+        anchor = QRect(self.avail.left() + 60,
+                       self.avail.top() + self.avail.height() // 2, 60, 18)
+        pop = self._show(anchor)
+        panel = pop.panel_geometry_global()
+        self.assertLess(panel.bottom(), anchor.top(), "面板应在徽章上方")
+        self.assertFalse(panel.intersects(anchor), "面板压在徽章上")
+        self.assertGreaterEqual(panel.top(), self.avail.top(), "面板越出屏幕顶部")
+
+    def test_panel_flips_below_when_no_room_above(self):
+        """顶部附近上方放不下时翻到徽章下方，且不越出屏幕底部"""
+        anchor = QRect(self.avail.left() + 60, self.avail.top() + 2, 60, 18)
+        pop = self._show(anchor, "\n".join(f"第{i}行备注内容" for i in range(12)))
+        panel = pop.panel_geometry_global()
+        self.assertGreaterEqual(panel.top(), anchor.bottom(), "应翻到徽章下方")
+        self.assertLessEqual(panel.bottom(), self.avail.bottom(), "面板越出屏幕底部")
+
+    def test_panel_clamped_inside_right_edge(self):
+        """贴右缘的徽章：面板回拉进屏内"""
+        anchor = QRect(self.avail.right() - 8,
+                       self.avail.top() + self.avail.height() // 2, 60, 18)
+        pop = self._show(anchor)
+        panel = pop.panel_geometry_global()
+        self.assertLessEqual(panel.right(), self.avail.right(), "面板越出屏幕右侧")
+        self.assertGreaterEqual(panel.left(), self.avail.left(), "面板越出屏幕左侧")
+
+
 class PopoverUnitTest(unittest.TestCase):
     def setUp(self):
         _reset_popover()
@@ -209,14 +342,20 @@ class PopoverUnitTest(unittest.TestCase):
         self.assertFalse(pop.isVisible())
 
     def test_multiline_kept_and_wrapped_width(self):
+        """宽度按面板口径断言：外层还含自绘阴影的边距，窗口宽不再是可见宽"""
         pop = notes_popover()
         pop.show_for("短", pop.geometry())
         self.assertTrue(pop.isVisible())
-        w_short = pop.width()
+        w_short = pop.panel_geometry_global().width()
         pop.show_for("很长" * 300, pop.geometry())
         self.assertTrue(pop.isVisible())
-        self.assertGreaterEqual(pop.width(), w_short)   # 长文至少不更窄
-        self.assertLessEqual(pop.width(), pop._MAX_WIDTH + 40)  # 封顶（含边距）
+        # 长文至少不更窄
+        self.assertGreaterEqual(pop.panel_geometry_global().width(), w_short)
+        # 面板宽 = 正文封顶宽 + 左右内边距 + 左右描边
+        m = pop._panel.layout().contentsMargins()
+        cap = pop._MAX_WIDTH + m.left() + m.right() \
+            + pop._panel.frameWidth() * 2
+        self.assertLessEqual(pop.panel_geometry_global().width(), cap)
         pop.hide_now()
 
     def test_show_twice_reuses_singleton(self):

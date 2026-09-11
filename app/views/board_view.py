@@ -604,9 +604,10 @@ class CardWidget(QFrame):
                 badge = make_badge(text, key)
                 if is_notes:
                     # 备注徽章：悬停弹备注全文预览，点击固定展示（本卡事件过滤处理）
+                    # 不设原生 tooltip：悬停约 700ms 后系统会再弹一个提示窗压在
+                    # 自绘浮层上造成双重叠字；「点击固定」提示在浮层内呈现
                     self._notes_badge = badge
                     badge.setCursor(Qt.PointingHandCursor)
-                    badge.setToolTip("悬停预览 · 点击固定")
                     badge.installEventFilter(self)
                 meta_row.addWidget(badge)
             # 折叠指示：装不下的徽章数用 "…" 提示。不进 _meta_badges
