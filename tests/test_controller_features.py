@@ -5,6 +5,7 @@
 需要 Qt 离屏环境；数据目录隔离到临时目录（在导入 app 模块前设置）。
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -244,6 +245,43 @@ class ControllerFeatureTest(unittest.TestCase):
         with patch.object(AppConfig, "clear_empty_board_ack") as clear:
             self.c._flush_store()
         clear.assert_called_once()
+
+    def test_edit_marks_store_dirty(self):
+        """数据变更必须标脏——flush() 只在脏时落盘，漏标则编辑只留内存"""
+        self._reset()
+        self.c._store._dirty = False
+        self.c._on_card_add(self._list().id, "脏标记")
+        self.assertTrue(self.c._store._dirty)
+
+    def test_edit_persists_to_disk(self):
+        """编辑落到 board.json（回归护栏）
+
+        曾漏掉 mark_dirty：_after_data_change 只启动防抖计时器不标脏，
+        计时器到点后 flush() 因不脏直接返回，所有编辑停留在内存、退出即丢，
+        磁盘上永远停在首次启动那份默认空板。
+        """
+        self._reset()
+        self.c._flush_store()                    # 先落下空板，模拟"数据文件已存在"
+        self.c._on_card_add(self._list().id, "必须落盘的卡")
+        self.c._flush_store()                    # 防抖计时器到点 / 退出冲刷
+        doc = json.loads(AppConfig.board_path().read_text(encoding="utf-8"))
+        titles = [c["title"] for lst in doc["lists"] for c in lst["cards"]]
+        self.assertEqual(titles, ["必须落盘的卡"])
+
+    def test_card_mutations_persist(self):
+        """完成 / 删除 / 拖拽等改卡操作同样落盘（不只新增）"""
+        self._reset()
+        self.c._on_card_add(self._list().id, "甲")
+        self.c._on_card_add(self._list().id, "乙")
+        self.c._flush_store()
+        lst = self._list()
+        # 完成第一张（列表序为 [乙, 甲]）
+        self.c._on_card_done(lst.id, lst.cards[0].id, True)
+        self.c._flush_store()
+        doc = json.loads(AppConfig.board_path().read_text(encoding="utf-8"))
+        done = {c["title"]: c["done"] for l in doc["lists"] for c in l["cards"]}
+        self.assertTrue(done["乙"])
+        self.assertFalse(done["甲"])
 
     # ── 截止提醒（逐卡检查，每天每卡只提醒一次） ─────────────
 

@@ -531,6 +531,10 @@ class AppController(QObject):
 
     def _after_data_change(self, notify: str | None) -> None:
         board = self._store.load()
+        # 任何模型改动（增删改卡/列、拖拽、归档、番茄计数…）都必须在此标脏：
+        # flush() 只在脏标记为真时落盘，只 start() 防抖计时器而不标脏，
+        # 计时器到点后会因不脏而直接返回，编辑将停留在内存、退出即丢
+        self._store.mark_dirty()
         self._board_view.refresh(board.lists)
         self._refresh_pet_state()
         self._refresh_archive()
