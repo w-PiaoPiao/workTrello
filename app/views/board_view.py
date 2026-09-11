@@ -1326,6 +1326,8 @@ class ListColumn(QFrame):
         self._header.update_count(len(cards))
         # 列高随内容收缩：卡片增删都要重算 sizeHint，否则列高停在旧值
         self.updateGeometry()
+        self._sync_height_to_content()
+        self._sync_height_deferred()
 
     def _dispose_card_widgets(self, widgets: list[CardWidget]) -> None:
         """移除卡片控件：少量走淡出（延后销毁），批量直接销毁
@@ -1410,6 +1412,38 @@ class ListColumn(QFrame):
         m = lay.contentsMargins()
         return max(self.COLLAPSED_HEIGHT,
                    host.height() - m.top() - m.bottom())
+
+    def _sync_height_to_content(self) -> None:
+        """把列高同步到内容应有的高度（卡内容变化后补救）
+
+        Qt 在 sizeHint 变小时不会主动重排父布局中的本列项：实测内容已降到
+        209 而父布局项几何仍停在 233，列尾卡片被下方「+ 添加卡片」压住并冒
+        出纵向滚动条，且给本列 updateGeometry / 父布局 invalidate / activate
+        / 重投 LayoutRequest 都无效——只有下一次结构性变化（加入新卡）才连带
+        修正。resize() 是实测最小可靠原语，本列无 resizeEvent 副作用。
+
+        目标值取 _expanded_target_height()：与布局对长列的钳制一致（实测长列
+        两者同为 558），故长列不会反复触发；折叠态/过渡动画中由各自的状态机
+        接管高度，不在此干预。
+        """
+        if self._collapsed or self._collapse_anim is not None:
+            return
+        if not self.isVisible():
+            return
+        target = self._expanded_target_height()
+        if self.height() != target:
+            self.resize(self.width(), target)
+
+    def _sync_height_deferred(self) -> None:
+        """延后一拍再同步列高
+
+        refresh_cards 内同步读取内容高度拿到的是**旧值**：卡片的 sizeHint
+        要等它自己的布局跑完才更新（实测同一帧内先是 233、稍后才是 209），
+        此时 target == 当前高度，同步不做任何事，等于没修。故延后到下一轮
+        事件循环再读一次。上下文传 self：列被销毁时自动取消，不会打到悬空
+        对象上。
+        """
+        QTimer.singleShot(0, self, self._sync_height_to_content)
 
     # ── 列折叠（隐藏卡片区，仅剩标题栏） ────────────────────
 

@@ -804,6 +804,71 @@ class BoardViewRefreshTest(unittest.TestCase):
                              f"列 {col.list_id()} 出现多余纵向滚动条")
         self.view.hide()
 
+    def _content_height_columns(self):
+        """建 4 列且某列初始就含两行卡（带备注）的看板
+
+        复现条件：Qt 只在父布局项几何与 sizeHint 一致时才主动重排；列本身
+        高度正确时，后续 sizeHint 变化不会触发重排。故测试必须从"列高正确"
+        的稳定态出发，再改内容高度——这正是用户开着的看板所处的状态。
+        """
+        lists = [
+            BoardList(title="待办", cards=[Card(title="甲"), Card(title="乙")]),
+            BoardList(title="进行中", cards=[Card(title="丙")] * 3),
+            BoardList(title="已完成",
+                      cards=[Card(title="人力资源部档案", priority=2),
+                             Card(title="成大附院的报告", notes="已发科教处")]),
+            BoardList(title="问询",
+                      cards=[Card(title="罗处：六医院结算新冠可能要扣减200万"),
+                             Card(title="科研资金调整路径")]),
+        ]
+        self.view.refresh(lists)
+        return lists, self.view._columns[2]
+
+    def test_column_shrinks_when_card_content_shrinks(self):
+        """卡片内容变矮（清空备注）后列高跟着缩，不残留空隙
+
+        回归：Qt 不会因 sizeHint 变小而重排父布局中的列项，列高停在旧值。
+        实测清空一张卡的备注后列高仍为 224（内容已降到 203），列尾留出
+        21px 空隙；再补回备注又缩到 198 并冒出滚动条、卡片被下方
+        「+ 添加卡片」压住——即用户截图里"已完成列没随卡片变化而变长"。
+        """
+        self.view.resize(1080, 640)
+        self.view.show()
+        self._settle(60)
+        lists, col = self._content_height_columns()
+        self._settle(120)
+        card = col._card_widgets[1].card()
+        tall = col.height()
+        card.notes = ""
+        self.view.refresh(lists)
+        self._settle(120)
+        self.assertLess(col.height(), tall, "列高未随内容收缩")
+        self.assertLessEqual(abs(col.height() - col._content_height()), 2,
+                             "列高与内容高度不符（父布局项几何未更新）")
+        self.view.hide()
+
+    def test_column_grows_when_card_content_grows(self):
+        """卡片内容变高（补上备注）后列高跟着长，且不冒纵向滚动条"""
+        self.view.resize(1080, 640)
+        self.view.show()
+        self._settle(60)
+        lists, col = self._content_height_columns()
+        self._settle(120)
+        card = col._card_widgets[1].card()
+        card.notes = ""
+        self.view.refresh(lists)
+        self._settle(120)
+        short = col.height()
+        card.notes = "09-11 15:33已发科教与服务业处汪莲"
+        self.view.refresh(lists)
+        self._settle(120)
+        self.assertGreater(col.height(), short, "列高未随内容增长")
+        self.assertLessEqual(abs(col.height() - col._content_height()), 2,
+                             "列高与内容高度不符")
+        self.assertFalse(col._scroll.verticalScrollBar().isVisible(),
+                         "列尾内容被裁，冒出纵向滚动条")
+        self.view.hide()
+
     # ── 徽章按实际宽度取舍 ────────────────────────────────
 
     def test_meta_badges_shrink_to_card_width(self):
