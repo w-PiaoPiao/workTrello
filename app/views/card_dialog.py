@@ -6,9 +6,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from PySide6.QtCore import QDate, Qt
+from PySide6.QtCore import QDate, QSize, Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QDateEdit,
     QDialog,
@@ -77,14 +78,18 @@ class LabelChip(QPushButton):
 
 
 class CardDialog(QDialog):
-    """新建/编辑卡片对话框"""
+    """新建/编辑卡片对话框
+
+    宽高均可拖拽调整，并在关闭后记住尺寸（下次打开沿用）。
+    此前宽度被 setFixedWidth(420) 锁死：最大宽=最小宽=420，只能纵向拉。
+    """
 
     def __init__(self, card: Card | None = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("编辑卡片" if card else "新建卡片")
         self.setModal(True)
-        self.setFixedWidth(420)
         self._card = card
+        self._apply_saved_size()
 
         c = AppTheme.colors()
         self.setStyleSheet(f"""
@@ -295,6 +300,40 @@ class CardDialog(QDialog):
         super().showEvent(event)
         self._title_edit.setFocus()
         self._title_edit.selectAll()
+
+    # ── 尺寸（宽高可调 + 记住上次值）───────────────────────
+
+    def _apply_saved_size(self) -> None:
+        """恢复上次关闭时的尺寸；无记录则用默认值
+
+        在布局构建前调用：QDialog 的 showEvent 只在控件未被显式 resize
+        过时才 adjustSize，故此处 resize 后打开时会沿用该尺寸。
+        """
+        self.setMinimumSize(AppConfig.CARD_DIALOG_MIN_WIDTH,
+                            AppConfig.CARD_DIALOG_MIN_HEIGHT)
+        self.setMaximumSize(16777215, 16777215)   # 解除任何既有的宽高锁定
+        size = AppConfig.get_card_dialog_size()
+        if isinstance(size, QSize):
+            w, h = size.width(), size.height()
+        else:
+            w, h = AppConfig.CARD_DIALOG_WIDTH, AppConfig.CARD_DIALOG_HEIGHT
+        self.resize(*self._clamp_to_screen(w, h))
+
+    @staticmethod
+    def _clamp_to_screen(w: int, h: int) -> tuple[int, int]:
+        """夹进屏幕可用区：显示器变小/拔掉外接屏后不留超大窗口"""
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            avail = screen.availableGeometry()
+            w = min(w, avail.width())
+            h = min(h, avail.height())
+        return (max(AppConfig.CARD_DIALOG_MIN_WIDTH, w),
+                max(AppConfig.CARD_DIALOG_MIN_HEIGHT, h))
+
+    def done(self, result: int) -> None:
+        """关闭/确定/取消统一出口：记住当前尺寸（X 关闭走 closeEvent → reject）"""
+        AppConfig.save_card_dialog_size(self.size())
+        super().done(result)
 
     def _on_chip_toggled(self) -> None:
         for chip in self._label_chips:

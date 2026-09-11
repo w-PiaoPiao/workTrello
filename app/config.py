@@ -13,6 +13,25 @@ from PySide6.QtCore import QSettings
 
 
 def _settings() -> QSettings:
+    """应用设置（组织/应用名定位 QSettings）
+
+    数据目录被 PET_BOARD_DATA_DIR 改写时（测试隔离、便携模式），设置一并
+    落到该目录下的 INI，不再写系统位置。此前只隔离了数据目录、设置仍写
+    真实注册表，测试跑一遍就会覆盖用户的真实偏好（曾把看板尺寸改成测试值、
+    把冒烟测试的提醒记录写进用户注册表）。
+
+    注：QSettings.setDefaultFormat(IniFormat) 在 Windows 上对
+    QSettings(org, app) 这种两参构造无效（实测 fileName 仍指向注册表），
+    故这里显式传 INI 路径。
+    """
+    override = os.environ.get("PET_BOARD_DATA_DIR")
+    if override:
+        ini = Path(override) / "settings.ini"
+        try:
+            ini.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        return QSettings(str(ini), QSettings.IniFormat)
     return QSettings(AppConfig.APP_ORG, AppConfig.APP_NAME)
 
 
@@ -39,6 +58,7 @@ class AppConfig:
     KEY_PET_SKIN = "pet/skin"
     KEY_REMIND_LOG = "remind/log"
     KEY_COLLAPSED_LISTS = "board/collapsed_lists"
+    KEY_CARD_DIALOG_SIZE = "dialog/card_size"
 
     @classmethod
     def get_expanded_size(cls):
@@ -149,6 +169,17 @@ class AppConfig:
         _settings().setValue(cls.KEY_COLLAPSED_LISTS,
                              json.dumps(sorted(ids), ensure_ascii=False))
 
+    # ── 卡片对话框尺寸（会话之间保持用户调过的宽高）──────────
+
+    @classmethod
+    def get_card_dialog_size(cls):
+        """上次的卡片对话框尺寸（QSize 或 None）"""
+        return _settings().value(cls.KEY_CARD_DIALOG_SIZE)
+
+    @classmethod
+    def save_card_dialog_size(cls, size) -> None:
+        _settings().setValue(cls.KEY_CARD_DIALOG_SIZE, size)
+
     # ── 数据路径 ──────────────────────────────────────────────
     _env_override = os.environ.get("PET_BOARD_DATA_DIR")
     if _env_override:
@@ -206,6 +237,14 @@ class AppConfig:
     ANIMATION_MS = 240          # 折叠/展开动画时长
     SCREEN_MARGIN = 20
     RESIZE_MARGIN = 6           # Windows 边缘拖拽缩放的命中宽度（像素）
+
+    # 卡片对话框（新建/编辑卡片）
+    # 宽高均可调并记住上次值；此前宽度被 setFixedWidth 锁死、高度可拉伸，
+    # 只能纵向拉、不能横向拉。最小宽需容纳一行标签色块（6 个 chip）
+    CARD_DIALOG_WIDTH = 460
+    CARD_DIALOG_HEIGHT = 520
+    CARD_DIALOG_MIN_WIDTH = 380
+    CARD_DIALOG_MIN_HEIGHT = 320
 
     # ── 过渡动画（毫秒）──────────────────────────────────────────
     # 全部经 app/views/motion.py 下发："暂停动画"开关一关即整体退化为瞬时切换
