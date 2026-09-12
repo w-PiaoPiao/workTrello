@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 CORRUPT_BACKUP_KEEP = 5
 SNAPSHOT_KEEP = 10       # 启动快照保留份数
+GOOD_BACKUP_KEEP = 5     # 好副本固化保留份数（_preserve_good_copy）
 
 
 def backup_ext(tag: str = "corrupt") -> str:
@@ -54,7 +55,8 @@ def load_json_doc(
             break
         except OSError as e:
             read_error = e
-            time.sleep(0.1 * (attempt + 1))
+            # 短退避（总时长 0.15s）：这是启动路径，长 sleep 会拖住 GUI 线程
+            time.sleep(0.05 * (attempt + 1))
 
     if raw is None:
         logger.error("数据文件读取失败，以空数据启动: %s (%s)", path, read_error)
@@ -81,23 +83,36 @@ def load_json_doc(
     return data
 
 
-def atomic_write_json(path: Path, data, *, indent: int = 2,
-                      ensure_ascii: bool = False) -> None:
-    """原子写入 JSON 文件（写 .tmp → fsync → replace）
+def atomic_write_json(path: Path, data, *, indent: int | None = 2,
+                      ensure_ascii: bool = False,
+                      durable: bool = False) -> None:
+    """原子写入 JSON 文件（写 .tmp → [fsync] → replace）
 
     写入成功后把上一次的内容轮转为 <文件名>.prev，作为最近一份好副本，
     供数据文件损坏时恢复。
+
+    - indent=None 走紧凑输出：落盘是最高频的全量写，美化输出让体积与
+      序列化时间近乎翻倍；导出备份等供人阅读的场景保持缩进
+    - durable=True 时 fsync 强制落盘：常规防抖保存省略（OS 缓存 +
+      replace 原子性已保证不会产生半截文件，断电最多丢最后一次编辑），
+      退出兜底、备份恢复等低频关键写保留
     """
     path.parent.mkdir(parents=True, exist_ok=True)
 
     prev_path = path.with_name(path.name + ".prev")
     tmp_path = path.with_suffix(".tmp")
     try:
-        content = json.dumps(data, ensure_ascii=ensure_ascii, indent=indent)
+        if indent is None:
+            content = json.dumps(data, ensure_ascii=ensure_ascii,
+                                 separators=(",", ":"))
+        else:
+            content = json.dumps(data, ensure_ascii=ensure_ascii,
+                                 indent=indent)
         with tmp_path.open("w", encoding="utf-8") as f:
             f.write(content)
             f.flush()
-            os.fsync(f.fileno())
+            if durable:
+                os.fsync(f.fileno())
         if path.exists():
             path.replace(prev_path)
         tmp_path.replace(path)
@@ -109,6 +124,16 @@ def atomic_write_json(path: Path, data, *, indent: int = 2,
         raise StoreError(f"保存失败 ({path.name}): {e}") from e
 
 
+def rotate_backups(path: Path, tag: str, keep: int) -> None:
+    """按 tag 轮转 <名>.<tag>.<时间戳>.bak 备份，只保留最近 keep 份"""
+    try:
+        backups = sorted(path.parent.glob(f"{path.name}.{tag}.*.bak"))
+        for old in backups[:-keep]:
+            old.unlink(missing_ok=True)
+    except OSError as e:
+        logger.warning("清理历史 %s 备份失败: %s", tag, e)
+
+
 def backup_corrupted(path: Path) -> Path | None:
     """备份损坏文件为带时间戳的隔离副本（保留最近 N 份）"""
     bak_path = path.with_name(path.name + backup_ext())
@@ -117,12 +142,7 @@ def backup_corrupted(path: Path) -> Path | None:
     except OSError as e:
         logger.error("备份损坏文件失败: %s", e)
         return None
-    try:
-        backups = sorted(path.parent.glob(f"{path.name}.corrupt.*.bak"))
-        for old in backups[:-CORRUPT_BACKUP_KEEP]:
-            old.unlink(missing_ok=True)
-    except OSError as e:
-        logger.warning("清理历史损坏备份失败: %s", e)
+    rotate_backups(path, "corrupt", CORRUPT_BACKUP_KEEP)
     logger.info("已备份损坏文件到 %s", bak_path)
     return bak_path
 
@@ -169,11 +189,7 @@ def snapshot_board(path: Path, keep: int = SNAPSHOT_KEEP) -> Path | None:
     except OSError as e:
         logger.warning("创建启动快照失败: %s (%s)", snap, e)
         return None
-    try:
-        for old in _snapshot_paths(path)[:-keep]:
-            old.unlink(missing_ok=True)
-    except OSError as e:
-        logger.warning("清理历史启动快照失败: %s", e)
+    rotate_backups(path, "snap", keep)
     logger.info("已创建启动快照: %s", snap)
     return snap
 

@@ -7,10 +7,11 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import time
 from datetime import date, timedelta
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QTimer
+from PySide6.QtCore import QObject, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QAction, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -36,6 +37,12 @@ from app.views.theme import AppTheme
 from app.views.today_popover import TodayPopover
 
 logger = logging.getLogger(__name__)
+
+
+class _FlushNotifier(QObject):
+    """后台落盘失败 → 主线程通知桥（跨线程信号自动 queued 投递）"""
+
+    save_failed = Signal(str)
 
 
 class AppController(QObject):
@@ -68,8 +75,15 @@ class AppController(QObject):
         self._save_timer.setSingleShot(True)
         self._save_timer.setInterval(AppConfig.SAVE_DEBOUNCE_MS)
         self._save_timer.timeout.connect(self._flush_store)
+        # 后台落盘：主线程只做快照，文件 IO 串行跑在单线程池上；
+        # 退出时由 _on_about_to_quit 同步兜底
+        self._save_pool = QThreadPool(self)
+        self._save_pool.setMaxThreadCount(1)
+        self._flush_notifier = _FlushNotifier()
+        self._flush_notifier.save_failed.connect(self._on_save_failed)
+        self._last_save_error_notify: float | None = None   # 失败气泡去重
         if app is not None:
-            app.aboutToQuit.connect(self._flush_store)
+            app.aboutToQuit.connect(self._on_about_to_quit)
 
         # ── 撤销 / 截止提醒 / 系统主题跟随 / 番茄钟 ────────
         self._undo_stack: list[dict] = []
@@ -217,8 +231,12 @@ class AppController(QObject):
             shutil.copy2(prev, keep)
         except OSError as e:
             logger.warning("保留好副本失败: %s (%s)", keep, e)
-        else:
-            logger.info("已保留最近好数据副本: %s", keep)
+            return
+        logger.info("已保留最近好数据副本: %s", keep)
+        # 此前只创建不清理：每次"数据异常且放弃恢复"都会新增一份且永不
+        # 删除，磁盘随事故次数无限累积（corrupt/snap 都有轮转，唯独它没有）
+        json_io.rotate_backups(self._store.path, "good",
+                               json_io.GOOD_BACKUP_KEEP)
 
     def _offer_restore(self, kinds: list[str]) -> bool:
         """数据文件异常时询问是否从最近好副本（.prev）恢复；成功恢复返回 True"""
@@ -262,19 +280,33 @@ class AppController(QObject):
         self._save_timer.start()
 
     def _flush_store(self) -> None:
+        """防抖到点的常规保存：序列化在主线程，文件 IO 走后台单线程池"""
         board = self._store.load()
         had_cards = any(lst.cards for lst in board.lists)
-        try:
-            self._store.flush()
-        except Exception as e:
-            logger.error("保存数据失败: %s", e)
-            # 落盘失败用户可见，避免静默丢写
-            self._tray.show_notification(
-                "看板数据保存失败，请检查磁盘空间或文件权限")
-            return
+        self._store.flush_async(
+            self._save_pool,
+            on_error=self._flush_notifier.save_failed.emit)
         if had_cards and AppConfig.get_empty_board_ack():
             # 标记绝大多数时间缺席：先查再删，省掉每次保存的一次 QSettings remove
             AppConfig.clear_empty_board_ack()
+
+    def _on_about_to_quit(self) -> None:
+        """退出兜底：等在途后台写完成，再把剩余脏数据同步落盘（含 fsync）"""
+        self._save_pool.waitForDone(3000)
+        self._store.flush()
+
+    def _on_save_failed(self, detail: str) -> None:
+        """后台落盘失败（worker 线程经信号 queued 回主线程）"""
+        logger.error("保存数据失败: %s", detail)
+        self._schedule_save()    # 静默重试
+        now = time.monotonic()
+        last = self._last_save_error_notify
+        if last is not None and now - last < 30:
+            return               # 气泡 30s 去重：磁盘满时防止 500ms 轰炸
+        self._last_save_error_notify = now
+        # 落盘失败用户可见，避免静默丢写
+        self._tray.show_notification(
+            "看板数据保存失败，请检查磁盘空间或文件权限")
 
     # ── 信号 ──────────────────────────────────────────────
 

@@ -42,6 +42,15 @@ class ControllerFeatureTest(unittest.TestCase):
     def _titles(self):
         return [x.title for x in self._list().cards]
 
+    def _flush_sync(self):
+        """触发防抖落盘并等后台写线程收口
+
+        落盘已移到后台单线程池（flush_async）；断言文件内容前必须等待
+        队列完成，否则与 worker 竞态。
+        """
+        self.c._flush_store()
+        self.assertTrue(self.c._save_pool.waitForDone(3000))
+
     def _reset(self):
         board = self.c._store.load()
         for lst in board.lists:
@@ -231,11 +240,11 @@ class ControllerFeatureTest(unittest.TestCase):
             self._reset()
 
     def test_flush_failure_notifies_user(self):
-        """落盘失败通过托盘通知用户（不静默丢写）"""
-        with patch.object(self.c._store, "flush",
-                          side_effect=OSError("磁盘满")), \
-             patch.object(self.c._tray, "show_notification") as notify:
-            self.c._flush_store()
+        """落盘失败经信号回主线程通知用户（不静默丢写）并安排重试"""
+        self.c._last_save_error_notify = None
+        with patch.object(self.c._tray, "show_notification") as notify:
+            self.c._on_save_failed(
+                "保存失败 (board.json): 磁盘满")
         notify.assert_called_once()
 
     def test_flush_with_cards_clears_empty_ack(self):
@@ -249,13 +258,13 @@ class ControllerFeatureTest(unittest.TestCase):
         with patch.object(AppConfig, "get_empty_board_ack",
                           return_value=False), \
              patch.object(AppConfig, "clear_empty_board_ack") as clear:
-            self.c._flush_store()
+            self._flush_sync()
         clear.assert_not_called()
         # ack 存在 → 清除
         with patch.object(AppConfig, "get_empty_board_ack",
                           return_value=True), \
              patch.object(AppConfig, "clear_empty_board_ack") as clear:
-            self.c._flush_store()
+            self._flush_sync()
         clear.assert_called_once()
 
     def test_edit_marks_store_dirty(self):
@@ -273,9 +282,9 @@ class ControllerFeatureTest(unittest.TestCase):
         磁盘上永远停在首次启动那份默认空板。
         """
         self._reset()
-        self.c._flush_store()                    # 先落下空板，模拟"数据文件已存在"
+        self._flush_sync()                       # 先落下空板，模拟"数据文件已存在"
         self.c._on_card_add(self._list().id, "必须落盘的卡")
-        self.c._flush_store()                    # 防抖计时器到点 / 退出冲刷
+        self._flush_sync()                       # 防抖计时器到点 / 退出冲刷
         doc = json.loads(AppConfig.board_path().read_text(encoding="utf-8"))
         titles = [c["title"] for lst in doc["lists"] for c in lst["cards"]]
         self.assertEqual(titles, ["必须落盘的卡"])
@@ -285,15 +294,37 @@ class ControllerFeatureTest(unittest.TestCase):
         self._reset()
         self.c._on_card_add(self._list().id, "甲")
         self.c._on_card_add(self._list().id, "乙")
-        self.c._flush_store()
+        self._flush_sync()
         lst = self._list()
         # 完成第一张（列表序为 [乙, 甲]）
         self.c._on_card_done(lst.id, lst.cards[0].id, True)
-        self.c._flush_store()
+        self._flush_sync()
         doc = json.loads(AppConfig.board_path().read_text(encoding="utf-8"))
         done = {c["title"]: c["done"] for l in doc["lists"] for c in l["cards"]}
         self.assertTrue(done["乙"])
         self.assertFalse(done["甲"])
+
+    def test_flush_async_writes_and_clears_dirty(self):
+        """flush_async 提交即清脏并经单线程池落盘（后台落盘回归护栏）"""
+        self._reset()
+        self.c._on_card_add(self._list().id, "异步落盘")
+        self.c._store.flush_async(self.c._save_pool)
+        self.assertFalse(self.c._store._dirty)   # 快照取走即清脏
+        self.assertTrue(self.c._save_pool.waitForDone(3000))
+        doc = json.loads(AppConfig.board_path().read_text(encoding="utf-8"))
+        titles = [c["title"] for lst in doc["lists"] for c in lst["cards"]]
+        self.assertEqual(titles, ["异步落盘"])
+
+    def test_quit_flushes_remaining_dirty_data(self):
+        """退出兜底：等在途后台写完成后，同步 flush 剩余脏数据（含 fsync）"""
+        self._reset()
+        self.c._on_card_add(self._list().id, "退出兜底")
+        self.c._store.mark_dirty()   # 模拟后台写提交后又发生编辑
+        self.c._on_about_to_quit()
+        doc = json.loads(AppConfig.board_path().read_text(encoding="utf-8"))
+        titles = [c["title"] for lst in doc["lists"] for c in lst["cards"]]
+        self.assertEqual(titles, ["退出兜底"])
+        self.assertFalse(self.c._store._dirty)
 
     # ── 截止提醒（逐卡检查，每天每卡只提醒一次） ─────────────
 

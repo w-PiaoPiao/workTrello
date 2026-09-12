@@ -398,6 +398,7 @@ class BoardStore:
         self._path = path
         self._board: Board | None = None
         self._dirty = False
+        self._flush_seq = 0     # 后台落盘代数（提交/完成配对用）
         self.problems: list[tuple[str, str]] = []
         self.last_backup_path: Path | None = None
 
@@ -434,16 +435,56 @@ class BoardStore:
         self._board = board
         self._dirty = True
 
-    def flush(self) -> None:
-        """落盘（脏标记时才写）"""
-        if not self._dirty or self._board is None:
-            return
-        from app.models.json_io import atomic_write_json
-        doc = {
+    def _build_doc(self) -> dict | None:
+        """当前看板的落盘文档（须在主线程调用）
+
+        to_dict() 产出全新的 dict 树（不共享模型内部引用），交给后台
+        线程做 JSON 序列化与文件 IO 是安全的。
+        """
+        if self._board is None:
+            return None
+        return {
             "app": "桌宠看板",
             "version": 1,
             "saved_at": _now_iso(),
             "lists": [lst.to_dict() for lst in self._board.lists],
         }
-        atomic_write_json(self._path, doc)
+
+    def flush(self) -> None:
+        """同步落盘（退出兜底 / 测试；脏标记时才写），写入含 fsync"""
+        if not self._dirty or self._board is None:
+            return
+        from app.models.json_io import atomic_write_json
+        atomic_write_json(self._path, self._build_doc(),
+                          indent=None, durable=True)
+        self._flush_seq += 1
         self._dirty = False
+
+    def flush_async(self, pool, on_error=None) -> None:
+        """后台落盘：主线程只做 to_dict 快照，文件 IO 交单线程池串行执行
+
+        - 提交前清脏：快照已取走，期间新编辑会重新 mark_dirty（下一轮
+          防抖再写）；写失败在 worker 里恢复脏标记，由失败通知路径重试
+        - pool 须为单线程（maxThreadCount=1）：写入请求串行化，杜绝两个
+          写入者并发操作同一文件
+        - on_error 在 worker 线程回调（调用方应经 Qt 信号转回主线程）
+        """
+        if not self._dirty or self._board is None:
+            return
+        from app.models.json_io import atomic_write_json
+        doc = self._build_doc()
+        if doc is None:
+            return
+        self._dirty = False
+        self._flush_seq += 1
+        path = self._path
+
+        def _work() -> None:
+            try:
+                atomic_write_json(path, doc)
+            except Exception as e:
+                self._dirty = True   # 写失败恢复脏标记，下次防抖重试
+                if on_error is not None:
+                    on_error(e)
+
+        pool.start(_work)

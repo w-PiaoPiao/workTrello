@@ -29,6 +29,7 @@ from app.models.json_io import (
     load_json_doc,
     nonempty_snapshots,
     restore_from_backup,
+    rotate_backups,
     snapshot_board,
 )
 
@@ -407,6 +408,33 @@ class BoardStoreTest(unittest.TestCase):
         store2 = BoardStore(self.path)
         board2 = store2.load()
         self.assertEqual(board2.lists[0].cards[0].title, "持久化测试")
+
+    def test_flush_writes_compact_json(self):
+        """flush 走紧凑输出：落盘是最高频全量写，美化输出体积近乎翻倍"""
+        store = BoardStore(self.path)
+        board = store.load()
+        board.lists[0].cards.append(Card(title="紧凑"))
+        store.mark_dirty()
+        store.flush()
+        raw = self.path.read_text(encoding="utf-8")
+        self.assertNotIn("\n", raw)          # 紧凑 = 单行
+        # 内容等价可解析
+        doc = json.loads(raw)
+        self.assertEqual(doc["lists"][0]["cards"][0]["title"], "紧凑")
+
+    def test_rotate_backups_keeps_latest(self):
+        """好副本轮转：只保留时间戳最新的 keep 份（原逻辑永不清理）"""
+        for i in range(7):
+            bak = self.path.with_name(
+                f"{self.path.name}.good.2026090{i}_000000_000000.bak")
+            bak.write_text(str(i), encoding="utf-8")
+        rotate_backups(self.path, "good", 5)
+        remaining = sorted(self.path.parent.glob(f"{self.path.name}.good.*.bak"))
+        self.assertEqual(len(remaining), 5)
+        names = [p.name for p in remaining]
+        self.assertNotIn(f"{self.path.name}.good.20260900_000000_000000.bak", names)
+        self.assertNotIn(f"{self.path.name}.good.20260901_000000_000000.bak", names)
+        self.assertIn(f"{self.path.name}.good.20260906_000000_000000.bak", names)
 
     def test_reload_refetches_disk(self):
         """reload() 丢弃缓存重新读盘（恢复备份后的取数路径）"""
