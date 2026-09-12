@@ -343,8 +343,9 @@ class Board:
         - focus/focus_count: 今日聚焦卡片（(所属列表, 卡片) 对）及其数量
           （集合=today_focus_cards，带列表供浮窗直接展示）
         - overdue/due_today: 逾期/今日截止的未完成数（=due_counts）
+        - done_today: 当日勾选完成数（=today_done_count，含归档）
         """
-        total = done = overdue = due_today = 0
+        total = done = done_today = overdue = due_today = 0
         focus: list[tuple[BoardList, Card]] = []
         for lst in self.lists:
             for c in lst.cards:
@@ -352,7 +353,16 @@ class Board:
                     total += 1
                     if c.done:
                         done += 1
-                if c.done or c.archived:
+                if c.done:
+                    # 今日完成数含归档卡（与 today_done_count 同口径）
+                    if c.done_at:
+                        try:
+                            if datetime.fromisoformat(c.done_at).date() == today:
+                                done_today += 1
+                        except ValueError:
+                            pass
+                    continue
+                if c.archived:
                     continue
                 if c.in_today_focus(today):
                     focus.append((lst, c))
@@ -364,8 +374,8 @@ class Board:
                 elif delta == 0:
                     due_today += 1
         return {"total": total, "done": done, "focus": focus,
-                "focus_count": len(focus),
-                "overdue": overdue, "due_today": due_today}
+                "focus_count": len(focus), "overdue": overdue,
+                "due_today": due_today, "done_today": done_today}
 
     def archived_cards(self) -> list[tuple["BoardList", Card]]:
         """归档卡片及其所属列表"""

@@ -401,6 +401,7 @@ class CardWidget(QFrame):
     signal_delete_requested = Signal(str)       # card_id
     signal_card_pomo = Signal(str)              # card_id
     signal_card_archive = Signal(str)           # card_id
+    signal_card_star = Signal(str)              # card_id（星标 toggle）
 
     def __init__(self, card: Card, parent=None):
         super().__init__(parent)
@@ -428,6 +429,11 @@ class CardWidget(QFrame):
 
     def _show_card_menu(self, pos) -> None:
         menu = QMenu(self)
+        # 今日聚焦开关放首位：星标是"加入今日"的唯一入口，此前必须打开
+        # 编辑对话框才能勾选，是规划链路上最贵的操作
+        act_star = menu.addAction(
+            "☆ 移出今日" if self._card.starred else "⭐ 加入今日")
+        menu.addSeparator()
         if self._card.id == self._focusing_id:
             act_pomo = menu.addAction("⏹ 停止专注")
         else:
@@ -436,7 +442,9 @@ class CardWidget(QFrame):
         act_archive = menu.addAction("归档")
         chosen = menu.exec(self.mapToGlobal(pos))
         menu.deleteLater()   # exec 返回即弃用：挂在卡片控件上会随卡片累积
-        if chosen is act_pomo:
+        if chosen is act_star:
+            self.signal_card_star.emit(self._card.id)
+        elif chosen is act_pomo:
             self.signal_card_pomo.emit(self._card.id)
         elif chosen is act_archive:
             self.signal_card_archive.emit(self._card.id)
@@ -1196,6 +1204,7 @@ class ListColumn(QFrame):
     signal_delete_list = Signal(str)
     signal_card_pomo = Signal(str)             # card_id
     signal_card_archive = Signal(str)          # card_id
+    signal_card_star = Signal(str)             # card_id（星标 toggle）
     signal_list_move = Signal(str, str, bool)  # moved_list_id, target_list_id, insert_before
     signal_collapsed_changed = Signal(str, bool)  # list_id, collapsed
 
@@ -1300,6 +1309,7 @@ class ListColumn(QFrame):
         cw.signal_delete_requested.connect(self.signal_card_delete)
         cw.signal_card_pomo.connect(self.signal_card_pomo)
         cw.signal_card_archive.connect(self.signal_card_archive)
+        cw.signal_card_star.connect(self.signal_card_star)
         return cw
 
     def set_focusing_card(self, card_id: str | None) -> None:
@@ -1816,6 +1826,7 @@ class BoardView(QWidget):
     signal_zoom_requested = Signal()
     signal_card_pomo = Signal(str)              # card_id
     signal_card_archive = Signal(str)           # card_id
+    signal_card_star = Signal(str)              # card_id（星标 toggle）
     signal_archive_open = Signal()
     signal_export = Signal(str)                 # "md" | "csv"
     signal_export_backup = Signal()             # 导出完整备份 .json
@@ -2239,6 +2250,7 @@ class BoardView(QWidget):
         col.signal_delete_list.connect(self.signal_list_delete)
         col.signal_card_pomo.connect(self.signal_card_pomo)
         col.signal_card_archive.connect(self.signal_card_archive)
+        col.signal_card_star.connect(self.signal_card_star)
         col.signal_collapsed_changed.connect(self.signal_list_collapsed)
         self._columns.append(col)
         # 恢复上次折叠状态（save=False 不触发持久化回调；建列时不播动画）

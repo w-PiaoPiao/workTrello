@@ -70,6 +70,7 @@ class _PopRow(QFrame):
 
     signal_card_done = Signal(str, str, bool)   # list_id, card_id, done=勾选完成
     signal_card_edit = Signal(str, str)   # list_id, card_id
+    signal_card_star = Signal(str)        # card_id（星标 toggle）
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -92,6 +93,15 @@ class _PopRow(QFrame):
         self._badge = QLabel()
         self._badge.hide()
         lay.addWidget(self._badge)
+
+        # 星标开关：行内一键加入/移出今日（到期卡可主动加星，星标卡可移出）
+        self._star_btn = QPushButton()
+        self._star_btn.setFixedSize(24, 24)
+        self._star_btn.setCursor(Qt.PointingHandCursor)
+        self._star_btn.setFlat(True)
+        self._star_btn.clicked.connect(
+            lambda: self.signal_card_star.emit(self._card_id))
+        lay.addWidget(self._star_btn)
         self.reapply_theme()
 
     def _emit_done(self) -> None:
@@ -111,6 +121,8 @@ class _PopRow(QFrame):
             self._badge.show()
         else:
             self._badge.hide()
+        self._star_btn.setText("⭐" if card.starred else "☆")
+        self._star_btn.setToolTip("移出今日" if card.starred else "加入今日")
 
     def reapply_theme(self) -> None:
         """行配色快照随主题重下（内容相同也 re-polish，仅主题切换时调用）"""
@@ -134,6 +146,16 @@ class _PopRow(QFrame):
                 padding: 1px 6px;
             }}
         """)
+        self._star_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                border: none;
+                color: {c['text_secondary']};
+                font-size: 13px;
+                padding: 0;
+            }}
+            QPushButton:hover {{ color: {c['accent']}; }}
+        """)
 
 
 class TodayPopover(QWidget):
@@ -141,6 +163,7 @@ class TodayPopover(QWidget):
 
     signal_card_done = Signal(str, str, bool)   # list_id, card_id, done
     signal_card_edit = Signal(str, str)         # list_id, card_id
+    signal_card_star = Signal(str)              # card_id（星标 toggle）
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -149,6 +172,7 @@ class TodayPopover(QWidget):
         self.setFixedWidth(280)
         self._rows: list[tuple[str, str, QWidget]] = []   # (list_id, card_id, row)
         self._items: list[tuple[BoardList, Card]] = []    # 缓存供主题切换后重建
+        self._done_label: QLabel | None = None            # "今日已完成 N 张"回顾行
         self._built = False
         AppTheme.register(self._on_theme_changed)
 
@@ -164,10 +188,12 @@ class TodayPopover(QWidget):
         self._apply_style()
         for _lid, _cid, row in self._rows:
             row.reapply_theme()
+        self._apply_done_label_style()
 
     # ── 数据注入 ──────────────────────────────────────────
 
-    def set_items(self, items: list[tuple[BoardList, Card]]) -> None:
+    def set_items(self, items: list[tuple[BoardList, Card]],
+                  done_count: int | None = None) -> None:
         self._rebuild_row_widget()
         self._items = list(items)
         self._title_label.setText(f"今日待办 · {len(items)}")
@@ -175,14 +201,21 @@ class TodayPopover(QWidget):
         # 按 card.id 复用行控件（与 ListColumn.refresh_cards 同一策略）
         reusable = {card_id: row for _lid, card_id, row in self._rows}
         self._rows.clear()
+        done_label = self._ensure_done_label()
         while layout.count():
             item = layout.takeAt(0)
             w = item.widget()
             if w is None:
                 continue
             w.setParent(None)
-            if isinstance(w, _PopRow) and w not in reusable.values():
-                w.deleteLater()   # 没有卡可再绑定的行才销毁
+            if w is not done_label:
+                w.deleteLater()   # 行与空态提示都是即用即建，只有回顾行复用
+
+        # 今日完成回顾：全部勾完的庆祝时刻也走空态分支，两处都要显示
+        show_done = done_count is not None and done_count > 0
+        if show_done:
+            done_label.setText(f"今日已完成 {done_count} 张 🎉")
+            self._apply_done_label_style()
 
         if not items:
             empty = QLabel("今天没有待办 🎉")
@@ -191,7 +224,12 @@ class TodayPopover(QWidget):
                 f"color: {AppTheme.colors()['text_disabled']};"
                 " font-size: 12px; padding: 18px;")
             layout.addWidget(empty)
-            self.setFixedHeight(110)
+            if show_done:
+                layout.addWidget(done_label)
+                done_label.show()
+            else:
+                done_label.hide()
+            self.setFixedHeight(110 + (24 if show_done else 0))
             return
 
         for lst, card in items:
@@ -201,14 +239,37 @@ class TodayPopover(QWidget):
                 # 行信号直通浮窗信号（每行只连一次，随行复用）
                 row.signal_card_done.connect(self.signal_card_done)
                 row.signal_card_edit.connect(self.signal_card_edit)
+                row.signal_card_star.connect(self.signal_card_star)
             else:
                 row.setParent(self)
             row.update_row(lst, card)
             layout.addWidget(row)
             self._rows.append((lst.id, card.id, row))
+        if show_done:
+            layout.addWidget(done_label)
+            done_label.show()
+        else:
+            done_label.hide()
         layout.addStretch(1)
-        h = min(_MAX_POP_H, 62 + _ROW_MIN_H * len(items))
+        h = min(_MAX_POP_H, 62 + _ROW_MIN_H * len(items)
+                + (24 if show_done else 0))
         self.setFixedHeight(h)
+
+    def _ensure_done_label(self) -> QLabel:
+        """"今日已完成"回顾行（成员复用，重建布局时不销毁）"""
+        if self._done_label is None:
+            self._done_label = QLabel()
+            self._done_label.setAlignment(Qt.AlignCenter)
+            self._done_label.hide()
+        return self._done_label
+
+    def _apply_done_label_style(self) -> None:
+        if self._done_label is None:
+            return
+        c = AppTheme.colors()
+        self._done_label.setStyleSheet(
+            f"color: {c['text_secondary']}; font-size: 12px;"
+            " background: transparent; padding: 2px 0;")
 
     # ── 基础 UI ──────────────────────────────────────────
 

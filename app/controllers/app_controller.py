@@ -322,6 +322,7 @@ class AppController(QObject):
             self._on_always_top_toggled)
         self._board_view.signal_card_pomo.connect(self._on_card_pomo)
         self._board_view.signal_card_archive.connect(self._on_card_archive)
+        self._board_view.signal_card_star.connect(self._on_card_star)
         self._board_view.signal_archive_open.connect(self._on_archive_open)
         self._board_view.signal_export.connect(self._on_export)
         self._board_view.signal_export_backup.connect(self._on_export_backup)
@@ -392,7 +393,12 @@ class AppController(QObject):
             self._today_popover = TodayPopover()
             self._today_popover.signal_card_done.connect(self._on_card_done)
             self._today_popover.signal_card_edit.connect(self._on_card_edit)
-        self._today_popover.set_items(self._today_focus_items())
+            self._today_popover.signal_card_star.connect(self._on_card_star)
+        board = self._store.load()
+        stats = board.today_stats(date.today())
+        self._today_popover.set_items(
+            self._today_focus_items(stats["focus"]),
+            done_count=stats["done_today"])
         self._today_popover.show_below(self._window.frameGeometry())
 
     def _on_card_add(self, list_id: str, title: str = "") -> None:
@@ -601,7 +607,8 @@ class AppController(QObject):
         if (self._today_popover is not None
                 and self._today_popover.isVisible()):
             self._today_popover.set_items(
-                self._today_focus_items(stats["focus"]))
+                self._today_focus_items(stats["focus"]),
+                done_count=stats["done_today"])
 
     def _notify(self, text: str) -> None:
         """操作反馈：看板展开态走窗口内 toast，折叠/隐藏态走托盘气泡"""
@@ -912,6 +919,16 @@ class AppController(QObject):
             self._tray.set_tooltip(f"专注中 {m:02d}:{s:02d} · {title}")
 
     # ── 归档 ──────────────────────────────────────────────
+
+    def _on_card_star(self, card_id: str) -> None:
+        """星标 toggle（卡片右键 / 今日浮窗行按钮）：加入或移出今日聚焦"""
+        board = self._store.load()
+        _lst, card = board.find_card(card_id)
+        if card is None:
+            return
+        self._push_undo()
+        card.starred = not card.starred
+        self._after_data_change("已加入今日" if card.starred else "已移出今日")
 
     def _on_card_archive(self, card_id: str) -> None:
         board = self._store.load()

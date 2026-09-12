@@ -201,6 +201,28 @@ class NotesBadgeTest(unittest.TestCase):
             pop.close()
             pop.deleteLater()
 
+    def test_today_popover_done_count_row(self):
+        """今日完成回顾行：N>0 显示、N=0 隐藏（含空态分支）"""
+        from app.views.today_popover import TodayPopover
+        lst = BoardList(title="待办")
+        card = Card(title="任务")
+        pop = TodayPopover()
+        try:
+            pop.set_items([(lst, card)], done_count=3)
+            self.assertFalse(pop._done_label.isHidden())
+            self.assertIn("3", pop._done_label.text())
+            pop.set_items([(lst, card)], done_count=0)
+            self.assertTrue(pop._done_label.isHidden())
+            # 空态（全部勾完）时完成行同样显示——庆祝时刻正是回顾入口
+            pop.set_items([], done_count=5)
+            self.assertFalse(pop._done_label.isHidden())
+            self.assertIn("5", pop._done_label.text())
+            pop.set_items([], done_count=0)
+            self.assertTrue(pop._done_label.isHidden())
+        finally:
+            pop.close()
+            pop.deleteLater()
+
 
 class PopoverAppearanceTest(unittest.TestCase):
     """浮层配色与可读性：底色必须不透明

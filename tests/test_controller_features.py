@@ -274,6 +274,21 @@ class ControllerFeatureTest(unittest.TestCase):
         self.c._on_card_add(self._list().id, "脏标记")
         self.assertTrue(self.c._store._dirty)
 
+    def test_card_star_toggle_with_undo(self):
+        """右键星标 toggle：加入/移出今日，撤销可回滚（星标一键回归护栏）"""
+        self._reset()
+        self.c._on_card_add(self._list().id, "星标卡")
+        card = self._list().cards[0]
+        self.assertFalse(card.starred)
+        self.c._on_card_star(card.id)
+        self.assertTrue(self._list().cards[0].starred)
+        self.c._on_card_star(card.id)
+        self.assertFalse(self._list().cards[0].starred)
+        # 撤销"移出" → 恢复星标
+        self.c._on_undo_requested(False)
+        self.assertTrue(self._list().cards[0].starred)
+        self.assertFalse(self._list().cards[0].done)   # 不误改完成态
+
     def test_edit_persists_to_disk(self):
         """编辑落到 board.json（回归护栏）
 

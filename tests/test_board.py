@@ -302,6 +302,8 @@ class BoardTest(unittest.TestCase):
             Card(title="无效日期", due_date="不是日期"),
         ]
         lst1.cards.append(Card(title="完成B", done=True))
+        lst1.cards.append(Card(title="今天完成", done=True,
+                              done_at=f"{today.isoformat()}T10:00:00+08:00"))
         stats = self.board.today_stats(today)
         self.assertEqual(stats["total"], self.board.total_cards())
         self.assertEqual(stats["done"], self.board.done_cards())
@@ -314,9 +316,12 @@ class BoardTest(unittest.TestCase):
                               if c.in_today_focus(today))])
         self.assertEqual((stats["overdue"], stats["due_today"]),
                          self.board.due_counts(today))
+        self.assertEqual(stats["done_today"],
+                         self.board.today_done_count(today))
         self.assertEqual(stats["focus_count"], 3)       # 星标 + 逾期 + 今天
-        self.assertEqual(stats["total"], 9)             # 含完成，不含归档
-        self.assertEqual(stats["done"], 2)
+        self.assertEqual(stats["total"], 10)            # 含完成，不含归档
+        self.assertEqual(stats["done"], 3)
+        self.assertEqual(stats["done_today"], 1)        # 仅"今天完成"
 
     def test_due_delta_cache_tracks_due_date(self):
         """due_delta 缓存自校验：due_date 变更后立即按新值计算"""
