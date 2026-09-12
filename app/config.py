@@ -273,7 +273,8 @@ class AppConfig:
     # ── 交互 ──────────────────────────────────────────────────────
     CARD_DRAG_THRESHOLD = 10    # 卡片按下后超过该位移才判定为拖拽（像素）
     LIST_DRAG_THRESHOLD = 10    # 列表头按下后超过该位移才判定为整列拖拽（像素）
-    CARD_DELETE_BTN_H = 20      # 卡片右上角悬浮删除按钮的命中尺寸
+    CARD_DELETE_BTN_H = 24      # 卡片右上角悬浮删除按钮的命中尺寸（≥24 可点击标准）
+    BOARD_WHEEL_STEP = 180      # 看板区垂直滚轮每格对应的横向滚动量（像素，半列）
     CARD_META_BADGE_MAX = 4     # 卡片信息行徽章数硬上限（实际显示几个另按卡片
     #                             实宽决定，装不下折成 …，见 _fit_meta_badges）
     EDGE_CURSOR_POLL_MS = 150   # Windows 展开态光标轮询间隔（系统缩放后事件链可能断裂）

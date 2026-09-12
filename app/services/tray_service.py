@@ -85,6 +85,11 @@ class TrayService(QObject):
         self._tray.hide()
 
     def _on_activated(self, reason) -> None:
+        if reason == QSystemTrayIcon.Trigger and not AppConfig.IS_MACOS:
+            # Windows/Linux 惯例：左键单击即切换显隐（macOS 单击是
+            # 系统菜单，动了会与菜单弹出打架，保持双击切换）
+            self._on_toggle()
+            return
         if reason == QSystemTrayIcon.DoubleClick:
             if self._tray.isVisible() and self.parent().isVisible():
                 self.signal_hide_requested.emit()

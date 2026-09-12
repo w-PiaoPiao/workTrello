@@ -71,9 +71,14 @@ class LabelChip(QPushButton):
         此前每点一个 chip 会对全部 6 个 chip 重新拼接并 reparse。
         """
         bg, fg = AppTheme.label_style(self._key)
+        # 色块内写标签首字：纯颜色区分对色盲用户不可达
+        self.setText(AppConfig.LABEL_NAMES.get(self._key, self._key)[:1])
         self.setStyleSheet(f"""
             QPushButton {{
                 background: {bg};
+                color: {fg};
+                font-size: 11px;
+                font-weight: bold;
                 border: 1px solid transparent;
                 border-radius: 6px;
             }}
@@ -104,6 +109,9 @@ class CardDialog(QDialog):
                 font-size: 12px;
                 font-weight: bold;
             }}
+            QLineEdit[error="true"] {{
+                border: 1.5px solid {c['danger']};
+            }}
         """)
 
         root = QVBoxLayout(self)
@@ -115,6 +123,7 @@ class CardDialog(QDialog):
         cap.setProperty("cap", True)
         root.addWidget(cap)
         self._title_edit = QLineEdit()
+        self._title_edit.textChanged.connect(self._clear_title_error)
         if card:
             self._title_edit.setText(card.title)
         root.addWidget(self._title_edit)
@@ -371,9 +380,24 @@ class CardDialog(QDialog):
         self._notes_edit.setTextCursor(cursor)
         self._notes_edit.setFocus()
 
+    def _set_title_error(self, on: bool) -> None:
+        """标题错误态红边（动态属性驱动，需重 polish 才生效）"""
+        if self._title_edit.property("error") == on:
+            return
+        self._title_edit.setProperty("error", on)
+        style = self._title_edit.style()
+        style.unpolish(self._title_edit)
+        style.polish(self._title_edit)
+
+    def _clear_title_error(self) -> None:
+        self._set_title_error(False)
+
     def _on_save(self) -> None:
         title = self._title_edit.text().strip()
         if not title:
+            # 空标题不关闭：红边 + 聚焦明示原因（此前静默 return，按钮
+            # 点了没反应像坏了）
+            self._set_title_error(True)
             self._title_edit.setFocus()
             return
         self.accept()

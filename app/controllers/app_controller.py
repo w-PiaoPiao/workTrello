@@ -16,7 +16,7 @@ from PySide6.QtGui import QAction, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
-    QInputDialog,
+    QDialog,
     QLineEdit,
     QMenuBar,
     QMessageBox,
@@ -34,6 +34,7 @@ from app.views.board_view import BoardView
 from app.views.card_dialog import CardDialog
 from app.views.main_window import MainWindow
 from app.views.pet_view import PetView
+from app.views.quick_add_dialog import BulkAddDialog, QuickAddDialog
 from app.views.theme import AppTheme
 from app.views.today_popover import TodayPopover
 
@@ -369,45 +370,48 @@ class AppController(QObject):
     # ── 卡片操作 ──────────────────────────────────────────
 
     def _on_quick_add(self) -> None:
-        """桌宠右键快速添加：弹输入框，加到第一个列表（支持速记语法）"""
-        title, ok = QInputDialog.getText(self._window, "快速添加卡片", "卡片标题：")
-        if ok and title.strip():
-            board = self._store.load()
-            if board.lists:
-                self._on_card_add(board.lists[0].id, title.strip())
+        """桌宠右键快速添加：单行对话框（带速记实时预览），加到第一个列表"""
+        board = self._store.load()
+        if not board.lists:
+            self._notify("看板还没有列表，先添加一个列表")
+            return
+        dlg = QuickAddDialog(
+            "快速添加卡片",
+            "卡片标题（支持速记：明天 / 周五 / !P1 / #红）",
+            "例：明天 交周报 !P1 #红",
+            syntax_preview=True,
+            parent=self._window)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        title = dlg.text().strip()
+        if title:
+            self._on_card_add(board.lists[0].id, title)
 
     def _on_bulk_add(self) -> None:
         """批量添加：每行一张卡（支持速记语法），适合迁移清单/会议行动项
 
         打开时剪贴板为多行文本则自动预填——"复制若干行 → 一键入库"
-        是最常见的批量来源。撤销一次回滚整批。
+        是最常见的批量来源。撤销一次回滚整批。列表选择内嵌在对话框里
+        （此前是输入完再弹 QInputDialog 选列表两步走）。
         """
         from PySide6.QtWidgets import QApplication
 
+        board = self._store.load()
+        names = [l.title for l in board.lists]
+        if not names:
+            self._notify("看板还没有列表，先添加一个列表")
+            return
         clipboard = QApplication.clipboard()
         clip = clipboard.text() if clipboard is not None else ""
         prefill = clip if "\n" in clip else ""
-        text, ok = QInputDialog.getMultiLineText(
-            self._window, "批量添加卡片",
-            "每行一张卡片；行内支持速记：明天 / 周五 / 3天后 / 9月20日、"
-            "!P1、#红", prefill)
-        if not ok:
+        dlg = BulkAddDialog(names, prefill, parent=self._window)
+        if dlg.exec() != QDialog.Accepted:
             return
-        lines = [ln.strip() for ln in text.splitlines() if ln.strip()][:100]
+        lines = [ln.strip() for ln in dlg.text().splitlines()
+                 if ln.strip()][:100]
         if not lines:
             return
-        board = self._store.load()
-        if not board.lists:
-            return
-        if len(board.lists) == 1:
-            target = board.lists[0]
-        else:
-            names = [l.title for l in board.lists]
-            choice, ok = QInputDialog.getItem(
-                self._window, "批量添加卡片", "添加到列表：", names, 0, False)
-            if not ok:
-                return
-            target = board.lists[names.index(choice)]
+        target = board.lists[dlg.list_index()]
         self._push_undo()
         new_cards = [self._make_card_from_text(ln) for ln in lines]
         target.cards[0:0] = new_cards   # 保序插入列首（第一行在最上）
@@ -497,32 +501,32 @@ class AppController(QObject):
             self._notify_done(card)
 
     def _notify_done(self, card: Card) -> None:
+        """里程碑反馈：看板展开时走窗口内 toast，与 _notify 分流一致"""
         board = self._store.load()
         today_n = board.today_done_count()
         total = board.total_cards()
         done = board.done_cards()
         if total > 0 and done == total:
-            self._tray.show_notification("全部完成！桌宠为你鼓掌 🎉")
+            self._notify("全部完成！桌宠为你鼓掌 🎉")
             if self._window.mode == "collapsed":
                 self._pet_view.celebrate()
         elif today_n == 3:
-            self._tray.show_notification("今日已完成 3 张，节奏不错！🌱")
+            self._notify("今日已完成 3 张，节奏不错！🌱")
         elif today_n == 5:
-            self._tray.show_notification("今日已完成 5 张，收工级表现！🏆")
+            self._notify("今日已完成 5 张，收工级表现！🏆")
         elif done > 0 and done % 5 == 0:
-            self._tray.show_notification(f"已完成 {done} 张卡片，继续加油！")
+            self._notify(f"已完成 {done} 张卡片，继续加油！")
 
     def _on_card_delete(self, list_id: str, card_id: str) -> None:
-        _lst, card = self._store.load().find_card(card_id)
-        title = card.title if card else "此卡片"
-        reply = QMessageBox.question(
-            self._window,
-            "确认删除",
-            f"确定要删除「{title[:30]}」吗？",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if reply != QMessageBox.Yes:
+        """删除卡片：不打断流，撤销兜底（toast 提示 ⌘Z）
+
+        撤销栈（20 步）完全覆盖单卡删除，模态确认框反而是唯一打断
+        录入节奏的弹窗——与归档（更"重"却不确认）不一致，也与 README
+        声称的轻提示行为不符。误删一次 ⌘Z 即回。
+        """
+        board = self._store.load()
+        _lst, card = board.find_card(card_id)
+        if card is None:
             return
         self._push_undo()
         if card_id == self._pomo_card_id:
@@ -561,12 +565,19 @@ class AppController(QObject):
     # ── 列表操作 ──────────────────────────────────────────
 
     def _on_list_add(self) -> None:
-        title, ok = QInputDialog.getText(self._window, "添加列表", "列表名称：")
-        if not (ok and title.strip()):
+        dlg = QuickAddDialog("添加列表", "列表名称：", "例如：进行中",
+                             parent=self._window)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        title = dlg.text().strip()
+        if not title:
             return
         self._push_undo()
-        self._store.load().lists.append(BoardList(title=title.strip()))
+        lst = BoardList(title=title)
+        self._store.load().lists.append(lst)
         self._after_data_change("已添加列表")
+        # 新列 append 在最右端：不滚过去用户会以为点击没生效
+        self._board_view.reveal_list(lst.id)
 
     def _on_list_title_changed(self, list_id: str, new_title: str) -> None:
         lst = self._store.load().find_list(list_id)
@@ -914,6 +925,17 @@ class AppController(QObject):
         if self._pomo_card_id == card_id:
             self._pomo_stop()          # 再次触发同一张卡 = 停止
             return
+        if self._pomo_card_id is not None:
+            # 专注中误点其他卡的"开始专注"会无声清零当前进度：先确认
+            cur = board.find_card(self._pomo_card_id)[1]
+            cur_title = cur.title[:20] if cur is not None else "当前卡片"
+            reply = QMessageBox.question(
+                self._window, "切换专注",
+                f"正在专注「{cur_title}」，切换将放弃当前进度。\n继续？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if reply != QMessageBox.Yes:
+                return
+            self._pomo_stop()          # 确认切换：结束当前（不计番茄）
         self._pomo_start(card)
 
     def _pomo_start(self, card: Card) -> None:
@@ -946,9 +968,9 @@ class AppController(QObject):
                 else:
                     self._after_data_change("专注完成！休息一下 🎉")
             else:
-                self._tray.show_notification("专注完成！休息一下 🎉")
+                self._notify("专注完成！休息一下 🎉")
         else:
-            self._tray.show_notification("已结束专注")
+            self._notify("已结束专注")
 
     def _pomo_tick(self) -> None:
         if self._pomo_card_id is None:

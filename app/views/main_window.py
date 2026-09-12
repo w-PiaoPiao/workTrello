@@ -248,7 +248,8 @@ class MainWindow(QWidget):
         self._expanding = True
 
         self.setFixedSize(QSize(16777215, 16777215))
-        self.setMinimumSize(AppConfig.BOARD_MIN_WIDTH, AppConfig.BOARD_MIN_HEIGHT)
+        min_w, min_h = self._effective_min_size()
+        self.setMinimumSize(min_w, min_h)
         self.setMaximumSize(AppConfig.BOARD_MAX_WIDTH, AppConfig.BOARD_MAX_HEIGHT)
         self._stack.setCurrentWidget(self._expanded_view)
         self._animate_size(
@@ -324,8 +325,8 @@ class MainWindow(QWidget):
         self.setMaximumSize(16777215, 16777215)
         self.setGeometry(geo)
         if not self._zoomed:
-            self.setMinimumSize(AppConfig.BOARD_MIN_WIDTH,
-                                AppConfig.BOARD_MIN_HEIGHT)
+            min_w, min_h = self._effective_min_size()
+            self.setMinimumSize(min_w, min_h)
             self.setMaximumSize(AppConfig.BOARD_MAX_WIDTH,
                                 AppConfig.BOARD_MAX_HEIGHT)
         self.zoom_state_changed.emit(self._zoomed)
@@ -531,6 +532,21 @@ class MainWindow(QWidget):
             return QSize(w, h)
         return QSize(AppConfig.BOARD_WIDTH, AppConfig.BOARD_HEIGHT)
 
+    def _effective_min_size(self) -> tuple[int, int]:
+        """展开态最小尺寸：小屏上最小值不得超过可用区
+
+        BOARD_MIN_WIDTH(980) 若大于屏幕可用宽（800×600/1024×600 类），
+        钳制会让窗口比屏幕还宽、左缘出屏；此时以屏幕为准放下限。
+        """
+        min_w, min_h = AppConfig.BOARD_MIN_WIDTH, AppConfig.BOARD_MIN_HEIGHT
+        screen = self._current_screen()
+        if screen:
+            geo = screen.availableGeometry()
+            margin = AppConfig.SCREEN_MARGIN
+            min_w = min(min_w, max(320, geo.width() - margin * 2))
+            min_h = min(min_h, max(240, geo.height() - margin * 2))
+        return min_w, min_h
+
     def _effective_expanded_size(self) -> QSize:
         w = self._expanded_size.width()
         h = self._expanded_size.height()
@@ -540,8 +556,9 @@ class MainWindow(QWidget):
             margin = AppConfig.SCREEN_MARGIN
             w = min(w, geo.width() - margin * 2)
             h = min(h, geo.height() - margin * 2)
-        w = max(AppConfig.BOARD_MIN_WIDTH, min(w, AppConfig.BOARD_MAX_WIDTH))
-        h = max(AppConfig.BOARD_MIN_HEIGHT, min(h, AppConfig.BOARD_MAX_HEIGHT))
+        min_w, min_h = self._effective_min_size()
+        w = max(min_w, min(w, AppConfig.BOARD_MAX_WIDTH))
+        h = max(min_h, min(h, AppConfig.BOARD_MAX_HEIGHT))
         return QSize(w, h)
 
     def _move_to_default_position(self) -> None:

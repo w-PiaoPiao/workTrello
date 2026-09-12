@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QRect, Qt, Signal
+from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -198,18 +198,19 @@ class TodayPopover(QWidget):
         self._items = list(items)
         self._title_label.setText(f"今日待办 · {len(items)}")
         layout = self._rows_layout
-        # 按 card.id 复用行控件（与 ListColumn.refresh_cards 同一策略）
+        # 按 card.id 复用行控件（与 ListColumn.refresh_cards 同一策略：
+        # 复用行绝不能先 deleteLater——销毁已排队，回事件循环即没）
         reusable = {card_id: row for _lid, card_id, row in self._rows}
         self._rows.clear()
         done_label = self._ensure_done_label()
+        current: list[QWidget] = []   # 摘出布局的旧行（含将被复用的）
         while layout.count():
             item = layout.takeAt(0)
             w = item.widget()
-            if w is None:
+            if w is None or w is done_label:
                 continue
-            w.setParent(None)
-            if w is not done_label:
-                w.deleteLater()   # 行与空态提示都是即用即建，只有回顾行复用
+            current.append(w)
+        keep: set[int] = set()        # 复用行 id()
 
         # 今日完成回顾：全部勾完的庆祝时刻也走空态分支，两处都要显示
         show_done = done_count is not None and done_count > 0
@@ -229,7 +230,8 @@ class TodayPopover(QWidget):
                 done_label.show()
             else:
                 done_label.hide()
-            self.setFixedHeight(110 + (24 if show_done else 0))
+            self._set_pop_height(110 + (24 if show_done else 0),
+                                 dismiss=current, keep=keep)
             return
 
         for lst, card in items:
@@ -241,7 +243,7 @@ class TodayPopover(QWidget):
                 row.signal_card_edit.connect(self.signal_card_edit)
                 row.signal_card_star.connect(self.signal_card_star)
             else:
-                row.setParent(self)
+                keep.add(id(row))
             row.update_row(lst, card)
             layout.addWidget(row)
             self._rows.append((lst.id, card.id, row))
@@ -253,7 +255,40 @@ class TodayPopover(QWidget):
         layout.addStretch(1)
         h = min(_MAX_POP_H, 62 + _ROW_MIN_H * len(items)
                 + (24 if show_done else 0))
-        self.setFixedHeight(h)
+        self._set_pop_height(h, dismiss=current, keep=keep)
+
+    def _set_pop_height(self, h: int, dismiss: list[QWidget],
+                        keep: set[int]) -> None:
+        """定高并处置消失行：可见且有动画时先淡出、高度延迟收缩
+
+        勾选完成/移出今日是高频操作，行瞬间消失+浮窗高度跳变很生硬；
+        行先原地淡出（对齐 ListColumn._dispose_card_widgets），动画播完
+        再收高度。连续 set_items 用代数守卫，旧回调不覆盖新高度。
+        """
+        animate = (motion.enabled() and self.isVisible()
+                   and 0 < len(dismiss) <= AppConfig.ANIM_BATCH_LIMIT)
+        for w in dismiss:
+            if id(w) in keep:
+                continue
+            if animate:
+                w.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+                motion.fade_out(w, AppConfig.CARD_EXIT_ANIM_MS,
+                                on_finished=w.deleteLater)
+            else:
+                w.setParent(None)
+                w.deleteLater()
+        if animate:
+            self._height_seq = getattr(self, "_height_seq", 0) + 1
+            seq = self._height_seq
+
+            def _apply() -> None:
+                if seq == self._height_seq:
+                    self.setFixedHeight(h)
+
+            QTimer.singleShot(AppConfig.CARD_EXIT_ANIM_MS, _apply)
+        else:
+            self._height_seq = getattr(self, "_height_seq", 0) + 1
+            self.setFixedHeight(h)
 
     def _ensure_done_label(self) -> QLabel:
         """"今日已完成"回顾行（成员复用，重建布局时不销毁）"""

@@ -271,12 +271,14 @@ class ControllerFeatureTest(unittest.TestCase):
         """批量添加：每行一张保序、速记语法生效、撤销一次回滚整批"""
         self._reset()
         lst = self._list()
-        with patch("app.controllers.app_controller.QInputDialog") as qid, \
+        from app.views.quick_add_dialog import BulkAddDialog
+        with patch("app.controllers.app_controller.BulkAddDialog") as dlg_cls, \
              patch("app.controllers.app_controller.QApplication") as qa:
             qa.clipboard.return_value.text.return_value = ""   # 剪贴板无多行
-            qid.getMultiLineText.return_value = (
-                "第三张\n改bug !P1 #红\n9月20日交房租\n", True)
-            qid.getItem.return_value = (lst.title, True)
+            dlg = dlg_cls.return_value
+            dlg.exec.return_value = BulkAddDialog.Accepted
+            dlg.text.return_value = "第三张\n改bug !P1 #红\n9月20日交房租\n"
+            dlg.list_index.return_value = 0   # 第一个列表
             self.c._on_bulk_add()
         cards = self._list().cards
         self.assertEqual([c.title for c in cards[:3]],

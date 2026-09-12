@@ -31,6 +31,7 @@ from PySide6.QtCore import (
     QSize,
     Qt,
     QTimer,
+    QVariantAnimation,
     Signal,
 )
 from PySide6.QtGui import (
@@ -348,7 +349,16 @@ def _fmt_due(due: str) -> tuple[str, bool]:
 
 
 class _CardCheckButton(QPushButton):
-    """自绘勾选框（替代 ☐/☑ 字形，跨平台渲染一致）"""
+    """自绘勾选框（替代 ☐/☑ 字形，跨平台渲染一致）
+
+    完成瞬间对勾按路径描画（140ms）：勾选完成是最高频的正反馈动作，
+    瞬时划线的满足感不足；描画进度由 _check_progress 驱动，可被
+    "暂停动画"开关跳过。
+    """
+
+    _P0 = (3.6, 8.2)     # 对勾折点序列（相对勾选框左上角）
+    _P1 = (7.0, 11.4)
+    _P2 = (12.6, 4.6)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -357,11 +367,44 @@ class _CardCheckButton(QPushButton):
         self.setCursor(Qt.PointingHandCursor)
         self.setToolTip("点击切换完成状态")
         self._done = False
+        self._check_anim: QVariantAnimation | None = None
+        self._check_progress = 1.0   # 对勾描画进度 0..1（1=完整对勾）
 
     def set_done(self, done: bool) -> None:
-        if self._done != done:
-            self._done = done
-            self.update()
+        if self._done == done:
+            return
+        self._done = done
+        self.update()
+        if done and motion.enabled():
+            self._start_check_anim()
+        else:
+            self._stop_check_anim()
+
+    def _start_check_anim(self) -> None:
+        self._stop_check_anim()
+        anim = QVariantAnimation(self)
+        anim.setDuration(140)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.valueChanged.connect(self._on_check_tick)
+        anim.finished.connect(lambda: self._stop_check_anim())
+        self._check_anim = anim
+        self._check_progress = 0.0
+        anim.start()
+
+    def _stop_check_anim(self) -> None:
+        anim = self._check_anim
+        if anim is not None:
+            anim.stop()
+            anim.deleteLater()
+            self._check_anim = None
+        self._check_progress = 1.0
+        self.update()
+
+    def _on_check_tick(self, value) -> None:
+        self._check_progress = float(value)
+        self.update()
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
@@ -370,7 +413,7 @@ class _CardCheckButton(QPushButton):
         box = QRect((self.width() - 16) // 2, (self.height() - 16) // 2, 16, 16)
         radius = 4.5
         if self._done:
-            # 完成：主题色填充 + 白色对勾
+            # 完成：主题色填充 + 白色对勾（按描画进度截取路径）
             painter.setPen(Qt.NoPen)
             painter.setBrush(QColor(c["success"]))
             painter.drawRoundedRect(box, radius, radius)
@@ -378,10 +421,24 @@ class _CardCheckButton(QPushButton):
             pen.setCapStyle(Qt.RoundCap)
             pen.setJoinStyle(Qt.RoundJoin)
             painter.setPen(pen)
+            bx, by = box.left(), box.top()
+            p0 = QPointF(bx + self._P0[0], by + self._P0[1])
+            p1 = QPointF(bx + self._P1[0], by + self._P1[1])
+            p2 = QPointF(bx + self._P2[0], by + self._P2[1])
+            l1 = math.hypot(self._P1[0] - self._P0[0],
+                            self._P1[1] - self._P0[1])
+            l2 = math.hypot(self._P2[0] - self._P1[0],
+                            self._P2[1] - self._P1[1])
+            d = self._check_progress * (l1 + l2)
             path = QPainterPath()
-            path.moveTo(box.left() + 3.6, box.top() + 8.2)
-            path.lineTo(box.left() + 7.0, box.top() + 11.4)
-            path.lineTo(box.left() + 12.6, box.top() + 4.6)
+            path.moveTo(p0)
+            if d <= l1:
+                t = (d / l1) if l1 > 0 else 1.0
+                path.lineTo(p0 + (p1 - p0) * t)
+            else:
+                t = ((d - l1) / l2) if l2 > 0 else 1.0
+                path.lineTo(p1)
+                path.lineTo(p1 + (p2 - p1) * t)
             painter.drawPath(path)
         else:
             # 未完成：圆角方框，悬停变主题色
@@ -403,6 +460,7 @@ class CardWidget(QFrame):
     signal_card_archive = Signal(str)           # card_id
     signal_card_star = Signal(str)              # card_id（星标 toggle）
     signal_label_clicked = Signal(str)          # label key（点色条过滤）
+    signal_drag_blocked = Signal()              # 过滤态下拖拽被拒（提示入口）
 
     def __init__(self, card: Card, parent=None):
         super().__init__(parent)
@@ -410,6 +468,8 @@ class CardWidget(QFrame):
         self._drag_start = QPoint()
         self._pressing = False
         self._hovered = False
+        self._tooltip_backup: str | None = None   # 悬停备注徽章期间暂存卡片 tooltip
+        self._meta_items_cache: list = []          # (文本, 色键, 是否备注) 供 tooltip 汇总
         self._delete_btn: QPushButton | None = None
         self._check_btn: QPushButton | None = None
         self._title_label: QLabel | None = None
@@ -423,6 +483,8 @@ class CardWidget(QFrame):
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_card_menu)
         self.setCursor(Qt.PointingHandCursor)
+        # 可聚焦：方向键导航 / Return 编辑 / 空格切换完成的入口（Tab 亦可遍历）
+        self.setFocusPolicy(Qt.StrongFocus)
         self.rebuild()
 
     def set_focusing(self, card_id: str | None) -> None:
@@ -544,9 +606,6 @@ class CardWidget(QFrame):
         stripe_n = min(len(card.labels), 4)
         root.setContentsMargins(max(10, stripe_n * 4 + 7), 8, 10, 8)
         root.setSpacing(6)
-        if card.labels:
-            names = [AppConfig.LABEL_NAMES.get(k, k) for k in card.labels]
-            self.setToolTip("标签：" + "、".join(names))
 
         # 标题行（勾选 + 文本）
         title_row = QHBoxLayout()
@@ -581,6 +640,7 @@ class CardWidget(QFrame):
 
         # 底部信息行（截止日期 / 备注图标）
         meta_items: list[tuple[str, str, bool]] = []    # (文本, 主题色键, 是否备注徽章)
+        self._meta_items_cache = meta_items
         if card.priority:
             mark = AppConfig.PRIORITY_MARKS.get(card.priority, "")
             if mark:
@@ -633,6 +693,8 @@ class CardWidget(QFrame):
             meta_row.addStretch(1)
             root.addLayout(meta_row)
         self._fit_meta_badges()
+        # 悬停卡片即可看到全部元信息（含被 "…" 折叠的徽章）
+        self._sync_tooltip()
 
         # 底部弹性：防止上面的控件（如徽章）被布局纵向拉伸满整个卡片
         root.addStretch(1)
@@ -722,6 +784,19 @@ class CardWidget(QFrame):
 
     # ── 备注悬浮预览 ──────────────────────────────────────
 
+    def _sync_tooltip(self) -> None:
+        """卡片 tooltip = 标签 + 全部元徽章逐行汇总
+
+        徽章装不下时折成 "…"，被折叠的可能是逾期日期这类关键信息；
+        悬停即可看全量，不再依赖卡片宽度是否装得下。
+        """
+        parts: list[str] = []
+        if self._card.labels:
+            names = [AppConfig.LABEL_NAMES.get(k, k) for k in self._card.labels]
+            parts.append("标签：" + "、".join(names))
+        parts.extend(text for text, _key, _is_notes in self._meta_items_cache)
+        self.setToolTip("\n".join(parts))
+
     def eventFilter(self, obj, event):
         """备注徽章：Enter 弹预览浮层；Leave 延迟关闭；左键点击固定/收起"""
         if obj is self._notes_badge:
@@ -732,9 +807,15 @@ class CardWidget(QFrame):
                 badge = self._notes_badge
                 global_rect = QRect(badge.mapToGlobal(QPoint(0, 0)),
                                     badge.size())
+                # 卡片 tooltip 会压在自绘浮层上叠字：悬停徽章期间暂存清空
+                self._tooltip_backup = self.toolTip()
+                self.setToolTip("")
                 pop.show_for(self._card.notes, global_rect)
                 return False
             if event.type() == QEvent.Leave:
+                if self._tooltip_backup is not None:
+                    self.setToolTip(self._tooltip_backup)
+                    self._tooltip_backup = None
                 notes_popover().schedule_hide()
                 return False
             if (event.type() == QEvent.MouseButtonPress
@@ -832,7 +913,55 @@ class CardWidget(QFrame):
             return None
         return labels[int((x - 1) // 4)]
 
+    def _owning_column(self) -> "ListColumn | None":
+        """所在列表列（父链向上找；卡片构造后父链稳定）"""
+        p = self.parent()
+        while p is not None and not isinstance(p, ListColumn):
+            p = p.parent()
+        return p
+
+    def keyPressEvent(self, event) -> None:
+        """键盘操作卡片：Return 编辑 / 空格切换完成 / 方向键移动焦点"""
+        key = event.key()
+        if key in (Qt.Key_Return, Qt.Key_Enter):
+            self.signal_edit_requested.emit(self._card)
+            event.accept()
+            return
+        if key == Qt.Key_Space:
+            self.signal_done_toggled.emit(self._card.id, not self._card.done)
+            event.accept()
+            return
+        col = self._owning_column()
+        if col is not None:
+            if key == Qt.Key_Up:
+                col.move_card_focus(self, -1)
+                event.accept()
+                return
+            if key == Qt.Key_Down:
+                col.move_card_focus(self, 1)
+                event.accept()
+                return
+            if key in (Qt.Key_Left, Qt.Key_Right):
+                bv = self._board_view()
+                if bv is not None and bv.move_focus_horizontally(
+                        col, self, key == Qt.Key_Right):
+                    event.accept()
+                    return
+        super().keyPressEvent(event)
+
+    def _board_view(self):
+        p = self.parent()
+        while p is not None and not isinstance(p, BoardView):
+            p = p.parent()
+        return p
+
     def _start_drag(self) -> None:
+        col = self._owning_column()
+        if col is not None and col.is_filtered():
+            # 过滤态落点不可靠（列已禁 drop），与其让用户拖一圈被禁止
+            # 光标打回，不如起拖前直接说明原因
+            self.signal_drag_blocked.emit()
+            return
         mime = QMimeData()
         mime.setData(MIME_CARD, self._card.id.encode("utf-8"))
         drag = QDrag(self)
@@ -1225,6 +1354,7 @@ class ListColumn(QFrame):
     signal_card_archive = Signal(str)          # card_id
     signal_card_star = Signal(str)             # card_id（星标 toggle）
     signal_label_clicked = Signal(str)         # label key（点色条过滤）
+    signal_drag_blocked = Signal()             # 过滤态下拖拽被拒（→ 看板 toast）
     signal_list_move = Signal(str, str, bool)  # moved_list_id, target_list_id, insert_before
     signal_collapsed_changed = Signal(str, bool)  # list_id, collapsed
 
@@ -1331,7 +1461,18 @@ class ListColumn(QFrame):
         cw.signal_card_archive.connect(self.signal_card_archive)
         cw.signal_card_star.connect(self.signal_card_star)
         cw.signal_label_clicked.connect(self.signal_label_clicked)
+        cw.signal_drag_blocked.connect(self.signal_drag_blocked)
         return cw
+
+    def move_card_focus(self, from_card: "CardWidget", step: int) -> None:
+        """列内方向键导航：移动键盘焦点到相邻卡片（越界停住）"""
+        try:
+            i = self._card_widgets.index(from_card)
+        except ValueError:
+            return
+        j = i + step
+        if 0 <= j < len(self._card_widgets):
+            self._card_widgets[j].setFocus()
 
     def set_focusing_card(self, card_id: str | None) -> None:
         for cw in self._card_widgets:
@@ -1762,6 +1903,30 @@ class ListColumn(QFrame):
                 vb.setValue(vb.value() + step)
         self._update_drop_indicator_at(gp.y())
 
+    def _board_view(self) -> "BoardView | None":
+        """父链上的看板视图（列表拖拽指示条宿主；构造后父链稳定）"""
+        p = self.parent()
+        while p is not None and not isinstance(p, BoardView):
+            p = p.parent()
+        return p
+
+    def _update_list_drop_indicator(self, event) -> None:
+        """整列拖拽：在目标列前/后的列间隙显示竖向插入指示条
+
+        卡片拖拽有插入线而整列拖拽只有落点高亮时，插前/插后只能靠
+        松手验证；补一根与卡片插入线同款的竖条（落点列左/右半判定
+        与 dropEvent 的 insert_before 逻辑一致）。
+        """
+        bv = self._board_view()
+        if bv is not None:
+            bv.show_list_drop_indicator(
+                self, event.position().toPoint().x() < self.width() // 2)
+
+    def _hide_list_drop_indicator(self) -> None:
+        bv = self._board_view()
+        if bv is not None:
+            bv.hide_list_drop_indicator()
+
     def dragEnterEvent(self, event) -> None:
         if event.mimeData().hasFormat(MIME_CARD):
             self._drag_hovering = True
@@ -1771,6 +1936,7 @@ class ListColumn(QFrame):
             event.acceptProposedAction()
         elif event.mimeData().hasFormat(MIME_LIST):
             self._set_drop_highlight(True)
+            self._update_list_drop_indicator(event)
             event.acceptProposedAction()
 
     def dragMoveEvent(self, event) -> None:
@@ -1781,6 +1947,7 @@ class ListColumn(QFrame):
                 self._auto_scroll_timer.start()
             event.acceptProposedAction()
         elif event.mimeData().hasFormat(MIME_LIST):
+            self._update_list_drop_indicator(event)
             event.acceptProposedAction()
 
     def dragLeaveEvent(self, event) -> None:
@@ -1789,6 +1956,7 @@ class ListColumn(QFrame):
         self._auto_scroll_timer.stop()
         self._drop_mids = None   # 快照随拖拽结束作废（下次进入时重建）
         self._hide_drop_indicator()
+        self._hide_list_drop_indicator()
         super().dragLeaveEvent(event)
 
     def dropEvent(self, event) -> None:
@@ -1808,6 +1976,7 @@ class ListColumn(QFrame):
             return
         if mime.hasFormat(MIME_LIST):
             self._set_drop_highlight(False)
+            self._hide_list_drop_indicator()
             moved_id = bytes(mime.data(MIME_LIST)).decode("utf-8")
             # 落点 x 相对本列中心：左半=插到本列前，右半=插到本列后
             insert_before = event.position().toPoint().x() < self.width() // 2
@@ -1826,6 +1995,46 @@ class AddCardButton(QPushButton):
     def reapply(self) -> None:
         """配色由看板级样式表统一下发，此处仅触发重绘"""
         self.update()
+
+
+class _ListsHost(QWidget):
+    """看板列表区承载：整列拖到列尾空白 = 移到最末
+
+    此前列拖拽只能落在某个目标列上（左/右半判定前后），想移到最后一列
+    必须精确拖到末列右半；承载区接受 MIME_LIST 后，尾部空白即"追加到
+    末尾"落点，悬停时由 BoardView 在末列右侧显示插入指示条。
+    """
+
+    signal_drop_after_last = Signal(str)   # moved_list_id
+    signal_tail_hover = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event) -> None:
+        if event.mimeData().hasFormat(MIME_LIST):
+            self.signal_tail_hover.emit()
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event) -> None:
+        if event.mimeData().hasFormat(MIME_LIST):
+            self.signal_tail_hover.emit()
+            event.acceptProposedAction()
+
+    def dragLeaveEvent(self, event) -> None:
+        p = self.parent()
+        while p is not None and not isinstance(p, BoardView):
+            p = p.parent()
+        if isinstance(p, BoardView):
+            p.hide_list_drop_indicator()
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event) -> None:
+        if event.mimeData().hasFormat(MIME_LIST):
+            moved = bytes(event.mimeData().data(MIME_LIST)).decode("utf-8")
+            self.signal_drop_after_last.emit(moved)
+            event.acceptProposedAction()
 
 
 class BoardView(QWidget):
@@ -1995,14 +2204,24 @@ class BoardView(QWidget):
         self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._scroll.viewport().setAutoFillBackground(False)
-        self._lists_host = QWidget()
+        self._lists_host = _ListsHost()
         self._lists_host.setObjectName("listsHost")
+        # 整列拖到列尾空白 = 追加到末尾（含悬停指示条反馈）
+        self._lists_host.signal_drop_after_last.connect(self._on_drop_after_last)
+        self._lists_host.signal_tail_hover.connect(
+            lambda: self.show_list_drop_indicator(self._columns[-1], False)
+            if self._columns else None)
         self._lists_layout = QHBoxLayout(self._lists_host)
         self._lists_layout.setContentsMargins(16, 4, 16, 12)
         self._lists_layout.setSpacing(12)
         self._lists_layout.addStretch(1)
         self._scroll.setWidget(self._lists_host)
         root.addWidget(self._scroll, 1)
+
+        # 列间插入指示条（整列拖拽用，挂在承载区上随横向滚动移动）
+        self._list_drop_indicator = QFrame(self._lists_host)
+        self._list_drop_indicator.setObjectName("dropIndicator")
+        self._list_drop_indicator.hide()
 
         # 空看板引导：无任何列表时覆盖在列表区上方居中，可穿透鼠标
         self._empty_hint = QLabel(
@@ -2087,6 +2306,91 @@ class BoardView(QWidget):
     def _on_theme_clicked(self) -> None:
         self.signal_theme_selected.emit(
             "dark" if AppTheme.mode() == "light" else "light")
+
+    # ── 滚轮 / 键盘导航 ───────────────────────────────────
+
+    def wheelEvent(self, event) -> None:
+        """垂直滚轮驱动看板横移
+
+        看板纵向没有可滚内容（纵向滚动条恒关），鼠标滚轮上下滚此前
+        完全无效，只能拖底部滚动条；转为横向滚动（Trello 同款行为）。
+        列内卡片区因列自身滚动区消费滚轮而不受影响：列内滚轮 = 列内
+        纵向滚动，列间空白/工具栏滚轮 = 看板横移。
+        """
+        ad = event.angleDelta()
+        if ad.y() == 0:
+            super().wheelEvent(event)   # 纯水平分量：触摸板横扫走原生路径
+            return
+        sb = self._scroll.horizontalScrollBar()
+        sb.setValue(sb.value()
+                    - int(round(ad.y() / 120.0 * AppConfig.BOARD_WHEEL_STEP)))
+        event.accept()
+
+    def keyPressEvent(self, event) -> None:
+        """无焦点卡片时按方向键：聚焦首列第一张卡，进入键盘导航"""
+        if event.key() in (Qt.Key_Up, Qt.Key_Down,
+                           Qt.Key_Left, Qt.Key_Right):
+            for col in self._columns:
+                if not col.is_collapsed() and col._card_widgets:
+                    w = col._card_widgets[0]
+                    w.setFocus()
+                    self._scroll.ensureWidgetVisible(w)
+                    event.accept()
+                    return
+        super().keyPressEvent(event)
+
+    def move_focus_horizontally(self, col: "ListColumn", card: "CardWidget",
+                                to_next: bool) -> bool:
+        """左右方向键跳到相邻（跳过折叠列）列的同位置卡片；返回是否移动"""
+        try:
+            i = self._columns.index(col)
+        except ValueError:
+            return False
+        j = i + (1 if to_next else -1)
+        step = 1 if to_next else -1
+        while 0 <= j < len(self._columns):
+            target = self._columns[j]
+            if not target.is_collapsed() and target._card_widgets:
+                try:
+                    k = target._card_widgets.index(card)
+                except ValueError:
+                    k = 0
+                w = target._card_widgets[min(k, len(target._card_widgets) - 1)]
+                w.setFocus()
+                self._scroll.ensureWidgetVisible(w)
+                return True
+            j += step
+        return False
+
+    # ── 列拖拽指示条 / 新列可见性 ─────────────────────────
+
+    def show_list_drop_indicator(self, col: "ListColumn",
+                                 insert_before: bool) -> None:
+        """整列拖拽：把竖向插入指示条摆在目标列前/后的列间隙中点"""
+        ind = self._list_drop_indicator
+        ind.setFixedSize(3, max(col.height(), 24))
+        mid = (col.x() - 6) if insert_before else (col.x() + col.width() + 6)
+        ind.move(mid - 1, col.y())
+        ind.show()
+        ind.raise_()
+
+    def hide_list_drop_indicator(self) -> None:
+        self._list_drop_indicator.hide()
+
+    def reveal_list(self, list_id: str) -> None:
+        """添加列表后把新列滚入视口（refresh 已同步跑完，延后一拍等布局）"""
+        for col in self._columns:
+            if col.list_id() == list_id:
+                QTimer.singleShot(
+                    0, lambda c=col: self._scroll.ensureWidgetVisible(c, 12, 0))
+                return
+
+    def _on_drop_after_last(self, moved_id: str) -> None:
+        """列尾空白落点：把被拖列追加到最末（复用列间 move 语义）"""
+        rest = [c for c in self._columns if c.list_id() != moved_id]
+        self.hide_list_drop_indicator()
+        if rest:
+            self.signal_list_move.emit(moved_id, rest[-1].list_id(), False)
 
     # ── paintEvent：渐变背景 ──────────────────────────────
 
@@ -2231,8 +2535,12 @@ class BoardView(QWidget):
         else:
             self._label_chip.hide()
 
-    def _on_search_edited(self, _text: str) -> None:
-        """重启搜索防抖计时器：输入停顿后才真正过滤"""
+    def _on_search_edited(self, text: str) -> None:
+        """输入防抖过滤；清空（含 ✕ 按钮）立即恢复，不等防抖"""
+        if not text:
+            self._search_timer.stop()
+            self._apply_filter()
+            return
         self._search_timer.start()
 
     def _apply_filter(self, *_args) -> None:
@@ -2315,6 +2623,9 @@ class BoardView(QWidget):
         col.signal_card_star.connect(self.signal_card_star)
         # 标签过滤是纯视图态：内部消化，不冒泡控制器
         col.signal_label_clicked.connect(self._on_label_clicked)
+        # 过滤态起拖被拒：解释原因（列已禁 drop，用户只会看到禁止光标）
+        col.signal_drag_blocked.connect(
+            lambda: self.show_toast("过滤/搜索状态下卡片不可拖拽，清除过滤后可拖动"))
         col.signal_collapsed_changed.connect(self.signal_list_collapsed)
         self._columns.append(col)
         # 恢复上次折叠状态（save=False 不触发持久化回调；建列时不播动画）
