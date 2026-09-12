@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import bisect
 import logging
 import math
 import zlib
@@ -414,6 +415,7 @@ class CardWidget(QFrame):
         self._notes_badge: QLabel | None = None    # "≡ 有备注"徽章（悬停弹备注预览）
         self._more_badge: QLabel | None = None     # 装不下的徽章用 "…" 提示
         self._fit_state: tuple = ()                # 徽章显示组合缓存（避免重复重排）
+        self._fit_width: int | None = None         # 上次徽章取舍时的卡片宽度
         self._fingerprint: tuple = ()
         self._focusing_id: str | None = None    # 当前正在专注的卡片 id
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -521,6 +523,7 @@ class CardWidget(QFrame):
         self._notes_badge = None
         self._more_badge = None
         self._fit_state = ()
+        self._fit_width = None   # 徽章重建后宽度取舍必须重算
 
         card = self._card
         # 配色统一由 BoardView 的整块样式表下发（#cardFrame 等选择器），
@@ -662,6 +665,11 @@ class CardWidget(QFrame):
         """
         if self._more_badge is None:
             return
+        # 宽度未变直接跳过：窗口缩放时每帧每卡都进来（resizeEvent 驱动），
+        # 最贵的 sizeHint 计算必须挡在短路之前，否则徽章文本不变也每帧
+        # 对全部徽章做 fontMetrics 查询；rebuild 会重置 _fit_width
+        if self.width() == self._fit_width:
+            return
         m = self.layout().contentsMargins() if self.layout() is not None else None
         avail = self.width() - (m.left() + m.right() if m is not None else 0) \
             - self.frameWidth() * 2
@@ -687,6 +695,7 @@ class CardWidget(QFrame):
             more = visible < n
 
         state = (visible, more)
+        self._fit_width = self.width()
         if state == self._fit_state:
             return
         self._fit_state = state
@@ -1129,6 +1138,22 @@ class _ThemeToggleButton(QPushButton):
             self._mode = mode
             self.update()
 
+    # 月亮两段路径按控件尺寸缓存：paintEvent 每次重建 QPainterPath 纯浪费
+    _moon_path_cache: dict[tuple[int, int], tuple[QPainterPath, QPainterPath]] = {}
+
+    def _moon_paths(self) -> tuple[QPainterPath, QPainterPath]:
+        key = (self.width(), self.height())
+        paths = self._moon_path_cache.get(key)
+        if paths is None:
+            cx, cy = key[0] / 2, key[1] / 2
+            full = QPainterPath()
+            full.addEllipse(cx - 5.5, cy - 5.5, 11.0, 11.0)
+            cut = QPainterPath()
+            cut.addEllipse(cx - 1.5, cy - 8.0, 11.0, 11.0)
+            paths = (full, cut)
+            self._moon_path_cache[key] = paths
+        return paths
+
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
         c = AppTheme.colors()
@@ -1138,10 +1163,7 @@ class _ThemeToggleButton(QPushButton):
         glyph = QColor(c["text_primary"])
         if self._mode == "light":
             # 浅色态显示月亮（点击切深色）
-            full = QPainterPath()
-            full.addEllipse(center.x() - 5.5, center.y() - 5.5, 11.0, 11.0)
-            cut = QPainterPath()
-            cut.addEllipse(center.x() - 1.5, center.y() - 8.0, 11.0, 11.0)
+            full, cut = self._moon_paths()
             painter.setPen(Qt.NoPen)
             painter.setBrush(glyph)
             painter.drawPath(full.subtracted(cut))
@@ -1188,6 +1210,13 @@ class ListColumn(QFrame):
         self._visible_cards: list[Card] | None = None   # None=显示全部（过滤态为子集）
         self._collapse_anim: QPropertyAnimation | None = None
         self._anim_height = float(self.COLLAPSED_HEIGHT)  # 折叠过渡的高度插值目标
+        # 列几何指纹：(卡片 id 序, 各卡内容指纹, 折叠态)。未变化时
+        # refresh_cards 跳过 updateGeometry 与双重列高同步
+        self._geom_key: tuple | None = None
+        # 拖拽落点快照（host 内 y 中点，升序）：dragEnter 时重建
+        self._drop_mids: list[int] | None = None
+        # 父链上的看板横向滚动区缓存（构造后父链稳定）
+        self._board_scroll_cache: QScrollArea | None = None
         # 以下三者在构造后半段才建立；sizeHint 可能在构造途中被查询，
         # 先占位避免 _content_height 取到未定义属性
         self._header: ListHeader | None = None
@@ -1325,10 +1354,18 @@ class ListColumn(QFrame):
             self._hint = None
 
         self._header.update_count(len(cards))
-        # 列高随内容收缩：卡片增删都要重算 sizeHint，否则列高停在旧值
-        self.updateGeometry()
-        self._sync_height_to_content()
-        self._sync_height_deferred()
+        # 列高随内容收缩：卡片增删都要重算 sizeHint，否则列高停在旧值。
+        # 但仅当几何指纹变化时才需要——单卡勾选/编辑不改 id 序与内容指纹
+        # （指纹覆盖 rebuild 渲染的全部字段），此时跳过 updateGeometry 与
+        # 双重列高同步，否则一次变更全板每列白算两遍 sizeHint
+        geom_key = (tuple(cw.card().id for cw in ordered),
+                    tuple(cw._fingerprint for cw in ordered),
+                    self._collapsed)
+        if geom_key != self._geom_key:
+            self._geom_key = geom_key
+            self.updateGeometry()
+            self._sync_height_to_content()
+            self._sync_height_deferred()
 
     def _dispose_card_widgets(self, widgets: list[CardWidget]) -> None:
         """移除卡片控件：少量走淡出（延后销毁），批量直接销毁
@@ -1604,13 +1641,25 @@ class ListColumn(QFrame):
         """
         _set_prop(self, "drop", bool(on))
 
+    def _rebuild_drop_mids(self) -> None:
+        """拖拽进入时缓存各卡插入判定点（host 内 y 中点，升序）
+
+        用 host 相对坐标：拖拽期间纵向自动滚动只改视口偏移，host 内
+        布局不变，快照始终有效；dragMove（60-125Hz）与自动滚动 tick
+        （30ms）不再逐卡 mapToGlobal。
+        """
+        self._drop_mids = [
+            cw.mapTo(self._cards_host, QPoint(0, 0)).y() + cw.height() // 2
+            for cw in self._card_widgets
+        ]
+
     def _drop_index_from_y(self, y_global: int) -> int:
-        """根据全局 y 坐标计算插入位置（卡片序号）"""
-        for i, cw in enumerate(self._card_widgets):
-            top = cw.mapToGlobal(QPoint(0, 0)).y()
-            if y_global < top + cw.height() // 2:
-                return i
-        return len(self._card_widgets)
+        """根据全局 y 坐标计算插入位置（卡片序号；对快照二分）"""
+        if self._drop_mids is None:
+            self._rebuild_drop_mids()
+        host_y = self._cards_host.mapFromGlobal(QPoint(0, y_global)).y()
+        # 与原逐卡扫描等价：返回第一个「y < 中点」的卡片位置
+        return bisect.bisect_right(self._drop_mids, host_y)
 
     # ── 拖拽落点指示线 + 视口边缘自动滚动 ───────────────────
 
@@ -1637,13 +1686,18 @@ class ListColumn(QFrame):
         self._drop_indicator.hide()
 
     def _board_scroll_area(self) -> QScrollArea | None:
-        """父链上的看板横向滚动区（列自身的纵向滚动区不在父链上）"""
-        p = self.parent()
-        while p is not None:
-            if isinstance(p, QScrollArea):
-                return p
-            p = p.parent()
-        return None
+        """父链上的看板横向滚动区（列自身的纵向滚动区不在父链上）
+
+        构造完成后父链稳定，缓存结果供自动滚动 tick（30ms）复用。
+        """
+        if self._board_scroll_cache is None:
+            p = self.parent()
+            while p is not None:
+                if isinstance(p, QScrollArea):
+                    self._board_scroll_cache = p
+                    break
+                p = p.parent()
+        return self._board_scroll_cache
 
     def _auto_scroll_tick(self) -> None:
         """按鼠标全局位置滚动：看板横向 + 本列纵向（贴视口边缘时）
@@ -1680,6 +1734,7 @@ class ListColumn(QFrame):
     def dragEnterEvent(self, event) -> None:
         if event.mimeData().hasFormat(MIME_CARD):
             self._drag_hovering = True
+            self._rebuild_drop_mids()   # 拖拽期间布局不变，快照全程有效
             self._update_drop_indicator_at(self._column_y_from_event(event))
             self._auto_scroll_timer.start()
             event.acceptProposedAction()
@@ -1701,6 +1756,7 @@ class ListColumn(QFrame):
         self._set_drop_highlight(False)
         self._drag_hovering = False
         self._auto_scroll_timer.stop()
+        self._drop_mids = None   # 快照随拖拽结束作废（下次进入时重建）
         self._hide_drop_indicator()
         super().dragLeaveEvent(event)
 
@@ -1709,11 +1765,13 @@ class ListColumn(QFrame):
         if mime.hasFormat(MIME_CARD):
             self._drag_hovering = False
             self._auto_scroll_timer.stop()
-            self._hide_drop_indicator()
             card_id = bytes(mime.data(MIME_CARD)).decode("utf-8")
+            # 落点计算仍用现快照（布局此刻未变），算完再作废
             index = self._drop_index_from_y(
                 event.position().toPoint().y()
                 + self.mapToGlobal(QPoint(0, 0)).y())
+            self._drop_mids = None
+            self._hide_drop_indicator()
             self.signal_card_move.emit(card_id, self._lst.id, index)
             event.acceptProposedAction()
             return
@@ -1816,6 +1874,10 @@ class BoardView(QWidget):
         self._search_timer.setInterval(AppConfig.SEARCH_DEBOUNCE_MS)
         self._search_timer.timeout.connect(self._apply_filter)
         self._search_edit.textChanged.connect(self._on_search_edited)
+        # 卡片小写副本缓存 card_id → (title, notes, title.lower(), notes.lower())：
+        # 过滤热路径免对全部备注全文反复 lower()（原文比对自校验失效；
+        # 删除卡片的残条目为两条小字符串，随卡量有界）
+        self._lower_cache: dict[str, tuple[str, str, str, str]] = {}
         self._toolbar_layout.addWidget(self._search_edit)
         # 搜索框参与剩余空间分配（与 stats 之后的 stretch 平分）
         self._toolbar_layout.setStretchFactor(self._search_edit, 1)
@@ -2052,13 +2114,25 @@ class BoardView(QWidget):
     def _search_query(self) -> str:
         return self._search_edit.text().strip().lower()
 
-    @staticmethod
-    def _filter_cards(lst: BoardList, q: str) -> list[Card] | None:
+    def _lower_texts(self, c: Card) -> tuple[str, str]:
+        """标题/备注的小写副本（缓存命中免全文 lower）"""
+        cached = self._lower_cache.get(c.id)
+        if cached is not None and cached[0] == c.title and cached[1] == c.notes:
+            return cached[2], cached[3]
+        entry = (c.title, c.notes, c.title.lower(), c.notes.lower())
+        self._lower_cache[c.id] = entry
+        return entry[2], entry[3]
+
+    def _filter_cards(self, lst: BoardList, q: str) -> list[Card] | None:
         """按关键词过滤卡片（标题/备注，不区分大小写）；空关键词返回 None=全部"""
         if not q:
             return None
-        return [c for c in lst.cards
-                if q in c.title.lower() or q in c.notes.lower()]
+        out: list[Card] = []
+        for c in lst.cards:
+            title_low, notes_low = self._lower_texts(c)
+            if q in title_low or q in notes_low:
+                out.append(c)
+        return out
 
     def _visible_cards_for(self, lst: BoardList) -> list[Card] | None:
         """列的可见卡片：今日聚焦模式与搜索过滤组合；无任何过滤返回 None
@@ -2071,7 +2145,8 @@ class BoardView(QWidget):
             cards = [c for c in lst.cards if c.in_today_focus(today)]
             if q:
                 cards = [c for c in cards
-                         if q in c.title.lower() or q in c.notes.lower()]
+                         if q in self._lower_texts(c)[0]
+                         or q in self._lower_texts(c)[1]]
             # 今日聚焦内排序：高 > 中 > 低，无优先级垫底；同级星标提前，
             # 再按截止日升序（星标是主动标注，优先于被动"今天截止"）。
             # decorate：due_delta（含 ISO 解析）每卡只算一次
