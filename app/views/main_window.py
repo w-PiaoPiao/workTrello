@@ -35,6 +35,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QApplication, QStackedWidget, QVBoxLayout, QWidget
 
 from app.config import AppConfig
+from app.i18n import tr
 from app.views.theme import AppTheme
 
 logger = logging.getLogger(__name__)
@@ -51,7 +52,7 @@ class _ResizeGrip(QWidget):
         super().__init__(parent)
         self.setFixedSize(18, 18)
         self.setCursor(Qt.SizeFDiagCursor)
-        self.setToolTip("拖动调整看板大小")
+        self.setToolTip(tr("拖动调整看板大小"))
         self._start_size = QSize()
         self._start_global = QPoint()
 
@@ -485,6 +486,11 @@ class MainWindow(QWidget):
         grip.setVisible(show)
         if show:
             self._position_resize_grip()
+
+    def reapply_texts(self) -> None:
+        """语言切换：缩放把手提示刷新（交通灯在 BoardView 上自行刷新）"""
+        if self._resize_grip is not None:
+            self._resize_grip.setToolTip(tr("拖动调整看板大小"))
 
     def _position_resize_grip(self) -> None:
         grip = self._resize_grip

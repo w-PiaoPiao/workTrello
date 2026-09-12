@@ -60,6 +60,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import AppConfig
+from app.i18n import label_display, repeat_display, tr
 from app.models.board import BoardList, Card
 from app.views import motion
 from app.views.notes_popover import (
@@ -340,12 +341,12 @@ def _fmt_due(due: str) -> tuple[str, bool]:
     today = date.today()
     diff = (d - today).days
     if diff < 0:
-        return f"已逾期 {d.month}/{d.day}", True
+        return f"{tr('已逾期')} {d.month}/{d.day}", True
     if diff == 0:
-        return "今天截止", True
+        return tr("今天截止"), True
     if diff == 1:
-        return "明天截止", False
-    return f"{d.month}月{d.day}日", False
+        return tr("明天截止"), False
+    return f"{d.month}/{d.day}", False
 
 
 class _CardCheckButton(QPushButton):
@@ -365,7 +366,7 @@ class _CardCheckButton(QPushButton):
         self.setFlat(True)
         self.setFixedSize(20, 20)
         self.setCursor(Qt.PointingHandCursor)
-        self.setToolTip("点击切换完成状态")
+        self.setToolTip(tr("点击切换完成状态"))
         self._done = False
         self._check_anim: QVariantAnimation | None = None
         self._check_progress = 1.0   # 对勾描画进度 0..1（1=完整对勾）
@@ -495,14 +496,14 @@ class CardWidget(QFrame):
         # 今日聚焦开关放首位：星标是"加入今日"的唯一入口，此前必须打开
         # 编辑对话框才能勾选，是规划链路上最贵的操作
         act_star = menu.addAction(
-            "☆ 移出今日" if self._card.starred else "⭐ 加入今日")
+            tr("☆ 移出今日") if self._card.starred else tr("⭐ 加入今日"))
         menu.addSeparator()
         if self._card.id == self._focusing_id:
-            act_pomo = menu.addAction("⏹ 停止专注")
+            act_pomo = menu.addAction(tr("⏹ 停止专注"))
         else:
-            act_pomo = menu.addAction("▶ 开始专注 25 分钟")
+            act_pomo = menu.addAction(tr("▶ 开始专注 25 分钟"))
         menu.addSeparator()
-        act_archive = menu.addAction("归档")
+        act_archive = menu.addAction(tr("归档"))
         chosen = menu.exec(self.mapToGlobal(pos))
         menu.deleteLater()   # exec 返回即弃用：挂在卡片控件上会随卡片累积
         if chosen is act_star:
@@ -651,10 +652,10 @@ class CardWidget(QFrame):
             text, overdue = _fmt_due(card.due_date)
             meta_items.append((text, "danger" if overdue else "accent", False))
         if card.repeat != "never":
-            meta_items.append((f"🔁 {AppConfig.REPEAT_NAMES.get(card.repeat, '')}",
+            meta_items.append((f"🔁 {repeat_display(card.repeat)}",
                                "text_secondary", False))
         if card.notes:
-            meta_items.append(("≡ 有备注", "text_secondary", True))
+            meta_items.append((tr("≡ 有备注"), "text_secondary", True))
         if card.pomodoros:
             meta_items.append((f"🍅 ×{card.pomodoros}", "text_secondary", False))
 
@@ -792,8 +793,8 @@ class CardWidget(QFrame):
         """
         parts: list[str] = []
         if self._card.labels:
-            names = [AppConfig.LABEL_NAMES.get(k, k) for k in self._card.labels]
-            parts.append("标签：" + "、".join(names))
+            names = [label_display(k) for k in self._card.labels]
+            parts.append(tr("标签：") + tr("、").join(names))
         parts.extend(text for text, _key, _is_notes in self._meta_items_cache)
         self.setToolTip("\n".join(parts))
 
@@ -1019,20 +1020,20 @@ class ListHeader(QWidget):
         self._collapse_btn.setObjectName("listCollapseBtn")
         self._collapse_btn.setFixedSize(24, 24)
         self._collapse_btn.setCursor(Qt.PointingHandCursor)
-        self._collapse_btn.setToolTip("折叠 / 展开列表")
+        self._collapse_btn.setToolTip(tr("折叠 / 展开列表"))
         self._collapse_btn.clicked.connect(self._on_collapse_clicked)
         layout.addWidget(self._collapse_btn)
 
         self._menu_btn = _HeaderMenuButton(self)
-        self._menu_btn.setToolTip("列表操作")
+        self._menu_btn.setToolTip(tr("列表操作"))
         self._menu_btn.clicked.connect(self._show_menu)
         layout.addWidget(self._menu_btn)
         # 不隐藏、只"幽灵化"：布局空间常驻，悬停才点亮，避免列头高度闪动
 
         # 列表操作菜单
         self._menu = QMenu(self)
-        self._act_rename = QAction("重命名", self._menu)
-        self._act_delete = QAction("删除列表", self._menu)
+        self._act_rename = QAction(tr("重命名"), self._menu)
+        self._act_delete = QAction(tr("删除列表"), self._menu)
         self._menu.addAction(self._act_rename)
         self._menu.addAction(self._act_delete)
         self._act_rename.triggered.connect(self._start_rename)
@@ -1090,6 +1091,13 @@ class ListHeader(QWidget):
         self.set_collapsed_mark(
             col.is_collapsed() if isinstance(col, ListColumn) else False)
         self._menu_btn.reapply()
+
+    def retexts(self) -> None:
+        """语言切换：刷新列头菜单与提示文案"""
+        self._act_rename.setText(tr("重命名"))
+        self._act_delete.setText(tr("删除列表"))
+        self._collapse_btn.setToolTip(tr("折叠 / 展开列表"))
+        self._menu_btn.setToolTip(tr("列表操作"))
 
     def _start_rename(self, event=None) -> None:
         # 双击标题/按钮传入 QMouseEvent；QAction.triggered 传入 False(bool)
@@ -1282,6 +1290,34 @@ class _HeaderMenuButton(QPushButton):
         super().mouseDoubleClickEvent(event)
 
 
+class _GearButton(QPushButton):
+    """自绘齿轮图标按钮（⚙ 字形在部分平台缺字形，改矢量绘制）"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        c = AppTheme.colors()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        center = QPointF(self.width() / 2, self.height() / 2)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(c["text_primary"]))
+        ring = QPainterPath()
+        ring.addEllipse(center, 5.2, 5.2)
+        hole = QPainterPath()
+        hole.addEllipse(center, 2.2, 2.2)
+        painter.drawPath(ring.subtracted(hole))
+        for i in range(8):
+            painter.save()
+            painter.translate(center)
+            painter.rotate(i * 45)
+            painter.drawRect(QRectF(-1.4, -8.4, 2.8, 3.4))
+            painter.restore()
+        painter.end()
+
+
 class _ThemeToggleButton(QPushButton):
     """自绘 日/月 图标的主题切换按钮（🌙/☀️ emoji 在部分平台缺字形，改矢量绘制）"""
 
@@ -1423,7 +1459,7 @@ class ListColumn(QFrame):
         self._auto_scroll_timer.timeout.connect(self._auto_scroll_tick)
 
         # 添加按钮
-        self._add_btn = AddCardButton("+ 添加卡片")
+        self._add_btn = AddCardButton(tr("+ 添加卡片"))
         self._add_btn.clicked.connect(
             lambda: self.signal_add_card.emit(self._lst.id))
         root.addWidget(self._add_btn)
@@ -1512,8 +1548,8 @@ class ListColumn(QFrame):
         # 空列提示
         if not cards:
             if self._hint is None:
-                hint_text = ("没有匹配的卡片" if self._visible_cards is not None
-                             else "还没有卡片，点击下方添加")
+                hint_text = (tr("没有匹配的卡片") if self._visible_cards is not None
+                             else tr("还没有卡片，点击下方添加"))
                 hint = QLabel(hint_text)
                 hint.setObjectName("columnHint")
                 hint.setAlignment(Qt.AlignCenter)
@@ -1560,6 +1596,16 @@ class ListColumn(QFrame):
                 cw.deleteLater()
 
     # ── 样式 ──────────────────────────────────────────────
+
+    def retexts(self) -> None:
+        """语言切换：刷新列头、添加按钮与空态提示文案"""
+        self._header.retexts()
+        if self._add_btn is not None:
+            self._add_btn.setText(tr("+ 添加卡片"))
+        if self._hint is not None:
+            self._hint.setText(
+                tr("没有匹配的卡片") if self._visible_cards is not None
+                else tr("还没有卡片，点击下方添加"))
 
     def reapply_frame_style(self) -> None:
         """配色由看板级样式表下发；此处只同步拖放高亮属性"""
@@ -2058,6 +2104,7 @@ class BoardView(QWidget):
     signal_card_archive = Signal(str)           # card_id
     signal_card_star = Signal(str)              # card_id（星标 toggle）
     signal_archive_open = Signal()
+    signal_settings_clicked = Signal()          # 打开设置界面
     signal_export = Signal(str)                 # "md" | "csv"
     signal_export_backup = Signal()             # 导出完整备份 .json
     signal_import_backup = Signal()             # 从备份导入
@@ -2081,7 +2128,7 @@ class BoardView(QWidget):
         self._toolbar_layout.setContentsMargins(18, 8, right_margin, 8)
         self._toolbar_layout.setSpacing(10)
 
-        self._title_label = QLabel("我的看板")
+        self._title_label = QLabel(tr("我的看板"))
         self._title_label.setObjectName("boardTitle")
         self._toolbar_layout.addWidget(self._title_label)
 
@@ -2090,25 +2137,25 @@ class BoardView(QWidget):
         self._toolbar_layout.addWidget(self._stats_label)
         # 注意：不加中间 stretch——弹性全部留给搜索框（右侧控件固定聚集）
 
-        self._today_btn = QPushButton("今日")
+        self._today_btn = QPushButton(tr("今日 {n}").format(n=0))
         self._today_btn.setObjectName("boardToolBtn")
         self._today_btn.setCheckable(True)
         self._today_btn.setCursor(Qt.PointingHandCursor)
-        self._today_btn.setToolTip("只显示未完成的：星标 / 已逾期 / 今天截止")
+        self._today_btn.setToolTip(tr("只显示未完成的：星标 / 已逾期 / 今天截止"))
         self._today_btn.toggled.connect(self._apply_filter)
         self._today_btn.toggled.connect(self.signal_today_toggled.emit)
         self._toolbar_layout.addWidget(self._today_btn)
 
         self._search_edit = QLineEdit()
         self._search_edit.setObjectName("boardSearch")
-        self._search_edit.setPlaceholderText("搜索卡片…")
+        self._search_edit.setPlaceholderText(tr("搜索卡片…"))
         self._search_edit.setClearButtonEnabled(True)
         # 弹性宽度：空间富余时舒展、不足时收缩到最小宽，避免工具栏被挤出窗口
         self._search_edit.setMinimumWidth(120)
         self._search_edit.setMaximumWidth(300)
         self._search_edit.setSizePolicy(QSizePolicy.Policy.Expanding,
                                         QSizePolicy.Policy.Fixed)
-        self._search_edit.setAccessibleName("搜索卡片")
+        self._search_edit.setAccessibleName(tr("搜索卡片"))
         # 逐键输入只重启防抖计时器，停顿后才过滤（避免大板每键全树刷新）
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
@@ -2121,10 +2168,11 @@ class BoardView(QWidget):
         self._lower_cache: dict[str, tuple[str, str, str, str]] = {}
         # 标签过滤态（点卡片左缘色条触发，与搜索/今日模式正交叠加）
         self._label_filter: str | None = None
+        self._today_count = 0   # 今日角标数（reapply_texts 重建文案用）
         self._label_chip = QPushButton()
         self._label_chip.setObjectName("boardToolBtn")
         self._label_chip.setCursor(Qt.PointingHandCursor)
-        self._label_chip.setToolTip("点击清除标签过滤")
+        self._label_chip.setToolTip(tr("点击清除标签过滤"))
         self._label_chip.clicked.connect(self._clear_label_filter)
         self._label_chip.hide()
         self._toolbar_layout.addWidget(self._label_chip)
@@ -2132,30 +2180,37 @@ class BoardView(QWidget):
         # 搜索框参与剩余空间分配（与 stats 之后的 stretch 平分）
         self._toolbar_layout.setStretchFactor(self._search_edit, 1)
 
-        self._add_list_btn = AddCardButton("+ 添加列表")
+        self._add_list_btn = AddCardButton(tr("+ 添加列表"))
         self._add_list_btn.setFixedWidth(96)
         self._add_list_btn.clicked.connect(self.signal_list_add.emit)
         self._toolbar_layout.addWidget(self._add_list_btn)
 
-        self._archive_btn = QPushButton("归档")
+        self._archive_btn = QPushButton(tr("归档"))
         self._archive_btn.setObjectName("boardToolBtn")
         self._archive_btn.setCursor(Qt.PointingHandCursor)
-        self._archive_btn.setToolTip("查看已归档卡片并恢复")
+        self._archive_btn.setToolTip(tr("查看已归档卡片并恢复"))
         self._archive_btn.clicked.connect(self.signal_archive_open.emit)
         self._toolbar_layout.addWidget(self._archive_btn)
 
-        self._export_btn = QPushButton("导出")
+        self._export_btn = QPushButton(tr("导出"))
         self._export_btn.setObjectName("boardToolBtn")
         self._export_btn.setCursor(Qt.PointingHandCursor)
-        self._export_btn.setToolTip("导出为 Markdown / CSV")
+        self._export_btn.setToolTip(tr("导出为 Markdown / CSV"))
         self._export_btn.clicked.connect(self._show_export_menu)
         self._toolbar_layout.addWidget(self._export_btn)
+
+        self._settings_btn = _GearButton()
+        self._settings_btn.setObjectName("boardThemeBtn")   # 同款圆形玻璃底
+        self._settings_btn.setCursor(Qt.PointingHandCursor)
+        self._settings_btn.setToolTip(tr("设置"))
+        self._settings_btn.clicked.connect(self.signal_settings_clicked.emit)
+        self._toolbar_layout.addWidget(self._settings_btn)
 
         self._theme_btn = _ThemeToggleButton()
         self._theme_btn.setObjectName("boardThemeBtn")
         self._theme_btn.setCursor(Qt.PointingHandCursor)
         self._theme_btn.setFixedSize(34, 34)
-        self._theme_btn.setToolTip("切换浅色 / 深色主题")
+        self._theme_btn.setToolTip(tr("切换浅色 / 深色主题"))
         self._theme_btn.clicked.connect(self._on_theme_clicked)
         self._toolbar_layout.addWidget(self._theme_btn)
 
@@ -2163,7 +2218,7 @@ class BoardView(QWidget):
         self._collapse_btn.setObjectName("boardCollapseBtn")
         self._collapse_btn.setCursor(Qt.PointingHandCursor)
         self._collapse_btn.setFixedSize(34, 34)
-        self._collapse_btn.setToolTip("折叠为桌宠")
+        self._collapse_btn.setToolTip(tr("折叠为桌宠"))
         self._collapse_btn.clicked.connect(self.signal_collapse_clicked.emit)
         self._toolbar_layout.addWidget(self._collapse_btn)
 
@@ -2225,7 +2280,7 @@ class BoardView(QWidget):
 
         # 空看板引导：无任何列表时覆盖在列表区上方居中，可穿透鼠标
         self._empty_hint = QLabel(
-            "看板还是空的\n点击右上角「+ 添加列表」创建第一列", self)
+            tr("看板还是空的\n点击右上角「+ 添加列表」创建第一列"), self)
         self._empty_hint.setObjectName("emptyBoardHint")
         self._empty_hint.setAlignment(Qt.AlignCenter)
         self._empty_hint.setAttribute(Qt.WA_TransparentForMouseEvents, True)
@@ -2302,6 +2357,35 @@ class BoardView(QWidget):
             col._header.reapply_theme()
             for cw in col._card_widgets:
                 cw.reapply_style()
+
+    def reapply_texts(self) -> None:
+        """语言切换：刷新静态文案；卡片指纹清空，待 refresh 重建徽章/tooltip"""
+        self._title_label.setText(tr("我的看板"))
+        self._search_edit.setPlaceholderText(tr("搜索卡片…"))
+        self._search_edit.setAccessibleName(tr("搜索卡片"))
+        self._today_btn.setToolTip(
+            tr("只显示未完成的：星标 / 已逾期 / 今天截止"))
+        self._set_today_count(self._today_count)
+        if self._label_filter:
+            self._update_label_chip()
+        self._add_list_btn.setText(tr("+ 添加列表"))
+        self._archive_btn.setText(tr("归档"))
+        self._archive_btn.setToolTip(tr("查看已归档卡片并恢复"))
+        self._export_btn.setText(tr("导出"))
+        self._export_btn.setToolTip(tr("导出为 Markdown / CSV"))
+        self._theme_btn.setToolTip(tr("切换浅色 / 深色主题"))
+        self._collapse_btn.setToolTip(tr("折叠为桌宠"))
+        self._settings_btn.setToolTip(tr("设置"))
+        lights = getattr(self, "_traffic_lights", None)
+        if lights is not None:
+            lights.reapply_texts()
+        self._empty_hint.setText(
+            tr("看板还是空的\n点击右上角「+ 添加列表」创建第一列"))
+        for col in self._columns:
+            col.retexts()
+            for cw in col._card_widgets:
+                cw._fingerprint = ()   # 强制后续 refresh 时 rebuild
+        self.update_stats(self._lists)
 
     def _on_theme_clicked(self) -> None:
         self.signal_theme_selected.emit(
@@ -2552,12 +2636,13 @@ class BoardView(QWidget):
             total += len(visible or [])
         self._set_today_count(total)
         if self._search_query():
-            self._stats_label.setText(f"匹配 {total} 张")
+            self._stats_label.setText(tr("匹配 {n} 张").format(n=total))
         else:
             self.update_stats(self._lists)
 
     def _set_today_count(self, n: int) -> None:
-        self._today_btn.setText(f"今日 {n}")
+        self._today_count = n
+        self._today_btn.setText(tr("今日 {n}").format(n=n))
 
     def set_today_mode(self, on: bool) -> None:
         """供菜单栏同步：切换今日聚焦模式（toggled 会触发过滤与信号）"""
@@ -2574,11 +2659,11 @@ class BoardView(QWidget):
 
     def _show_export_menu(self) -> None:
         menu = QMenu(self)
-        act_md = menu.addAction("Markdown（.md）")
-        act_csv = menu.addAction("CSV（.csv）")
+        act_md = menu.addAction(tr("Markdown（.md）"))
+        act_csv = menu.addAction(tr("CSV（.csv）"))
         menu.addSeparator()
-        act_backup = menu.addAction("导出备份（.json）")
-        act_import = menu.addAction("从备份导入…")
+        act_backup = menu.addAction(tr("导出备份（.json）"))
+        act_import = menu.addAction(tr("从备份导入…"))
         chosen = menu.exec(self.mapToGlobal(
             QPoint(self._export_btn.x(), self._export_btn.height())))
         menu.deleteLater()   # 常驻 BoardView 上的菜单不销毁会每次导出累积一个
@@ -2625,7 +2710,8 @@ class BoardView(QWidget):
         col.signal_label_clicked.connect(self._on_label_clicked)
         # 过滤态起拖被拒：解释原因（列已禁 drop，用户只会看到禁止光标）
         col.signal_drag_blocked.connect(
-            lambda: self.show_toast("过滤/搜索状态下卡片不可拖拽，清除过滤后可拖动"))
+            lambda: self.show_toast(
+                tr("过滤/搜索状态下卡片不可拖拽，清除过滤后可拖动")))
         col.signal_collapsed_changed.connect(self.signal_list_collapsed)
         self._columns.append(col)
         # 恢复上次折叠状态（save=False 不触发持久化回调；建列时不播动画）
@@ -2644,7 +2730,7 @@ class BoardView(QWidget):
                 total = sum(len(self._visible_cards_for(l) or []) for l in lists)
             else:
                 total = sum(len(v or []) for v in visibles.values())
-            self._stats_label.setText(f"匹配 {total} 张")
+            self._stats_label.setText(tr("匹配 {n} 张").format(n=total))
             return
         if self._label_filter:
             # 标签过滤态：统计行持续反馈（数据变更经 refresh 刷新也不丢）
@@ -2654,15 +2740,18 @@ class BoardView(QWidget):
                 total = sum(len(v or []) for v in visibles.values())
             name = AppConfig.LABEL_NAMES.get(self._label_filter,
                                              self._label_filter)
-            self._stats_label.setText(f"标签 {name} · {total} 张")
+            self._stats_label.setText(
+                tr("标签 {name} · {n} 张").format(name=name, n=total))
             return
         if stats is not None:
             self._stats_label.setText(
-                f"{stats['total']} 张卡片 · 完成 {stats['done']}")
+                tr("{total} 张卡片 · 完成 {done}").format(
+                    total=stats['total'], done=stats['done']))
             return
         total = sum(len(l.cards) for l in lists)
         done = sum(1 for l in lists for card in l.cards if card.done)
-        self._stats_label.setText(f"{total} 张卡片 · 完成 {done}")
+        self._stats_label.setText(
+            tr("{total} 张卡片 · 完成 {done}").format(total=total, done=done))
 
     def _update_empty_hint(self, lists: list[BoardList]) -> None:
         """无任何列表时显示空看板引导（覆盖列表区，可穿透鼠标）"""

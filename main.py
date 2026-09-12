@@ -66,6 +66,9 @@ def main():
 
     # ── 全局样式 ──────────────────────────────────────────
     from app.views.theme import AppTheme
+    from app import i18n
+    # 语言先于任何 UI 构造确定（QSettings 已按数据目录定位好）
+    i18n.set_lang(AppConfig.get_language())
     AppTheme.apply()   # 调色板 + QSS + 原生外观一并应用
 
     # ── 启动控制器 ────────────────────────────────────────

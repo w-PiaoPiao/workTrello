@@ -4,10 +4,11 @@
 卡片设截止日要打开编辑对话框点日期选择器，速记把高频字段压进标题一行
 写完（编辑对话框保持明确字段输入，不应用语法）。
 
-语法（解析出的片段从标题剔除）：
-- 截止日：今天 明天 后天 | N天后 | 周X/星期X/礼拜X（未来最近一天，含
-  今天）| 下周X（下周对应日）| M月D日 / M/D（今年）| YYYY-MM-DD；
-  长词优先，首个命中的日期生效
+语法（解析出的片段从标题剔除；中英两种语法恒可用，与界面语言无关）：
+- 截止日（中）：今天 明天 后天 | N天后 | 周X/星期X/礼拜X（未来最近一天，
+  含今天）| 下周X（下周对应日）| M月D日 / M/D（今年）| YYYY-MM-DD
+- 截止日（英）：today / tomorrow / day after tomorrow | in N days |
+  next mon…（缩写或全名）| mon/tue/…/fri…（未来最近一天）| M/D | YYYY-MM-DD
 - 优先级：!P1 !P2 !P3（大小写均可，1=高 3=低）
 - 标签：#红 #红色 #blue（LABEL_NAMES 中文名可只写前缀，或英文 key），
   去重
@@ -27,14 +28,26 @@ _WEEKDAY_CH = {"一": 0, "二": 1, "三": 2, "四": 3, "五": 4,
 
 # 相对日词 → 偏移天数
 _RELATIVE_DAYS = {"今天": 0, "今日": 0, "明天": 1, "明日": 1, "后天": 2}
+# 英文相对词（长词优先："day after tomorrow" 先于 "tomorrow" 判定）
+_RELATIVE_DAYS_EN = {"day after tomorrow": 2, "today": 0, "tomorrow": 1}
+_WEEKDAY_EN = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4,
+               "sat": 5, "sun": 6}
 
 _RE_N_DAYS = re.compile(r"(?<![0-9])(\d{1,3})\s*天后")
+_RE_IN_N_DAYS = re.compile(r"\bin\s+(\d{1,3})\s*days?\b", re.IGNORECASE)
 _RE_FULL_DATE = re.compile(r"(?<![0-9])(\d{4})-(\d{1,2})-(\d{1,2})(?![0-9])")
 _RE_MD = re.compile(r"(?<![0-9])(\d{1,2})\s*[月/]\s*(\d{1,2})\s*[日号]?(?![0-9])")
 _RE_PRIORITY = re.compile(r"(?<![A-Za-z])![pP]([123])\b")
 _RE_TAG = re.compile(r"#([\u4e00-\u9fa5A-Za-z]+)")
 _RE_NEXT_WEEKDAY = re.compile(r"下(?:周|星期|礼拜)([一二三四五六日天])")
 _RE_WEEKDAY = re.compile(r"(?:周|星期|礼拜)([一二三四五六日天])")
+# 英文周几：三字母缩写或全名（monday/tuesday/…/sunday），尾 \b 防
+# "saturate" 之类普通单词误命中
+_RE_NEXT_WEEKDAY_EN = re.compile(
+    r"\bnext\s+(mon|tue|wed|thu|fri|sat|sun)[a-z]*\b", re.IGNORECASE)
+_RE_WEEKDAY_EN = re.compile(
+    r"\b(mon|tue|wed|thu|fri|sat|sun)(?:day|sday|nesday|rsday|urday)?\b",
+    re.IGNORECASE)
 
 
 def _iso(d: date) -> str:
@@ -82,6 +95,28 @@ def _parse_due(text: str, today: date) -> tuple[str, str | None]:
     m = _RE_WEEKDAY.search(text)
     if m:
         ahead = (_WEEKDAY_CH[m.group(1)] - today.weekday()) % 7
+        return _cut(text, m), _iso(today + timedelta(days=ahead))
+    # ── 英文速记兜底（与界面语言无关：中英两种语法恒可用）──
+    # lower 副本只做定位/匹配，长度与原文一致，_cut 用原文安全
+    low = text.lower()
+    hits = [(low.find(w), w, off)
+            for w, off in _RELATIVE_DAYS_EN.items() if w in low]
+    if hits:
+        _, word, offset = min(hits, key=lambda x: x[0])
+        i = low.find(word)
+        return text[:i] + " " + text[i + len(word):], _iso(
+            today + timedelta(days=offset))
+    m = _RE_IN_N_DAYS.search(low)
+    if m:
+        return _cut(text, m), _iso(today + timedelta(days=int(m.group(1))))
+    m = _RE_NEXT_WEEKDAY_EN.search(low)
+    if m:
+        monday = today - timedelta(days=today.weekday())
+        return _cut(text, m), _iso(
+            monday + timedelta(days=7 + _WEEKDAY_EN[m.group(1)]))
+    m = _RE_WEEKDAY_EN.search(low)
+    if m:
+        ahead = (_WEEKDAY_EN[m.group(1)] - today.weekday()) % 7
         return _cut(text, m), _iso(today + timedelta(days=ahead))
     return text, None
 

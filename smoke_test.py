@@ -23,6 +23,7 @@ app.setApplicationName("桌宠看板")
 app.setQuitOnLastWindowClosed(False)
 
 from app.config import AppConfig
+from app import i18n
 from app.controllers.app_controller import AppController
 from app.views.theme import AppTheme
 
@@ -70,14 +71,48 @@ def safe(fn, label):
         traceback.print_exc()
         failures.append(label)
 
+def grab_to(path: str) -> None:
+    window.repaint()
+    pix = window.grab()
+    pix.save(path)
+    print(f"[smoke] {Path(path).name}: saved={pix.width()}x{pix.height()}")
+
+def take_dark_en() -> None:
+    safe(lambda: i18n.set_lang("en"), "set_lang_en")
+    safe(controller._board_view.reapply_texts, "board_reapply_en")
+    safe(lambda: controller._after_data_change(None), "refresh_en")
+    QTimer.singleShot(300, take_board_en)
+
+def take_board_en() -> None:
+    grab_to(str(Path(__file__).parent / "smoke_board_en.png"))
+    QTimer.singleShot(200, take_settings_en)
+
+def take_settings_en() -> None:
+    try:
+        dlg = controller._settings_dialog
+        if dlg is None:
+            from app.views.settings_dialog import SettingsDialog
+            dlg = SettingsDialog(window)
+        dlg.retexts()
+        dlg.repaint()
+        dlg.grab().save(str(Path(__file__).parent / "smoke_settings_en.png"))
+        print("[smoke] smoke_settings_en.png saved")
+    except Exception:
+        print("[smoke] ERROR in settings_en:")
+        traceback.print_exc()
+        failures.append("settings_en")
+    safe(lambda: i18n.set_lang("zh"), "restore_zh")
+    safe(controller._board_view.reapply_texts, "board_reapply_zh")
+    print("[smoke] ALL DONE")
+    app.quit()
+
 def take_dark() -> None:
     window.repaint()
     pix = window.grab()
     out = Path(__file__).parent / "smoke_board_dark.png"
     pix.save(str(out))
     print(f"[smoke] board_dark: saved={out.exists()} size={pix.width()}x{pix.height()}")
-    print("[smoke] ALL DONE")
-    app.quit()
+    QTimer.singleShot(300, take_dark_en)
 
 def take_board_dark_async() -> None:
     safe(lambda: AppTheme.set_mode("dark"), "set_mode_dark")

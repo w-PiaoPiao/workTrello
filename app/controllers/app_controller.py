@@ -23,7 +23,9 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
 )
 
+from app import i18n
 from app.config import AppConfig
+from app.i18n import tr
 from app.models import json_io
 from app.models.board import Board, BoardList, BoardStore, Card
 from app.models.quick_syntax import parse_quick_input
@@ -35,6 +37,7 @@ from app.views.card_dialog import CardDialog
 from app.views.main_window import MainWindow
 from app.views.pet_view import PetView
 from app.views.quick_add_dialog import BulkAddDialog, QuickAddDialog
+from app.views.settings_dialog import SettingsDialog
 from app.views.theme import AppTheme
 from app.views.today_popover import TodayPopover
 
@@ -104,6 +107,7 @@ class AppController(QObject):
         self._pomo_timer.setInterval(1000)
         self._pomo_timer.timeout.connect(self._pomo_tick)
         self._archive_dialog: ArchiveDialog | None = None
+        self._settings_dialog: SettingsDialog | None = None   # 惰性创建
         self._archive_key: tuple | None = None   # 归档内容指纹（按需重建用）
         if app is not None:
             QGuiApplication.styleHints().colorSchemeChanged.connect(
@@ -154,11 +158,12 @@ class AppController(QObject):
             # 用户放弃恢复：好数据仍躺在 .prev 里，先固化一份带时间戳的副本，
             # 避免随后的默认看板首次落盘把 .prev 轮转覆盖掉
             self._preserve_good_copy()
+            detail_txt = tr("；").join(
+                tr("已损坏并隔离") if k == "corrupted"
+                else tr("暂时无法读取") for k in kinds)
             self._show_error(
-                "看板数据文件异常（"
-                + "；".join("已损坏并隔离" if k == "corrupted" else "暂时无法读取"
-                            for k in kinds)
-                + "），本次以默认看板启动。")
+                tr("看板数据文件异常（{detail}），本次以默认看板启动。").format(
+                    detail=detail_txt))
             self._apply_board_to_ui(board)
             # 异常路径必须把默认看板落盘，覆盖掉损坏或不可读的旧文件
             self._store.mark_dirty()
@@ -200,11 +205,11 @@ class AppController(QObject):
         latest = candidates[0]
         reply = QMessageBox.question(
             self._window,
-            "看板数据为空",
-            f"看板当前没有任何卡片，但检测到 {len(candidates)} 份历史数据"
-            f"副本（最近一份：{latest.name}）。\n"
-            "是否恢复最近一份数据？\n"
-            "选择「否」将保持空看板，且下次不再询问（直到再次录入过数据）。",
+            tr("看板数据为空"),
+            tr("看板当前没有任何卡片，但检测到 {n} 份历史数据副本"
+               "（最近一份：{name}）。\n是否恢复最近一份数据？\n"
+               "选择「否」将保持空看板，且下次不再询问（直到再次录入过数据）。").format(
+                n=len(candidates), name=latest.name),
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.Yes,
         )
@@ -213,13 +218,14 @@ class AppController(QObject):
             return
         if not json_io.restore_from_backup(self._store.path, latest):
             AppConfig.set_empty_board_ack(True)
-            self._show_error(f"快照 {latest.name} 无法解析，恢复失败。")
+            self._show_error(
+            tr("快照 {name} 无法解析，恢复失败。").format(name=latest.name))
             return
         board = self._store.reload()
         self._apply_board_to_ui(board)
         self._store.mark_dirty()
         self._schedule_save()
-        self._tray.show_notification("已从快照恢复看板数据")
+        self._tray.show_notification(tr("已从快照恢复看板数据"))
 
     def _preserve_good_copy(self) -> None:
         """把最近好副本（.prev）复制为带时间戳的保留文件，防止被后续落盘轮转覆盖"""
@@ -246,15 +252,15 @@ class AppController(QObject):
         if bak is None:
             return False
         corrupted = "corrupted" in kinds
-        detail = "已损坏并隔离" if corrupted else "暂时无法读取"
-        origin_note = ("原文件已自动隔离备份。\n" if corrupted
-                       else "原文件仍保留在原位置。\n")
+        detail = tr("已损坏并隔离") if corrupted else tr("暂时无法读取")
+        origin_note = (tr("原文件已自动隔离备份。\n") if corrupted
+                       else tr("原文件仍保留在原位置。\n"))
         reply = QMessageBox.question(
             self._window,
-            "看板数据异常",
-            f"看板数据文件{detail}，{origin_note}"
-            f"检测到最近一次成功保存的副本（{bak.name}），是否用它恢复数据？\n"
-            "选择「否」则以默认看板启动。",
+            tr("看板数据异常"),
+            tr("看板数据文件{detail}，{note}检测到最近一次成功保存的副本"
+               "（{name}），是否用它恢复数据？\n选择「否」则以默认看板启动。").format(
+                detail=detail, note=origin_note, name=bak.name),
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.Yes,
         )
@@ -263,14 +269,15 @@ class AppController(QObject):
         if not json_io.restore_from_backup(self._store.path, bak):
             self._preserve_good_copy()
             self._show_error(
-                f"备份文件 {bak.name} 无法解析，恢复失败，本次以默认看板启动。")
+                tr("备份文件 {name} 无法解析，恢复失败，本次以默认看板启动。").format(
+                    name=bak.name))
             return False
         # 重新读盘，取回刚写入的恢复数据
         board = self._store.reload()
         self._apply_board_to_ui(board)
         self._store.mark_dirty()
         self._schedule_save()
-        self._tray.show_notification("已从备份恢复看板数据")
+        self._tray.show_notification(tr("已从备份恢复看板数据"))
         return True
 
     def _apply_board_to_ui(self, board) -> None:
@@ -308,7 +315,7 @@ class AppController(QObject):
         self._last_save_error_notify = now
         # 落盘失败用户可见，避免静默丢写
         self._tray.show_notification(
-            "看板数据保存失败，请检查磁盘空间或文件权限")
+            tr("看板数据保存失败，请检查磁盘空间或文件权限"))
 
     # ── 信号 ──────────────────────────────────────────────
 
@@ -334,6 +341,9 @@ class AppController(QObject):
             self._on_today_mode_changed)
         self._pet_view.signal_today_list_clicked.connect(
             self._on_today_list_open)
+        self._pet_view.signal_settings_clicked.connect(self._on_settings_open)
+        self._tray.signal_settings_requested.connect(self._on_settings_open)
+        self._board_view.signal_settings_clicked.connect(self._on_settings_open)
 
         # 看板 → 折叠 / 主题
         self._board_view.signal_collapse_clicked.connect(self._window.collapse)
@@ -373,12 +383,12 @@ class AppController(QObject):
         """桌宠右键快速添加：单行对话框（带速记实时预览），加到第一个列表"""
         board = self._store.load()
         if not board.lists:
-            self._notify("看板还没有列表，先添加一个列表")
+            self._notify(tr("看板还没有列表，先添加一个列表"))
             return
         dlg = QuickAddDialog(
-            "快速添加卡片",
-            "卡片标题（支持速记：明天 / 周五 / !P1 / #红）",
-            "例：明天 交周报 !P1 #红",
+            tr("快速添加卡片"),
+            tr("卡片标题（支持速记：明天 / 周五 / !P1 / #红）"),
+            tr("例：明天 交周报 !P1 #红"),
             syntax_preview=True,
             parent=self._window)
         if dlg.exec() != QDialog.Accepted:
@@ -399,7 +409,7 @@ class AppController(QObject):
         board = self._store.load()
         names = [l.title for l in board.lists]
         if not names:
-            self._notify("看板还没有列表，先添加一个列表")
+            self._notify(tr("看板还没有列表，先添加一个列表"))
             return
         clipboard = QApplication.clipboard()
         clip = clipboard.text() if clipboard is not None else ""
@@ -416,7 +426,8 @@ class AppController(QObject):
         new_cards = [self._make_card_from_text(ln) for ln in lines]
         target.cards[0:0] = new_cards   # 保序插入列首（第一行在最上）
         board.invalidate_index()
-        self._after_data_change(f"已批量添加 {len(new_cards)} 张卡片")
+        self._after_data_change(
+            tr("已批量添加 {n} 张卡片").format(n=len(new_cards)))
 
     def _today_focus_items(self, focus=None) -> list[tuple[BoardList, Card]]:
         """今日聚焦卡片（含所属列表），供今日清单浮窗显示
@@ -471,7 +482,7 @@ class AppController(QObject):
         lst.cards.insert(0, card)
         board = self._store.load()
         board.invalidate_index()   # 直接改 cards 结构，索引在变更点立即失效
-        self._after_data_change("已添加卡片")
+        self._after_data_change(tr("已添加卡片"))
 
     def _on_card_edit(self, list_id: str, card_id: str) -> None:
         _lst, card = self._store.load().find_card(card_id)
@@ -483,7 +494,7 @@ class AppController(QObject):
             return
         self._push_undo()
         card.apply(dialog.result_card())
-        self._after_data_change("已保存")
+        self._after_data_change(tr("已保存"))
 
     def _on_card_done(self, list_id: str, card_id: str, done: bool) -> None:
         _lst, card = self._store.load().find_card(card_id)
@@ -493,8 +504,9 @@ class AppController(QObject):
         card.set_done(done)
         if done and card.roll_repeat():
             # 重复任务：完成即滚动到下一周期并复位，提示下次日期
+            next_day = (card.due_date or "")[5:].replace("-", "/")
             self._after_data_change(
-                f"已完成 · 下次 {card.due_date[5:].replace('-', '/')}")
+                tr("已完成 · 下次 {date}").format(date=next_day))
             return
         self._after_data_change(None)
         if done:
@@ -507,15 +519,15 @@ class AppController(QObject):
         total = board.total_cards()
         done = board.done_cards()
         if total > 0 and done == total:
-            self._notify("全部完成！桌宠为你鼓掌 🎉")
+            self._notify(tr("全部完成！桌宠为你鼓掌 🎉"))
             if self._window.mode == "collapsed":
                 self._pet_view.celebrate()
         elif today_n == 3:
-            self._notify("今日已完成 3 张，节奏不错！🌱")
+            self._notify(tr("今日已完成 3 张，节奏不错！🌱"))
         elif today_n == 5:
-            self._notify("今日已完成 5 张，收工级表现！🏆")
+            self._notify(tr("今日已完成 5 张，收工级表现！🏆"))
         elif done > 0 and done % 5 == 0:
-            self._notify(f"已完成 {done} 张卡片，继续加油！")
+            self._notify(tr("已完成 {n} 张卡片，继续加油！").format(n=done))
 
     def _on_card_delete(self, list_id: str, card_id: str) -> None:
         """删除卡片：不打断流，撤销兜底（toast 提示 ⌘Z）
@@ -533,7 +545,7 @@ class AppController(QObject):
             self._pomo_stop()          # 删除正专注的卡片时先结束番茄钟
         if self._store.load().remove_card(card_id) is None:
             return
-        self._after_data_change("已删除 · " + self._undo_hint())
+        self._after_data_change(tr("已删除 · {hint}").format(hint=self._undo_hint()))
 
     def _on_card_move(self, card_id: str, target_list_id: str, index: int) -> None:
         """拖拽移动卡片（跨列表 / 列表内重排）
@@ -565,8 +577,8 @@ class AppController(QObject):
     # ── 列表操作 ──────────────────────────────────────────
 
     def _on_list_add(self) -> None:
-        dlg = QuickAddDialog("添加列表", "列表名称：", "例如：进行中",
-                             parent=self._window)
+        dlg = QuickAddDialog(tr("添加列表"), tr("列表名称："),
+                             tr("例如：进行中"), parent=self._window)
         if dlg.exec() != QDialog.Accepted:
             return
         title = dlg.text().strip()
@@ -575,7 +587,7 @@ class AppController(QObject):
         self._push_undo()
         lst = BoardList(title=title)
         self._store.load().lists.append(lst)
-        self._after_data_change("已添加列表")
+        self._after_data_change(tr("已添加列表"))
         # 新列 append 在最右端：不滚过去用户会以为点击没生效
         self._board_view.reveal_list(lst.id)
 
@@ -595,15 +607,17 @@ class AppController(QObject):
         n = len(lst.cards)
         if n > 0:
             reply = QMessageBox.question(
-                self._window, "确认删除",
-                f"列表「{lst.title}」还有 {n} 张卡片，删除后不可恢复。\n继续？",
+                self._window, tr("确认删除"),
+                tr("列表「{title}」还有 {n} 张卡片，删除后不可恢复。\n继续？").format(
+                    title=lst.title, n=n),
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if reply != QMessageBox.Yes:
                 return
         # 空列表无卡片可丢，直接删除（撤销栈可恢复）
         self._push_undo()
         board.remove_list(list_id)
-        self._after_data_change("已删除列表 · " + self._undo_hint())
+        self._after_data_change(
+            tr("已删除列表 · {hint}").format(hint=self._undo_hint()))
 
     def _on_list_move(self, moved_id: str, target_id: str,
                       insert_before: bool) -> None:
@@ -676,7 +690,7 @@ class AppController(QObject):
             self._tray.show_notification(text)
 
     def _undo_hint(self) -> str:
-        return "⌘Z 撤销" if AppConfig.IS_MACOS else "Ctrl+Z 撤销"
+        return tr("⌘Z 撤销") if AppConfig.IS_MACOS else tr("Ctrl+Z 撤销")
 
     # ── 桌宠状态联动 ──────────────────────────────────────
 
@@ -697,6 +711,63 @@ class AppController(QObject):
         else:
             mood = "happy"
         self._pet_view.set_mood(mood)
+
+    # ── 设置界面 / 语言 ───────────────────────────────────
+
+    def _on_settings_open(self) -> None:
+        """打开设置（三处入口共用）：惰性创建并同步当前偏好"""
+        if self._settings_dialog is None:
+            dlg = SettingsDialog(self._window)
+            dlg.signal_theme_selected.connect(self._on_theme_pref_selected)
+            dlg.signal_language_selected.connect(self._on_language_changed)
+            dlg.signal_skin_selected.connect(self._on_settings_skin)
+            dlg.signal_animation_toggled.connect(
+                self._on_pet_animation_toggled)
+            dlg.signal_always_top_toggled.connect(
+                self._on_always_top_toggled)
+            i18n.register(dlg.retexts)          # 语言切换整页刷新
+            AppTheme.register(dlg.reapply_theme)
+            self._settings_dialog = dlg
+        self._settings_dialog.sync_from_prefs(
+            theme_mode=AppConfig.get_theme_mode(),
+            lang=i18n.lang(),
+            skin=AppConfig.get_pet_skin(),
+            animation=AppConfig.get_animation_enabled(),
+            always_top=self._window.is_always_on_top())
+        self._settings_dialog.show()
+        self._settings_dialog.raise_()
+        self._settings_dialog.activateWindow()
+
+    def _on_theme_pref_selected(self, mode: str) -> None:
+        """设置里的三态主题：原始模式（含 system）落盘，供跟随系统切换"""
+        AppConfig.save_theme_mode(mode)
+        AppTheme.set_mode(mode)
+        act = getattr(self, "_menu_act_dark", None)
+        if act is not None and act.isChecked() != (AppTheme.mode() == "dark"):
+            act.blockSignals(True)
+            act.setChecked(AppTheme.mode() == "dark")
+            act.blockSignals(False)
+
+    def _on_settings_skin(self, key: str) -> None:
+        """设置换肤：与桌宠右键同一落点（绘制 + 持久化）"""
+        self._pet_view._pet_canvas.set_skin(key)
+        self._on_pet_skin_selected(key)
+
+    def _on_language_changed(self, lang: str) -> None:
+        """切换语言：广播（设置页即时刷新）+ 全应用静态/动态文案刷新"""
+        i18n.set_lang(lang)               # 已注册回调先跑（设置页自身）
+        AppConfig.save_language(lang)
+        self._board_view.reapply_texts()  # 静态文案 + 清卡片指纹
+        self._after_data_change(None)     # 全板 rebuild 徽章/tooltip + 浮窗
+        self._pet_view.reapply_texts()
+        self._tray.reapply_texts()
+        if AppConfig.IS_MACOS:
+            self._reapply_menu_texts()
+        self._window.reapply_texts()
+        from app.views.notes_popover import retexts_if_created
+        retexts_if_created()
+        if self._archive_dialog is not None:
+            self._archive_dialog.retexts()
 
     # ── 主题 / 动画 ───────────────────────────────────────
 
@@ -738,34 +809,46 @@ class AppController(QObject):
         """构建全局菜单栏：应用激活（regular）时接管顶部菜单栏后可见"""
         menu_bar = QMenuBar(None)          # 无父级 = 全局默认菜单栏
         self._menu_bar = menu_bar
+        # (setter, 中文原文)：语言切换时整栏重设（_reapply_menu_texts）
+        self._menu_texts: list = []
+
+        def _menu(key: str):
+            m = menu_bar.addMenu(tr(key))
+            self._menu_texts.append((m.setTitle, key))
+            return m
+
+        def _act(key: str) -> QAction:
+            a = QAction(tr(key), self)
+            self._menu_texts.append((a.setText, key))
+            return a
 
         # 文件
-        m_file = menu_bar.addMenu("文件")
-        act_card = QAction("新建卡片", self)
+        m_file = _menu("文件")
+        act_card = _act("新建卡片")
         act_card.setShortcut(QKeySequence.New)
         act_card.triggered.connect(self._on_quick_add)
         m_file.addAction(act_card)
-        act_list = QAction("新建列表", self)
+        act_list = _act("新建列表")
         act_list.triggered.connect(self._on_list_add)
         m_file.addAction(act_list)
-        act_bulk = QAction("批量添加卡片", self)
+        act_bulk = _act("批量添加卡片")
         act_bulk.triggered.connect(self._on_bulk_add)
         m_file.addAction(act_bulk)
         m_file.addSeparator()
-        act_md = QAction("导出 Markdown", self)
+        act_md = _act("导出 Markdown")
         act_md.triggered.connect(lambda: self._on_export("md"))
         m_file.addAction(act_md)
-        act_csv = QAction("导出 CSV", self)
+        act_csv = _act("导出 CSV")
         act_csv.triggered.connect(lambda: self._on_export("csv"))
         m_file.addAction(act_csv)
         m_file.addSeparator()
-        act_archive = QAction("打开归档", self)
+        act_archive = _act("打开归档")
         act_archive.triggered.connect(self._on_archive_open)
         m_file.addAction(act_archive)
 
         # 编辑
-        m_edit = menu_bar.addMenu("编辑")
-        act_undo = QAction("撤销", self)
+        m_edit = _menu("编辑")
+        act_undo = _act("撤销")
         act_undo.setShortcut(QKeySequence.Undo)
         act_undo.triggered.connect(lambda: self._on_undo_requested(False))
         m_edit.addAction(act_undo)
@@ -774,44 +857,49 @@ class AppController(QObject):
                                    ("复制", QKeySequence.Copy, "copy"),
                                    ("粘贴", QKeySequence.Paste, "paste"),
                                    ("全选", QKeySequence.SelectAll, "selectAll")):
-            act = QAction(label, self)
+            act = _act(label)
             act.setShortcut(seq)
             act.triggered.connect(
                 lambda _=False, m=method: self._edit_focus_widget(m))
             m_edit.addAction(act)
 
         # 视图
-        m_view = menu_bar.addMenu("视图")
-        self._menu_act_today = QAction("今日聚焦", self)
+        m_view = _menu("视图")
+        self._menu_act_today = _act("今日聚焦")
         self._menu_act_today.setCheckable(True)
         self._menu_act_today.setChecked(self._board_view.is_today_mode())
         self._menu_act_today.toggled.connect(self._on_menu_today_toggled)
         m_view.addAction(self._menu_act_today)
-        self._menu_act_dark = QAction("深色主题", self)
+        self._menu_act_dark = _act("深色主题")
         self._menu_act_dark.setCheckable(True)
         self._menu_act_dark.setChecked(AppTheme.mode() == "dark")
         self._menu_act_dark.toggled.connect(self._on_menu_dark_toggled)
         m_view.addAction(self._menu_act_dark)
-        self._menu_act_always_top = QAction("窗口置顶", self)
+        self._menu_act_always_top = _act("窗口置顶")
         self._menu_act_always_top.setCheckable(True)
         self._menu_act_always_top.setChecked(self._window.is_always_on_top())
         self._menu_act_always_top.toggled.connect(self._on_always_top_toggled)
         m_view.addAction(self._menu_act_always_top)
         m_view.addSeparator()
-        act_expand = QAction("展开看板", self)
+        act_expand = _act("展开看板")
         act_expand.triggered.connect(self._window.expand)
         m_view.addAction(act_expand)
-        act_collapse = QAction("收起为桌宠", self)
+        act_collapse = _act("收起为桌宠")
         act_collapse.setShortcut(QKeySequence.Close)   # Cmd+W
         act_collapse.triggered.connect(self._window.collapse)
         m_view.addAction(act_collapse)
 
         # 应用菜单项（macOS 按 role 自动归入应用名菜单）
-        act_about = QAction("关于桌宠看板", self)
+        act_about = _act("关于桌宠看板")
         act_about.setMenuRole(QAction.MenuRole.AboutRole)
         act_about.triggered.connect(self._show_about)
         m_file.addAction(act_about)
-        act_quit = QAction("退出", self)
+        act_settings = _act("设置…")
+        act_settings.setMenuRole(QAction.MenuRole.PreferencesRole)
+        act_settings.setShortcut(QKeySequence.Preferences)
+        act_settings.triggered.connect(self._on_settings_open)
+        m_file.addAction(act_settings)
+        act_quit = _act("退出")
         act_quit.setMenuRole(QAction.MenuRole.QuitRole)
         act_quit.setShortcut(QKeySequence.Quit)
         act_quit.triggered.connect(self._on_quit)
@@ -819,6 +907,11 @@ class AppController(QObject):
 
         # 主题被动变化（如跟随系统）时同步菜单勾选态
         AppTheme.signal_theme_applied.connect(self._sync_menu_dark)
+
+    def _reapply_menu_texts(self) -> None:
+        """语言切换后整栏重设菜单文案（勾选态不受影响）"""
+        for setter, key in getattr(self, "_menu_texts", []):
+            setter(tr(key))
 
     def _on_menu_today_toggled(self, on: bool) -> None:
         self._board_view.set_today_mode(on)
@@ -847,10 +940,11 @@ class AppController(QObject):
             getattr(fw, method)()
 
     def _show_about(self) -> None:
+        from app.i18n import app_display_name
         QMessageBox.about(
-            self._window, "关于桌宠看板",
-            f"桌宠看板 v{AppConfig.APP_VERSION}\n"
-            "桌宠形态的轻量任务看板：今日聚焦、番茄钟、归档与导出。")
+            self._window, tr("关于桌宠看板"),
+            f"{app_display_name()} v{AppConfig.APP_VERSION}\n"
+            + tr("桌宠形态的轻量任务看板：今日聚焦、番茄钟、归档与导出。"))
 
     # ── 撤销 ──────────────────────────────────────────────
 
@@ -862,12 +956,12 @@ class AppController(QObject):
     def _on_undo_requested(self, notify_empty: bool = False) -> None:
         if not self._undo_stack:
             if notify_empty:
-                self._notify("没有可撤销的操作")
+                self._notify(tr("没有可撤销的操作"))
             return
         doc = self._undo_stack.pop()
         self._store.replace_board(Board.from_dict(doc))
         self._after_data_change(None)
-        self._notify("已撤销上一步")
+        self._notify(tr("已撤销上一步"))
 
     # ── 截止提醒 ──────────────────────────────────────────
 
@@ -895,8 +989,8 @@ class AppController(QObject):
                 if key in log_for_today:
                     continue
                 log_for_today.add(key)
-                items.append((c.title, "已逾期" if kind == "overdue"
-                              else "今天截止"))
+                items.append((c.title, tr("已逾期") if kind == "overdue"
+                              else tr("今天截止")))
         # 清旧日志（只留今天与昨天）：必须无条件执行——放在"无新提醒就
         # 早退"之后会让旧条目在无提醒的日子永不修剪，日志越积越大
         keep = (today.isoformat(),
@@ -910,8 +1004,9 @@ class AppController(QObject):
 
         parts = [f"「{t}」{k}" for t, k in items[:2]]
         if len(items) > 2:
-            parts.append(f"等 {len(items)} 项")
-        self._tray.show_notification("截止提醒：" + "、".join(parts))
+            parts.append(tr("等 {n} 项").format(n=len(items)))
+        self._tray.show_notification(
+            tr("截止提醒：{items}").format(items=tr("、").join(parts)))
         if self._window.mode == "collapsed":
             self._pet_view.nudge()
 
@@ -930,8 +1025,9 @@ class AppController(QObject):
             cur = board.find_card(self._pomo_card_id)[1]
             cur_title = cur.title[:20] if cur is not None else "当前卡片"
             reply = QMessageBox.question(
-                self._window, "切换专注",
-                f"正在专注「{cur_title}」，切换将放弃当前进度。\n继续？",
+                self._window, tr("切换专注"),
+                tr("正在专注「{title}」，切换将放弃当前进度。\n继续？").format(
+                    title=cur_title),
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if reply != QMessageBox.Yes:
                 return
@@ -947,7 +1043,8 @@ class AppController(QObject):
         self._pet_view.set_focus_mode(True)
         m, s = divmod(self._pomo_left, 60)
         self._pet_view.set_badge_override(f"{m:02d}:{s:02d}")
-        self._tray.set_tooltip(f"专注中 {m:02d}:{s:02d} · {card.title[:16]}")
+        self._tray.set_tooltip(tr("专注中 {time} · {title}").format(
+            time=f"{m:02d}:{s:02d}", title=card.title[:16]))
 
     def _pomo_stop(self, finished: bool = False) -> None:
         card_id, self._pomo_card_id = self._pomo_card_id, None
@@ -964,13 +1061,14 @@ class AppController(QObject):
                 card.pomodoros += 1
                 if card.pomodoros % 5 == 0:
                     self._after_data_change(
-                        f"专注完成！累计 {card.pomodoros} 个番茄 🍅")
+                        tr("专注完成！累计 {n} 个番茄 🍅").format(
+                            n=card.pomodoros))
                 else:
-                    self._after_data_change("专注完成！休息一下 🎉")
+                    self._after_data_change(tr("专注完成！休息一下 🎉"))
             else:
-                self._notify("专注完成！休息一下 🎉")
+                self._notify(tr("专注完成！休息一下 🎉"))
         else:
-            self._notify("已结束专注")
+            self._notify(tr("已结束专注"))
 
     def _pomo_tick(self) -> None:
         if self._pomo_card_id is None:
@@ -988,7 +1086,8 @@ class AppController(QObject):
             board = self._store.load()
             _lst, card = board.find_card(self._pomo_card_id)
             title = card.title[:16] if card else ""
-            self._tray.set_tooltip(f"专注中 {m:02d}:{s:02d} · {title}")
+            self._tray.set_tooltip(tr("专注中 {time} · {title}").format(
+                time=f"{m:02d}:{s:02d}", title=title))
 
     # ── 归档 ──────────────────────────────────────────────
 
@@ -1000,7 +1099,8 @@ class AppController(QObject):
             return
         self._push_undo()
         card.starred = not card.starred
-        self._after_data_change("已加入今日" if card.starred else "已移出今日")
+        self._after_data_change(
+            tr("已加入今日") if card.starred else tr("已移出今日"))
 
     def _on_card_archive(self, card_id: str) -> None:
         board = self._store.load()
@@ -1011,7 +1111,7 @@ class AppController(QObject):
         if card_id == self._pomo_card_id:
             self._pomo_stop()          # 归档正专注的卡片时先结束番茄钟
         card.archived = True
-        self._after_data_change("已归档")
+        self._after_data_change(tr("已归档"))
 
     def _on_archive_open(self) -> None:
         if self._archive_dialog is None:
@@ -1045,7 +1145,7 @@ class AppController(QObject):
             return
         self._push_undo()
         card.archived = False
-        self._after_data_change("已恢复")
+        self._after_data_change(tr("已恢复"))
 
     # ── 系统主题跟随 ──────────────────────────────────────
 
@@ -1061,7 +1161,7 @@ class AppController(QObject):
         default = Path(str(AppConfig.DATA_DIR)) / \
             f"桌宠看板导出_{date.today():%Y%m%d}.{fmt}"
         path, _ = QFileDialog.getSaveFileName(
-            self._window, "导出看板", str(default),
+            self._window, tr("导出看板"), str(default),
             "Markdown (*.md)" if fmt == "md" else "CSV (*.csv)")
         if not path:
             return
@@ -1071,9 +1171,10 @@ class AppController(QObject):
             else:
                 self._write_export_csv(Path(path), board)
         except OSError as e:
-            self._show_error(f"导出失败：{e}")
+            self._show_error(tr("导出失败：{err}").format(err=e))
             return
-        self._tray.show_notification(f"已导出到 {path}")
+        self._tray.show_notification(
+            tr("已导出到 {path}").format(path=path))
 
     def _on_export_backup(self) -> None:
         """导出完整看板备份（含归档，可用于日后导入恢复）"""
@@ -1081,7 +1182,7 @@ class AppController(QObject):
         default = Path(str(AppConfig.DATA_DIR)) / \
             f"桌宠看板备份_{date.today():%Y%m%d}.json"
         path, _ = QFileDialog.getSaveFileName(
-            self._window, "导出备份", str(default), "JSON (*.json)")
+            self._window, tr("导出备份"), str(default), "JSON (*.json)")
         if not path:
             return
         try:
@@ -1089,14 +1190,15 @@ class AppController(QObject):
                 json.dumps(board.to_dict(), ensure_ascii=False, indent=2),
                 encoding="utf-8")
         except OSError as e:
-            self._show_error(f"导出失败：{e}")
+            self._show_error(tr("导出失败：{err}").format(err=e))
             return
-        self._tray.show_notification(f"备份已导出到 {path}")
+        self._tray.show_notification(
+            tr("备份已导出到 {path}").format(path=path))
 
     def _on_import_backup(self) -> None:
         """从备份导入：确认后整体替换当前看板（撤销栈清空）"""
         path, _ = QFileDialog.getOpenFileName(
-            self._window, "从备份导入", str(AppConfig.DATA_DIR),
+            self._window, tr("从备份导入"), str(AppConfig.DATA_DIR),
             "JSON (*.json)")
         if not path:
             return
@@ -1106,17 +1208,17 @@ class AppController(QObject):
                 raise ValueError("备份文件不是有效的数据结构")
             new_board = Board.from_dict(doc)
         except (OSError, ValueError, AttributeError, TypeError) as e:
-            self._show_error(f"备份文件无法读取：{e}")
+            self._show_error(tr("备份文件无法读取：{err}").format(err=e))
             return
         reply = QMessageBox.question(
-            self._window, "从备份导入",
-            "导入将替换当前看板（建议先导出备份）。\n继续？",
+            self._window, tr("从备份导入"),
+            tr("导入将替换当前看板（建议先导出备份）。\n继续？"),
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply != QMessageBox.Yes:
             return
         self._store.replace_board(new_board)
         self._undo_stack.clear()
-        self._after_data_change("已导入备份")
+        self._after_data_change(tr("已导入备份"))
 
     @staticmethod
     def _write_export_md(path: Path, board) -> None:
@@ -1182,4 +1284,4 @@ class AppController(QObject):
         QApplication.quit()
 
     def _show_error(self, message: str) -> None:
-        QMessageBox.warning(self._window, "错误", message)
+        QMessageBox.warning(self._window, tr("错误"), message)

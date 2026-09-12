@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import AppConfig
+from app.i18n import label_display, tr
 from app.models.quick_syntax import parse_quick_input
 from app.views.theme import AppTheme
 
@@ -39,8 +40,8 @@ def _fmt_fields(fields: dict) -> str:
     if priority:
         parts.append(AppConfig.PRIORITY_MARKS.get(priority, ""))
     if fields.get("labels"):
-        names = [AppConfig.LABEL_NAMES.get(k, k) for k in fields["labels"]]
-        parts.append("标签 " + "、".join(names))
+        names = [label_display(k) for k in fields["labels"]]
+        parts.append(tr("标签") + " " + tr("、").join(names))
     return " · ".join(p for p in parts if p)
 
 
@@ -103,7 +104,7 @@ class QuickAddDialog(QDialog):
         root.addWidget(self._edit)
 
         if syntax_preview:
-            tip = QLabel("速记：今天/明天/N天后/周X/9月20日 · !P1~!P3 · #红#蓝")
+            tip = QLabel(tr("速记：今天/明天/N天后/周X/9月20日 · !P1~!P3 · #红#蓝"))
             tip.setObjectName("syntaxTip")
             tip.setWordWrap(True)
             root.addWidget(tip)
@@ -114,9 +115,9 @@ class QuickAddDialog(QDialog):
 
         btns = QHBoxLayout()
         btns.addStretch(1)
-        cancel = QPushButton("取消")
+        cancel = QPushButton(tr("取消"))
         cancel.clicked.connect(self.reject)
-        ok = QPushButton("添加")
+        ok = QPushButton(tr("添加"))
         ok.setDefault(True)
         ok.clicked.connect(self._on_confirm)
         ok.setStyleSheet(f"""
@@ -171,7 +172,7 @@ class BulkAddDialog(QDialog):
     def __init__(self, list_names: list[str], prefill: str = "",
                  parent=None):
         super().__init__(parent)
-        self.setWindowTitle("批量添加卡片")
+        self.setWindowTitle(tr("批量添加卡片"))
         self.setModal(True)
         self._list_names = list_names
 
@@ -214,15 +215,15 @@ class BulkAddDialog(QDialog):
         root.setContentsMargins(20, 18, 20, 16)
         root.setSpacing(8)
 
-        cap = QLabel("每行一张卡片，行内支持速记：明天 / 周五 / 3天后 /"
-                     " 9月20日、!P1、#红")
+        cap = QLabel(tr("每行一张卡片，行内支持速记：明天 / 周五 / 3天后 /"
+                        " 9月20日、!P1、#红"))
         cap.setProperty("cap", True)
         cap.setWordWrap(True)
         root.addWidget(cap)
 
         self._edit = QPlainTextEdit()
         self._edit.setPlaceholderText(
-            "例：\n明天 交周报 !P1 #红\n周五 复盘会\n采购打印机")
+            tr("例：\n明天 交周报 !P1 #红\n周五 复盘会\n采购打印机"))
         self._edit.setFixedHeight(160)
         self._edit.textChanged.connect(self._update_count)
         if prefill:
@@ -230,7 +231,7 @@ class BulkAddDialog(QDialog):
         root.addWidget(self._edit)
 
         row = QHBoxLayout()
-        list_cap = QLabel("添加到列表：")
+        list_cap = QLabel(tr("添加到列表："))
         list_cap.setProperty("cap", True)
         row.addWidget(list_cap)
         self._combo = QComboBox()
@@ -243,9 +244,9 @@ class BulkAddDialog(QDialog):
 
         btns = QHBoxLayout()
         btns.addStretch(1)
-        cancel = QPushButton("取消")
+        cancel = QPushButton(tr("取消"))
         cancel.clicked.connect(self.reject)
-        ok = QPushButton("批量添加")
+        ok = QPushButton(tr("批量添加"))
         ok.setDefault(True)
         ok.clicked.connect(self._on_confirm)
         ok.setStyleSheet(f"""
@@ -278,7 +279,7 @@ class BulkAddDialog(QDialog):
 
     def _update_count(self) -> None:
         n = self._count_lines()
-        self._count_label.setText(f"{n} 行" if n else "")
+        self._count_label.setText(tr("{n} 行").format(n=n) if n else "")
 
     def _on_confirm(self) -> None:
         if self._count_lines():

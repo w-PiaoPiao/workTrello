@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.i18n import tr
 from app.models.board import BoardList, Card
 from app.views.theme import AppTheme
 
@@ -40,7 +41,7 @@ class _ArchiveRow(QFrame):
         self._title = QLabel(f"{'✅ ' if card.done else ''}{card.title}")
         origin = QLabel(lst.title)
         self._origin = origin
-        btn = QPushButton("恢复")
+        btn = QPushButton(tr("恢复"))
         btn.setCursor(Qt.PointingHandCursor)
         btn.clicked.connect(lambda _=False, cid=card.id: on_restore(cid))
 
@@ -72,7 +73,7 @@ class ArchiveDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("归档")
+        self.setWindowTitle(tr("归档"))
         self.setModal(False)
         self.setMinimumSize(440, 380)
 
@@ -91,20 +92,32 @@ class ArchiveDialog(QDialog):
         self._scroll.setWidget(self._rows_host)
         root.addWidget(self._scroll, 1)
 
-        close = QPushButton("关闭")
-        close.setCursor(Qt.PointingHandCursor)
-        close.clicked.connect(self.close)
-        root.addWidget(close, 0, Qt.AlignRight)
+        self._close_btn = QPushButton(tr("关闭"))
+        self._close_btn.setCursor(Qt.PointingHandCursor)
+        self._close_btn.clicked.connect(self.close)
+        root.addWidget(self._close_btn, 0, Qt.AlignRight)
 
         self._empty_label: QLabel | None = None
+        self._last_items: list | None = None
+        self._last_weekly = 0
         AppTheme.register(self.reapply_theme)
         self.reapply_theme()
+
+    def retexts(self) -> None:
+        """语言切换：标题/按钮/统计行刷新（有数据时整组重建行）"""
+        self.setWindowTitle(tr("归档"))
+        self._close_btn.setText(tr("关闭"))
+        if self._last_items is not None:
+            self.set_items(self._last_items, self._last_weekly)
 
     def set_items(self, items: list[tuple[BoardList, Card]],
                   weekly_done: int) -> None:
         """注入归档数据（items: (所属列表, 卡片)）并重建行"""
+        self._last_items = list(items)
+        self._last_weekly = weekly_done
         self._stats_label.setText(
-            f"共 {len(items)} 张归档 · 本周完成 {weekly_done} 张")
+            tr("共 {n} 张归档 · 本周完成 {m} 张").format(
+                n=len(items), m=weekly_done))
 
         while self._rows_layout.count():
             item = self._rows_layout.takeAt(0)
@@ -115,7 +128,7 @@ class ArchiveDialog(QDialog):
         self._empty_label = None
 
         if not items:
-            empty = QLabel("暂无归档卡片：右键卡片即可归档")
+            empty = QLabel(tr("暂无归档卡片：右键卡片即可归档"))
             empty.setAlignment(Qt.AlignCenter)
             self._empty_label = empty
             self._apply_empty_style()

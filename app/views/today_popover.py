@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import AppConfig
+from app.i18n import tr
 from app.models.board import BoardList, Card
 from app.views import motion
 from app.views.board_view import _CardCheckButton
@@ -32,15 +33,16 @@ _MAX_POP_H = 330
 def _fmt_due_short(due: str) -> str:
     """截止日期简写：9/10 或 已逾期 9/1（气泡内行尾徽章）"""
     from datetime import date
+    from app.i18n import tr
     try:
         d = date.fromisoformat(due)
     except ValueError:
         return due
     delta = (d - date.today()).days
     if delta < 0:
-        return f"已逾期 {d.month}/{d.day}"
+        return f"{tr('已逾期')} {d.month}/{d.day}"
     if delta == 0:
-        return "今天截止"
+        return tr("今天截止")
     return f"{d.month}/{d.day}"
 
 
@@ -122,7 +124,7 @@ class _PopRow(QFrame):
         else:
             self._badge.hide()
         self._star_btn.setText("⭐" if card.starred else "☆")
-        self._star_btn.setToolTip("移出今日" if card.starred else "加入今日")
+        self._star_btn.setToolTip(tr("移出今日") if card.starred else tr("加入今日"))
 
     def reapply_theme(self) -> None:
         """行配色快照随主题重下（内容相同也 re-polish，仅主题切换时调用）"""
@@ -196,7 +198,7 @@ class TodayPopover(QWidget):
                   done_count: int | None = None) -> None:
         self._rebuild_row_widget()
         self._items = list(items)
-        self._title_label.setText(f"今日待办 · {len(items)}")
+        self._title_label.setText(tr("今日待办 · {n}").format(n=len(items)))
         layout = self._rows_layout
         # 按 card.id 复用行控件（与 ListColumn.refresh_cards 同一策略：
         # 复用行绝不能先 deleteLater——销毁已排队，回事件循环即没）
@@ -215,11 +217,11 @@ class TodayPopover(QWidget):
         # 今日完成回顾：全部勾完的庆祝时刻也走空态分支，两处都要显示
         show_done = done_count is not None and done_count > 0
         if show_done:
-            done_label.setText(f"今日已完成 {done_count} 张 🎉")
+            done_label.setText(tr("今日已完成 {n} 张 🎉").format(n=done_count))
             self._apply_done_label_style()
 
         if not items:
-            empty = QLabel("今天没有待办 🎉")
+            empty = QLabel(tr("今天没有待办 🎉"))
             empty.setAlignment(Qt.AlignCenter)
             empty.setStyleSheet(
                 f"color: {AppTheme.colors()['text_disabled']};"

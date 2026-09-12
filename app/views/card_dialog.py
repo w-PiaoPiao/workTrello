@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import AppConfig
+from app.i18n import label_display, tr
 from app.models.board import Card
 from app.views.theme import AppTheme
 
@@ -58,7 +59,7 @@ class LabelChip(QPushButton):
         self.setCheckable(True)
         self.setFixedSize(34, 22)
         self.setCursor(Qt.PointingHandCursor)
-        self.setToolTip(AppConfig.LABEL_NAMES.get(key, key))
+        self.setToolTip(label_display(key))
         self.reapply()
 
     def key(self) -> str:
@@ -72,7 +73,7 @@ class LabelChip(QPushButton):
         """
         bg, fg = AppTheme.label_style(self._key)
         # 色块内写标签首字：纯颜色区分对色盲用户不可达
-        self.setText(AppConfig.LABEL_NAMES.get(self._key, self._key)[:1])
+        self.setText(label_display(self._key)[:1])
         self.setStyleSheet(f"""
             QPushButton {{
                 background: {bg};
@@ -96,7 +97,7 @@ class CardDialog(QDialog):
 
     def __init__(self, card: Card | None = None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("编辑卡片" if card else "新建卡片")
+        self.setWindowTitle(tr("编辑卡片") if card else tr("新建卡片"))
         self.setModal(True)
         self._card = card
         self._apply_saved_size()
@@ -119,7 +120,7 @@ class CardDialog(QDialog):
         root.setSpacing(10)
 
         # 标题
-        cap = QLabel("标题")
+        cap = QLabel(tr("标题"))
         cap.setProperty("cap", True)
         root.addWidget(cap)
         self._title_edit = QLineEdit()
@@ -130,14 +131,15 @@ class CardDialog(QDialog):
 
         # 备注（标题行右侧：快速插入当前时间，便于在备注里记进度）
         notes_header = QHBoxLayout()
-        cap2 = QLabel("备注")
+        cap2 = QLabel(tr("备注"))
         cap2.setProperty("cap", True)
         notes_header.addWidget(cap2)
         notes_header.addStretch(1)
-        self._insert_time_btn = QPushButton("⏱ 插入当前时间")
+        self._insert_time_btn = QPushButton(tr("⏱ 插入当前时间"))
         self._insert_time_btn.setFlat(True)
         self._insert_time_btn.setCursor(Qt.PointingHandCursor)
-        self._insert_time_btn.setToolTip("在备注光标处插入当前时间（如 09-08 14:30）")
+        self._insert_time_btn.setToolTip(
+            tr("在备注光标处插入当前时间（如 09-08 14:30）"))
         self._insert_time_btn.setStyleSheet(f"""
             QPushButton {{
                 color: {c['accent']};
@@ -156,13 +158,14 @@ class CardDialog(QDialog):
         root.addLayout(notes_header)
         self._notes_edit = QPlainTextEdit()
         self._notes_edit.setFixedHeight(90)
-        self._notes_edit.setPlaceholderText("补充说明、链接、清单…\n（记进度时点右上角「⏱ 插入当前时间」）")
+        self._notes_edit.setPlaceholderText(
+            tr("补充说明、链接、清单…\n（记进度时点右上角「⏱ 插入当前时间」）"))
         if card:
             self._notes_edit.setPlainText(card.notes)
         root.addWidget(self._notes_edit)
 
         # 标签色
-        cap3 = QLabel("标签")
+        cap3 = QLabel(tr("标签"))
         cap3.setProperty("cap", True)
         root.addWidget(cap3)
         labels_row = QHBoxLayout()
@@ -180,7 +183,7 @@ class CardDialog(QDialog):
         # 截止日期 + 完成
         row = QGridLayout()
         row.setHorizontalSpacing(12)
-        cap4 = QLabel("截止日期")
+        cap4 = QLabel(tr("截止日期"))
         cap4.setProperty("cap", True)
         row.addWidget(cap4, 0, 0)
         self._due_edit = QDateEdit()
@@ -195,7 +198,7 @@ class CardDialog(QDialog):
             self._due_edit.setDate(QDate.fromString(card.due_date, "yyyy-MM-dd"))
         else:
             self._due_edit.setDate(QDate.currentDate())  # 占位值，未设置态不显示
-        self._due_none_label = QLabel("未设置")
+        self._due_none_label = QLabel(tr("未设置"))
         self._due_none_label.setStyleSheet(f"""
             QLabel {{
                 color: {c['text_disabled']};
@@ -210,13 +213,14 @@ class CardDialog(QDialog):
         due_box.addWidget(self._due_edit)
         row.addLayout(due_box, 1, 0)
 
-        self._done_check = QCheckBox("标记为已完成")
+        self._done_check = QCheckBox(tr("标记为已完成"))
         if card:
             self._done_check.setChecked(card.done)
         row.addWidget(self._done_check, 1, 1)
 
-        self._star_check = QCheckBox("加入今日聚焦")
-        self._star_check.setToolTip("星标后卡片会出现在「今日聚焦」视图和桌宠角标中")
+        self._star_check = QCheckBox(tr("加入今日聚焦"))
+        self._star_check.setToolTip(
+            tr("星标后卡片会出现在「今日聚焦」视图和桌宠角标中"))
         if card:
             self._star_check.setChecked(card.starred)
         row.addWidget(self._star_check, 1, 2)
@@ -234,14 +238,14 @@ class CardDialog(QDialog):
         self._apply_due_state()
 
         # 重复周期：勾选完成时自动滚动截止日期到下一周期（配合截止日期使用）
-        cap5 = QLabel("重复")
+        cap5 = QLabel(tr("重复"))
         cap5.setProperty("cap", True)
         root.addWidget(cap5)
         repeat_row = QHBoxLayout()
         repeat_row.setSpacing(6)
         self._repeat_choices: dict[str, QPushButton] = {}
-        for key, name in (("never", "不重复"), ("daily", "每天"),
-                          ("weekly", "每周")):
+        for key, name in (("never", tr("不重复")), ("daily", tr("每天")),
+                          ("weekly", tr("每周"))):
             btn = QPushButton(name)
             btn.setCheckable(True)
             btn.setCursor(Qt.PointingHandCursor)
@@ -256,13 +260,13 @@ class CardDialog(QDialog):
         root.addLayout(repeat_row)
 
         # 优先级：今日聚焦内按 高 > 中 > 低 排序展示
-        cap6 = QLabel("优先级")
+        cap6 = QLabel(tr("优先级"))
         cap6.setProperty("cap", True)
         root.addWidget(cap6)
         priority_row = QHBoxLayout()
         priority_row.setSpacing(6)
         self._priority_choices: dict[int, QPushButton] = {}
-        for key, name in ((0, "无"), (1, "高"), (2, "中"), (3, "低")):
+        for key, name in ((0, tr("无")), (1, tr("高")), (2, tr("中")), (3, tr("低"))):
             btn = QPushButton(name)
             btn.setCheckable(True)
             btn.setCursor(Qt.PointingHandCursor)
@@ -279,9 +283,9 @@ class CardDialog(QDialog):
         # 按钮
         btns = QHBoxLayout()
         btns.addStretch(1)
-        cancel = QPushButton("取消")
+        cancel = QPushButton(tr("取消"))
         cancel.clicked.connect(self.reject)
-        ok = QPushButton("保存")
+        ok = QPushButton(tr("保存"))
         ok.setDefault(True)
         ok.clicked.connect(self._on_save)
         ok.setStyleSheet(f"""

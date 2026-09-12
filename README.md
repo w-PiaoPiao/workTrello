@@ -51,6 +51,14 @@ Windows / macOS 桌面悬浮小工具：**缩小时是一只卡通桌宠，展�
 - macOS：看板右下角可拖动调整大小；空看板时显示创建第一列的引导提示
 
 ### 通用
+- **设置界面**：看板工具栏 ⚙ / 桌宠右键"设置…" / 托盘菜单 / macOS 菜单栏
+  （⌘,）打开；分区：外观（主题三选：跟随系统/浅/深）、语言（中文/English）、
+  桌宠（待机动画开关、皮肤带色板预览）、窗口（置顶开关）、数据（目录展示与
+  一键打开）、关于；所有项即时生效，无保存按钮
+- **双语界面**：中文 / English 在设置中一键切换、立即生效（全应用静态文案与
+  卡片徽章即时刷新，无需重启）；首次启动按系统语言自动选择
+- 速记语法与界面语言无关：中文词（明天/周五/3天后/9月20日）与英文词
+  （today/tomorrow/in N days/fri/next mon/9/20）恒可用
 - 无边框窗口、位置与展开尺寸持久化（QSettings）；窗口置顶默认开启，
   可在桌宠右键菜单或托盘菜单勾选切换
 - 应用激活时接管菜单栏：文件（新建/导出/归档）、编辑（撤销/复制/粘贴）、
@@ -111,12 +119,14 @@ python smoke_test.py              # 离屏渲染冒烟测试（生成 smoke_*.pn
 ## 项目结构
 
 ```
-main.py                        启动入口（单实例锁、全局样式）
+main.py                        启动入口（单实例锁、语言初始化、全局样式）
 app/
   config.py                    全部配置常量、配色板与窗口状态持久化键
+  i18n.py                      界面多语言（中文原文即 key + 英文词典 + 切换广播）
   models/
     board.py                   Board / BoardList / Card 数据模型 + BoardStore
     json_io.py                 JSON 原子读写、损坏隔离备份、.prev 好副本恢复
+    quick_syntax.py            速记语法解析（截止日/优先级/标签，中英双语）
   controllers/
     app_controller.py          控制器（信号连接、业务逻辑、落盘调度、恢复引导）
   services/
@@ -125,6 +135,9 @@ app/
     pet_view.py                桌宠（QPainter 绘制 + 属性动画）
     board_view.py              看板（列表列、卡片、拖拽、删除、工具栏）
     card_dialog.py             卡片编辑对话框
+    quick_add_dialog.py        快速添加 / 批量添加对话框（速记实时预览）
+    settings_dialog.py         设置界面（外观/语言/桌宠/窗口/数据/关于）
+    controls.py                设置控件（滑动开关 / 分段按钮）
     main_window.py             无边框主窗口（折叠/展开动画、Esc 折叠、显隐）
     theme.py                   主题系统（浅/深 QSS、切换广播）
 ```

@@ -132,5 +132,50 @@ class CombinedTest(unittest.TestCase):
         self.assertEqual(title, "和 谈需求")
 
 
+class EnglishShorthandTest(unittest.TestCase):
+    """英文速记：与界面语言无关，恒可用"""
+
+    def setUp(self):
+        self.today = date(2026, 9, 12)   # 周六
+
+    def test_relative_words(self):
+        t, f = parse_quick_input("standup tomorrow", self.today)
+        self.assertEqual(t, "standup")
+        self.assertEqual(f["due_date"], "2026-09-13")
+        t, f = parse_quick_input("today review", self.today)
+        self.assertEqual(f["due_date"], "2026-09-12")
+        t, f = parse_quick_input("day after tomorrow ship", self.today)
+        self.assertEqual(f["due_date"], "2026-09-14")
+
+    def test_in_n_days(self):
+        t, f = parse_quick_input("sync in 3 days", self.today)
+        self.assertEqual(t, "sync")
+        self.assertEqual(f["due_date"], "2026-09-15")
+
+    def test_weekday_and_next(self):
+        # 周六(9/12)：fri → 下周五 9/18
+        t, f = parse_quick_input("demo fri", self.today)
+        self.assertEqual(f["due_date"], "2026-09-18")
+        # next mon → 下周一 9/14
+        t, f = parse_quick_input("kickoff next monday", self.today)
+        self.assertEqual(t, "kickoff")
+        self.assertEqual(f["due_date"], "2026-09-14")
+        # 全名 saturday → 今天（含今天最近）
+        t, f = parse_quick_input("saturday fun", self.today)
+        self.assertEqual(f["due_date"], "2026-09-12")
+
+    def test_no_false_positive_on_plain_english(self):
+        t, f = parse_quick_input("read saturate docs", self.today)
+        # "saturate" 不应被当作 saturday 命中
+        self.assertNotIn("due_date", f)
+        self.assertEqual(t, "read saturate docs")
+
+    def test_priority_and_label_english(self):
+        t, f = parse_quick_input("fix bug !P1 #red", self.today)
+        self.assertEqual(t, "fix bug")
+        self.assertEqual(f["priority"], 1)
+        self.assertEqual(f["labels"], ["red"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

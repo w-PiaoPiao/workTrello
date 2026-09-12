@@ -12,6 +12,8 @@ from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QToolTip, QWidget
 
+from app.i18n import tr
+
 
 class TrafficLights(QWidget):
     """红绿灯三键（自绘，无系统装饰依赖）"""
@@ -24,8 +26,11 @@ class TrafficLights(QWidget):
     _GAP = 8.0
     _FILL = ((255, 95, 87), (254, 188, 46), (40, 200, 64))
     _SYMBOL = QColor(66, 44, 20, 175)
-    _TIP_TEXTS = ("退出应用", "折叠为桌宠", "最大化 / 还原")
     _TIP_DELAY_MS = 600
+
+    @staticmethod
+    def _tip_texts() -> tuple[str, str, str]:
+        return (tr("退出应用"), tr("折叠为桌宠"), tr("最大化 / 还原"))
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -104,6 +109,11 @@ class TrafficLights(QWidget):
             pos = self.mapToGlobal(self._tip_pos.toPoint())
             QToolTip.showText(pos, self._tip_text, self)
 
+    def reapply_texts(self) -> None:
+        """语言切换：悬停中提示文本取当前语言"""
+        if self._hover >= 0:
+            self._tip_text = self._tip_texts()[self._hover]
+
     def mouseMoveEvent(self, event) -> None:
         idx = self._index_at(event.position())
         if idx != self._hover:
@@ -113,7 +123,7 @@ class TrafficLights(QWidget):
             if idx < 0:
                 QToolTip.hideText()
             else:
-                self._tip_text = self._TIP_TEXTS[idx]
+                self._tip_text = self._tip_texts()[idx]
                 self._tip_pos = event.position()
                 self._tip_timer.start()
 

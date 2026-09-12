@@ -40,6 +40,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QLabel, QMenu, QSizePolicy, QVBoxLayout, QWidget
 
 from app.config import AppConfig
+from app.i18n import skin_display, tr
 from app.views.theme import AppTheme
 
 
@@ -384,6 +385,7 @@ class PetView(QWidget):
     signal_animation_toggled = Signal(bool)  # 空闲动画启用状态
     signal_always_top_toggled = Signal(bool)  # 窗口置顶开关
     signal_skin_selected = Signal(str)        # 皮肤 key（持久化由控制器负责）
+    signal_settings_clicked = Signal()        # 打开设置界面
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -424,13 +426,14 @@ class PetView(QWidget):
 
         # 右键菜单
         self._context_menu = QMenu(self)
-        self._act_expand = QAction("展开看板", self._context_menu)
-        self._act_quick_add = QAction("快速添加卡片", self._context_menu)
-        self._act_today_list = QAction("今日清单", self._context_menu)
-        self._act_quit = QAction("退出", self._context_menu)
-        self._act_animation = QAction("暂停动画", self._context_menu)
+        self._act_expand = QAction(tr("展开看板"), self._context_menu)
+        self._act_quick_add = QAction(tr("快速添加卡片"), self._context_menu)
+        self._act_today_list = QAction(tr("今日清单"), self._context_menu)
+        self._act_quit = QAction(tr("退出"), self._context_menu)
+        self._act_settings = QAction(tr("设置…"), self._context_menu)
+        self._act_animation = QAction(tr("暂停动画"), self._context_menu)
         self._act_animation.setCheckable(True)
-        self._act_always_top = QAction("窗口置顶", self._context_menu)
+        self._act_always_top = QAction(tr("窗口置顶"), self._context_menu)
         self._act_always_top.setCheckable(True)
         self._act_always_top.setChecked(True)
         self._context_menu.addAction(self._act_expand)
@@ -442,11 +445,12 @@ class PetView(QWidget):
         self._context_menu.addSeparator()
         # 换皮肤：预置配色单选（挂 QActionGroup 保证互斥）
         self._skin_actions: dict[str, QAction] = {}
-        skin_menu = self._context_menu.addMenu("换皮肤")
+        skin_menu = self._context_menu.addMenu(tr("换皮肤"))
+        self._skin_menu = skin_menu
         self._skin_group = QActionGroup(self)
         current_skin = AppConfig.get_pet_skin()
         for key, spec in AppConfig.PET_SKINS.items():
-            act = QAction(spec.get("name", key), skin_menu)
+            act = QAction(skin_display(key), skin_menu)
             act.setCheckable(True)
             act.setChecked(key == current_skin)
             act.triggered.connect(
@@ -454,12 +458,14 @@ class PetView(QWidget):
             self._skin_group.addAction(act)
             self._skin_actions[key] = act
             skin_menu.addAction(act)
+        self._context_menu.addAction(self._act_settings)
         self._context_menu.addAction(self._act_quit)
         self._act_expand.triggered.connect(self.signal_expand_clicked.emit)
         self._act_quick_add.triggered.connect(self.signal_quick_add_clicked.emit)
         self._act_today_list.triggered.connect(
             self.signal_today_list_clicked.emit)
         self._act_quit.triggered.connect(self.signal_quit_requested.emit)
+        self._act_settings.triggered.connect(self.signal_settings_clicked.emit)
         # checkable 动作：点击后 checked 翻转 → toggled → 切换动画
         self._act_animation.toggled.connect(self._on_animation_toggled)
         self._act_always_top.toggled.connect(
@@ -780,6 +786,19 @@ class PetView(QWidget):
             window.mouseMoveEvent(event)
         elif event.type() == QEvent.Type.MouseButtonRelease:
             window.mouseReleaseEvent(event)
+
+    def reapply_texts(self) -> None:
+        """语言切换：右键菜单与皮肤子菜单整组重设文案"""
+        self._act_expand.setText(tr("展开看板"))
+        self._act_quick_add.setText(tr("快速添加卡片"))
+        self._act_today_list.setText(tr("今日清单"))
+        self._act_settings.setText(tr("设置…"))
+        self._act_quit.setText(tr("退出"))
+        self._act_animation.setText(tr("暂停动画"))
+        self._act_always_top.setText(tr("窗口置顶"))
+        self._skin_menu.setTitle(tr("换皮肤"))
+        for key, act in self._skin_actions.items():
+            act.setText(skin_display(key))
 
     # ── 主题 ──────────────────────────────────────────────
 

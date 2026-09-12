@@ -64,6 +64,7 @@ class AppConfig:
     KEY_EXPANDED_SIZE = "window/expanded_size"
     KEY_WINDOW_POS = "window/pos"
     KEY_THEME_MODE = "theme/mode"
+    KEY_LANGUAGE = "app/language"
     KEY_ANIMATION_ENABLED = "window/pet_animation"
     KEY_ALWAYS_ON_TOP = "window/always_on_top"
     KEY_EMPTY_BOARD_ACK = "board/empty_board_ack"
@@ -98,6 +99,19 @@ class AppConfig:
     @classmethod
     def save_theme_mode(cls, mode: str) -> None:
         _settings().setValue(cls.KEY_THEME_MODE, mode)
+
+    @classmethod
+    def get_language(cls) -> str:
+        """界面语言（zh/en）；无记录时按系统语言探测（首次启动默认）"""
+        val = str(_settings().value(cls.KEY_LANGUAGE, "") or "")
+        if val in ("zh", "en"):
+            return val
+        from app.i18n import detect_language
+        return detect_language()
+
+    @classmethod
+    def save_language(cls, lang: str) -> None:
+        _settings().setValue(cls.KEY_LANGUAGE, lang)
 
     @classmethod
     def get_animation_enabled(cls) -> bool:

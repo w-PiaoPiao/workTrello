@@ -26,6 +26,7 @@ from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout
 from app.views.theme import AppTheme
 from app.views import motion
 from app.config import AppConfig
+from app.i18n import tr
 
 _HIDE_DELAY_MS = 160   # 徽章→浮层移动时的容忍延迟
 _SHADOW = 8            # 自绘软阴影的向外扩散边距（窗口命中区随之略大）
@@ -56,7 +57,7 @@ class NotesPopover(QFrame):
         # 面板：承载底色/描边/圆角。外层自身保持透明，四周留 _SHADOW 画阴影
         self._panel = QFrame(self)
         self._panel.setObjectName("notesPopoverPanel")
-        self._title = QLabel("备注")
+        self._title = QLabel(tr("备注"))
         self._title.setObjectName("popTitle")
         self._body = QLabel()
         self._body.setObjectName("popBody")
@@ -65,7 +66,7 @@ class NotesPopover(QFrame):
         self._body.setMaximumWidth(self._MAX_WIDTH)
         # 徽章上原有一个原生 tooltip「悬停预览 · 点击固定」，悬停约 700ms 后
         # 会再弹一个系统提示窗压在浮层上；提示语移到这里，避免双层弹窗
-        self._hint = QLabel("点击徽章固定")
+        self._hint = QLabel(tr("点击徽章固定"))
         self._hint.setObjectName("popHint")
 
         panel_layout = QVBoxLayout(self._panel)
@@ -87,6 +88,12 @@ class NotesPopover(QFrame):
     def _on_theme_changed(self) -> None:
         self.reapply_style()
         self.update()
+
+    def retexts(self) -> None:
+        """语言切换：标题与提示行取当前语言（固定态隐藏提示行）"""
+        self._title.setText(tr("备注"))
+        self._hint.setText(tr("点击徽章固定"))
+        self._hint.setVisible(self._pin_card_id is None)
 
     # ── 样式 ──────────────────────────────────────────────
 
@@ -298,6 +305,12 @@ def hide_notes_popover() -> None:
 def notes_pinned_for(card_id: str) -> bool:
     """浮层是否正固定于该卡片（只读判定，不触发单例创建）"""
     return _popover is not None and _popover.pinned_for(card_id)
+
+
+def retexts_if_created() -> None:
+    """语言切换：仅当浮层已创建时刷新（不因此创建单例）"""
+    if _popover is not None:
+        _popover.retexts()
 
 
 def notes_popover_hovering() -> bool:
