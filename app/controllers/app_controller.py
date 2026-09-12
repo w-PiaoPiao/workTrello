@@ -254,8 +254,9 @@ class AppController(QObject):
         return True
 
     def _apply_board_to_ui(self, board) -> None:
-        self._board_view.refresh(board.lists)
-        self._refresh_pet_state()
+        stats = board.today_stats(date.today())
+        self._board_view.refresh(board.lists, stats=stats)
+        self._refresh_pet_state(stats)
 
     def _schedule_save(self) -> None:
         self._save_timer.start()
@@ -341,8 +342,13 @@ class AppController(QObject):
             if board.lists:
                 self._on_card_add(board.lists[0].id, title.strip())
 
-    def _today_focus_items(self) -> list[tuple[BoardList, Card]]:
-        """今日聚焦卡片（含所属列表），供今日清单浮窗显示"""
+    def _today_focus_items(self, focus=None) -> list[tuple[BoardList, Card]]:
+        """今日聚焦卡片（含所属列表），供今日清单浮窗显示
+
+        传入 today_stats()["focus"] 时直接复用单趟统计结果，免再扫一遍。
+        """
+        if focus is not None:
+            return list(focus)
         board = self._store.load()
         today = date.today()
         return [(lst, c) for lst in board.lists for c in lst.cards
@@ -374,6 +380,8 @@ class AppController(QObject):
             self._push_undo()
             card = Card(title=title)
         lst.cards.insert(0, card)
+        board = self._store.load()
+        board.invalidate_index()   # 直接改 cards 结构，索引在变更点立即失效
         self._after_data_change("已添加卡片")
 
     def _on_card_edit(self, list_id: str, card_id: str) -> None:
@@ -450,7 +458,10 @@ class AppController(QObject):
             return
         self._push_undo()
         src_index = src_list.cards.index(moved)
-        board.remove_card(card_id)
+        # 原地摘除（复用 find_card 结果）：原 board.remove_card 会再全板
+        # 扫一遍，连同上面的 index() 一次移动共扫三遍
+        src_list.cards.pop(src_index)
+        board.invalidate_index()
         target = board.find_list(target_list_id)
         if target is None:
             target = board.lists[0]
@@ -541,8 +552,14 @@ class AppController(QObject):
         # flush() 只在脏标记为真时落盘，只 start() 防抖计时器而不标脏，
         # 计时器到点后会因不脏而直接返回，编辑将停留在内存、退出即丢
         self._store.mark_dirty()
-        self._board_view.refresh(board.lists)
-        self._refresh_pet_state()
+        # 统一失效卡片索引：本类多处直接 lst.cards.insert/pop 改结构，
+        # 不走 Board 方法，在此收口最可靠
+        board.invalidate_index()
+        # 单趟统计一次算全 total/done/今日聚焦/逾期，喂给看板视图与
+        # 桌宠状态，取代原先 4+ 趟全板扫描
+        stats = board.today_stats(date.today())
+        self._board_view.refresh(board.lists, stats=stats)
+        self._refresh_pet_state(stats)
         self._refresh_archive()
         self._schedule_save()
         if notify:
@@ -551,7 +568,8 @@ class AppController(QObject):
         # 与徽章保持同步；今日谓词天然排除刚完成的卡）
         if (self._today_popover is not None
                 and self._today_popover.isVisible()):
-            self._today_popover.set_items(self._today_focus_items())
+            self._today_popover.set_items(
+                self._today_focus_items(stats["focus"]))
 
     def _notify(self, text: str) -> None:
         """操作反馈：看板展开态走窗口内 toast，折叠/隐藏态走托盘气泡"""
@@ -565,16 +583,19 @@ class AppController(QObject):
 
     # ── 桌宠状态联动 ──────────────────────────────────────
 
-    def _refresh_pet_state(self) -> None:
-        """角标=今日聚焦量（专注时显示倒计时）；表情：逾期难过 / 今日截止紧张 / 其余开心"""
+    def _refresh_pet_state(self, stats: dict | None = None) -> None:
+        """角标=今日聚焦量（专注时显示倒计时）；表情：逾期难过 / 今日截止紧张 / 其余开心
+
+        stats 传入 today_stats() 结果时免重扫（数据变更管线已算过）。
+        """
         board = self._store.load()
+        if stats is None:
+            stats = board.today_stats(date.today())
         if self._pomo_card_id is None:
-            n = len(board.today_focus_cards(date.today()))
-            self._pet_view.update_count(n)
-        overdue, due_today = board.due_counts(date.today())
-        if overdue:
+            self._pet_view.update_count(stats["focus_count"])
+        if stats["overdue"]:
             mood = "sad"
-        elif due_today:
+        elif stats["due_today"]:
             mood = "worried"
         else:
             mood = "happy"

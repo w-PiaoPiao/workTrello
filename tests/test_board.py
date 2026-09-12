@@ -287,6 +287,73 @@ class BoardTest(unittest.TestCase):
         # 已完成、未来截止、归档、普通卡片都不算今日聚焦
         self.assertEqual(sorted(focus), ["星标未完成", "逾期未完成"])
 
+    def test_today_stats_matches_legacy_helpers(self):
+        """today_stats 单趟统计结果必须与各旧接口逐一等价（回归护栏）"""
+        today = date(2026, 9, 6)
+        lst0, lst1 = self.board.lists
+        lst0.cards += [
+            Card(title="星标", starred=True),
+            Card(title="逾期", due_date="2026-09-01"),
+            Card(title="今天", due_date="2026-09-06"),
+            Card(title="未来", due_date="2026-12-01"),
+            Card(title="完成", done=True),
+            Card(title="归档", archived=True),
+            Card(title="无效日期", due_date="不是日期"),
+        ]
+        lst1.cards.append(Card(title="完成B", done=True))
+        stats = self.board.today_stats(today)
+        self.assertEqual(stats["total"], self.board.total_cards())
+        self.assertEqual(stats["done"], self.board.done_cards())
+        self.assertEqual(stats["focus_count"],
+                         len(self.board.today_focus_cards(today)))
+        self.assertEqual([(l.id, c.id) for l, c in stats["focus"]],
+                         [(l.id, c.id) for l, c
+                          in ((lst, c) for lst in self.board.lists
+                              for c in lst.cards
+                              if c.in_today_focus(today))])
+        self.assertEqual((stats["overdue"], stats["due_today"]),
+                         self.board.due_counts(today))
+        self.assertEqual(stats["focus_count"], 3)       # 星标 + 逾期 + 今天
+        self.assertEqual(stats["total"], 9)             # 含完成，不含归档
+        self.assertEqual(stats["done"], 2)
+
+    def test_due_delta_cache_tracks_due_date(self):
+        """due_delta 缓存自校验：due_date 变更后立即按新值计算"""
+        today = date(2026, 9, 6)
+        c = Card(title="任务", due_date="2026-09-06")
+        self.assertEqual(c.due_delta(today), 0)
+        c.due_date = "2026-09-01"      # 模拟 apply/roll_repeat 的直接赋值
+        self.assertEqual(c.due_delta(today), -5)
+        c.due_date = "不是日期"
+        self.assertIsNone(c.due_delta(today))
+        c.due_date = None
+        self.assertIsNone(c.due_delta(today))
+
+    def test_card_index_invalidation(self):
+        """find_card 懒建索引：变更点失效契约（controller 于直接改 cards
+        的位置立即 invalidate_index，_after_data_change 再兜底一次）"""
+        lst0 = self.board.lists[0]
+        new_card = Card(title="新卡")
+        lst0.cards.insert(0, new_card)
+        lst0.cards.remove(self.card_a)
+        # 索引未建立过 → 首次查询懒建，天然反映最新结构
+        found_lst, found = self.board.find_card(new_card.id)
+        self.assertIs(found, new_card)
+        self.assertIs(found_lst, lst0)
+        self.assertEqual(self.board.find_card(self.card_a.id), (None, None))
+        # 索引已建立后再直接改结构且未失效 → 查到旧态（契约所允许）；
+        # 显式失效后立即反映新态
+        newer = Card(title="更新卡")
+        lst0.cards.insert(0, newer)
+        self.assertIsNone(self.board.find_card(newer.id)[1])
+        self.board.invalidate_index()
+        self.assertIs(self.board.find_card(newer.id)[1], newer)
+        # remove_card 走索引且移除后不可再查
+        removed = self.board.remove_card(new_card.id)
+        self.assertIs(removed, new_card)
+        self.assertEqual(self.board.find_card(new_card.id), (None, None))
+        self.assertIsNone(self.board.remove_card("不存在"))
+
     def test_totals_exclude_archived(self):
         lst = self.board.lists[0]
         lst.cards.append(Card(title="A", done=True))

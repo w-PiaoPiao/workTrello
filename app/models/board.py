@@ -44,6 +44,11 @@ class Card:
     archived: bool = False              # 归档（不出现在看板）
     repeat: str = "never"               # never | daily | weekly（完成时自动滚到下一周期）
     priority: int = 0                   # 0=无 1=高 2=中 3=低（今日聚焦内排序用）
+    # due_delta 解析缓存：(due_date, today_ordinal, delta|None)。
+    # 自校验：due_date 一变即失配重算，无需写路径显式失效。
+    # 一次数据变更管线里同一张卡会被 due_delta 问 3~4 次，缓存后只解析一次
+    _due_cache: tuple[str, int, int | None] | None = field(
+        default=None, repr=False, compare=False)
 
     def to_dict(self) -> dict:
         return {
@@ -133,10 +138,16 @@ class Card:
         未设置日期或日期字符串非法时返回 None"""
         if not self.due_date:
             return None
+        t_ord = today.toordinal()
+        cache = self._due_cache
+        if cache is not None and cache[0] == self.due_date and cache[1] == t_ord:
+            return cache[2]
         try:
-            return (date.fromisoformat(self.due_date) - today).days
+            delta = (date.fromisoformat(self.due_date) - today).days
         except ValueError:
-            return None
+            delta = None
+        self._due_cache = (self.due_date, t_ord, delta)
+        return delta
 
     def in_today_focus(self, today: date) -> bool:
         """今日聚焦谓词：未归档、未完成，且（星标 或 截止日不晚于 today）"""
@@ -207,6 +218,12 @@ class Board:
 
     def __init__(self, lists: list[BoardList] | None = None):
         self.lists: list[BoardList] = lists if lists is not None else []
+        # card_id → (所在列表, 卡片) 懒建索引：卡片操作（番茄 tick、
+        # 编辑/删除/归档/拖拽）原本每次 O(列表×卡) 全板扫描。
+        # 失效约束：任何绕过 find_card/remove_card 的 cards 结构变更
+        # （如 controller 直接 lst.cards.insert）之后必须调 invalidate_index()；
+        # 所有此类变更都汇聚在 _after_data_change，该处已统一失效
+        self._card_index: dict[str, tuple[BoardList, Card]] | None = None
 
     def to_dict(self) -> dict:
         return {"lists": [lst.to_dict() for lst in self.lists]}
@@ -228,6 +245,18 @@ class Board:
             ]
         return cls(lists=lists)
 
+    def invalidate_index(self) -> None:
+        """卡片结构变更后丢弃索引（下次 find_card 懒重建）"""
+        self._card_index = None
+
+    def _get_card_index(self) -> dict[str, tuple[BoardList, Card]]:
+        if self._card_index is None:
+            self._card_index = {
+                c.id: (lst, c)
+                for lst in self.lists for c in lst.cards
+            }
+        return self._card_index
+
     def find_list(self, list_id: str) -> BoardList | None:
         for lst in self.lists:
             if lst.id == list_id:
@@ -236,24 +265,24 @@ class Board:
 
     def find_card(self, card_id: str) -> tuple[BoardList | None, Card | None]:
         """按卡片 id 查找，返回 (所在列表, 卡片)；未找到返回 (None, None)"""
-        for lst in self.lists:
-            for card in lst.cards:
-                if card.id == card_id:
-                    return lst, card
-        return None, None
+        entry = self._get_card_index().get(card_id)
+        return entry if entry is not None else (None, None)
 
     def remove_card(self, card_id: str) -> Card | None:
         """按卡片 id 移除并返回卡片；未找到返回 None"""
-        for lst in self.lists:
-            for i, c in enumerate(lst.cards):
-                if c.id == card_id:
-                    return lst.cards.pop(i)
-        return None
+        entry = self._get_card_index().get(card_id)
+        if entry is None:
+            return None
+        lst, card = entry
+        lst.cards.remove(card)
+        self._card_index = None
+        return card
 
     def remove_list(self, list_id: str) -> BoardList | None:
         """按列表 id 移除并返回列表；未找到返回 None"""
         for i, lst in enumerate(self.lists):
             if lst.id == list_id:
+                self._card_index = None   # 该列表的卡一并出索引
                 return self.lists.pop(i)
         return None
 
@@ -303,6 +332,40 @@ class Board:
         """今日聚焦集合：未归档、未完成，且（星标 或 截止日<=today）"""
         return [c for lst in self.lists for c in lst.cards
                 if c.in_today_focus(today)]
+
+    def today_stats(self, today: date) -> dict:
+        """单趟遍历完成今日相关统计（数据变更管线的统一入口）
+
+        取代 total_cards/done_cards/today_focus_cards/due_counts 各自一趟
+        的四次全板扫描；字段含义与对应旧方法逐一等价：
+        - total: 未归档卡片总数（=total_cards）
+        - done: 已完成且未归档数（=done_cards）
+        - focus/focus_count: 今日聚焦卡片（(所属列表, 卡片) 对）及其数量
+          （集合=today_focus_cards，带列表供浮窗直接展示）
+        - overdue/due_today: 逾期/今日截止的未完成数（=due_counts）
+        """
+        total = done = overdue = due_today = 0
+        focus: list[tuple[BoardList, Card]] = []
+        for lst in self.lists:
+            for c in lst.cards:
+                if not c.archived:
+                    total += 1
+                    if c.done:
+                        done += 1
+                if c.done or c.archived:
+                    continue
+                if c.in_today_focus(today):
+                    focus.append((lst, c))
+                delta = c.due_delta(today)
+                if delta is None:
+                    continue
+                if delta < 0:
+                    overdue += 1
+                elif delta == 0:
+                    due_today += 1
+        return {"total": total, "done": done, "focus": focus,
+                "focus_count": len(focus),
+                "overdue": overdue, "due_today": due_today}
 
     def archived_cards(self) -> list[tuple["BoardList", Card]]:
         """归档卡片及其所属列表"""

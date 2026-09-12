@@ -2000,8 +2000,12 @@ class BoardView(QWidget):
 
     # ── 数据刷新 ──────────────────────────────────────────
 
-    def refresh(self, lists: list[BoardList]) -> None:
-        """按看板数据增量同步列（按 list.id 复用列与卡片控件）"""
+    def refresh(self, lists: list[BoardList],
+                stats: dict | None = None) -> None:
+        """按看板数据增量同步列（按 list.id 复用列与卡片控件）
+
+        stats 传入 board.today_stats() 结果时统计行直接取用，免重扫。
+        """
         # 记录看板横向滚动位置，增删列后恢复
         sb = self._scroll.horizontalScrollBar()
         scroll_pos = sb.value()
@@ -2040,7 +2044,7 @@ class BoardView(QWidget):
         # zip(_lists, _columns) 在过滤模式下会与列配对错位
         self._columns = ordered_cols
 
-        self.update_stats(lists)
+        self.update_stats(lists, visibles=visibles, stats=stats)
         self._set_today_count(sum(len(v or []) for v in visibles.values()))
         self._update_empty_hint(lists)
         sb.setValue(scroll_pos)
@@ -2167,12 +2171,22 @@ class BoardView(QWidget):
             col.set_collapsed(True, save=False, animate=False)
         return col
 
-    def update_stats(self, lists: list[BoardList]) -> None:
+    def update_stats(self, lists: list[BoardList],
+                     visibles: dict | None = None,
+                     stats: dict | None = None) -> None:
         q = self._search_query()
         if q:
-            # 搜索进行中：统计改为匹配数（刷新也不会切回默认文案）
-            total = sum(len(self._visible_cards_for(l) or []) for l in lists)
+            # 搜索进行中：统计改为匹配数（刷新也不会切回默认文案）；
+            # visibles 传入时复用 refresh 已算结果，避免同一输入扫两遍文本
+            if visibles is None:
+                total = sum(len(self._visible_cards_for(l) or []) for l in lists)
+            else:
+                total = sum(len(v or []) for v in visibles.values())
             self._stats_label.setText(f"匹配 {total} 张")
+            return
+        if stats is not None:
+            self._stats_label.setText(
+                f"{stats['total']} 张卡片 · 完成 {stats['done']}")
             return
         total = sum(len(l.cards) for l in lists)
         done = sum(1 for l in lists for card in l.cards if card.done)
