@@ -402,6 +402,7 @@ class CardWidget(QFrame):
     signal_card_pomo = Signal(str)              # card_id
     signal_card_archive = Signal(str)           # card_id
     signal_card_star = Signal(str)              # card_id（星标 toggle）
+    signal_label_clicked = Signal(str)          # label key（点色条过滤）
 
     def __init__(self, card: Card, parent=None):
         super().__init__(parent)
@@ -810,8 +811,26 @@ class CardWidget(QFrame):
             # 单击（无明显位移）→ 打开编辑对话框
             if ((event.position().toPoint() - self._drag_start)
                     .manhattanLength() <= AppConfig.CARD_DRAG_THRESHOLD):
-                self.signal_edit_requested.emit(self._card)
+                key = self._label_key_at(event.position().toPoint())
+                if key is not None:
+                    # 点左缘色条 = 按该标签过滤看板（而非打开编辑）
+                    self.signal_label_clicked.emit(key)
+                else:
+                    self.signal_edit_requested.emit(self._card)
         super().mouseReleaseEvent(event)
+
+    def _label_key_at(self, pos: QPoint) -> str | None:
+        """点击位置对应的标签色 key（左缘色条区；不在则 None）
+
+        与 paintEvent 的色条几何保持一致：从 x=1 起每条 4px，最多 4 条。
+        """
+        labels = self._card.labels[:4]
+        if not labels:
+            return None
+        x = pos.x()
+        if x < 1 or x >= 1 + 4 * len(labels):
+            return None
+        return labels[int((x - 1) // 4)]
 
     def _start_drag(self) -> None:
         mime = QMimeData()
@@ -1205,6 +1224,7 @@ class ListColumn(QFrame):
     signal_card_pomo = Signal(str)             # card_id
     signal_card_archive = Signal(str)          # card_id
     signal_card_star = Signal(str)             # card_id（星标 toggle）
+    signal_label_clicked = Signal(str)         # label key（点色条过滤）
     signal_list_move = Signal(str, str, bool)  # moved_list_id, target_list_id, insert_before
     signal_collapsed_changed = Signal(str, bool)  # list_id, collapsed
 
@@ -1310,6 +1330,7 @@ class ListColumn(QFrame):
         cw.signal_card_pomo.connect(self.signal_card_pomo)
         cw.signal_card_archive.connect(self.signal_card_archive)
         cw.signal_card_star.connect(self.signal_card_star)
+        cw.signal_label_clicked.connect(self.signal_label_clicked)
         return cw
 
     def set_focusing_card(self, card_id: str | None) -> None:
@@ -1889,6 +1910,15 @@ class BoardView(QWidget):
         # 过滤热路径免对全部备注全文反复 lower()（原文比对自校验失效；
         # 删除卡片的残条目为两条小字符串，随卡量有界）
         self._lower_cache: dict[str, tuple[str, str, str, str]] = {}
+        # 标签过滤态（点卡片左缘色条触发，与搜索/今日模式正交叠加）
+        self._label_filter: str | None = None
+        self._label_chip = QPushButton()
+        self._label_chip.setObjectName("boardToolBtn")
+        self._label_chip.setCursor(Qt.PointingHandCursor)
+        self._label_chip.setToolTip("点击清除标签过滤")
+        self._label_chip.clicked.connect(self._clear_label_filter)
+        self._label_chip.hide()
+        self._toolbar_layout.addWidget(self._label_chip)
         self._toolbar_layout.addWidget(self._search_edit)
         # 搜索框参与剩余空间分配（与 stats 之后的 stretch 平分）
         self._toolbar_layout.setStretchFactor(self._search_edit, 1)
@@ -2148,9 +2178,11 @@ class BoardView(QWidget):
     def _visible_cards_for(self, lst: BoardList) -> list[Card] | None:
         """列的可见卡片：今日聚焦模式与搜索过滤组合；无任何过滤返回 None
 
-        今日聚焦判定统一走 Card.in_today_focus（模型层单实现）。
+        今日聚焦判定统一走 Card.in_today_focus（模型层单实现）；
+        标签过滤（点色条触发）与搜索、今日模式正交叠加。
         """
         q = self._search_query()
+        tag = self._label_filter
         if self._today_btn.isChecked():
             today = date.today()
             cards = [c for c in lst.cards if c.in_today_focus(today)]
@@ -2158,6 +2190,8 @@ class BoardView(QWidget):
                 cards = [c for c in cards
                          if q in self._lower_texts(c)[0]
                          or q in self._lower_texts(c)[1]]
+            if tag:
+                cards = [c for c in cards if tag in c.labels]
             # 今日聚焦内排序：高 > 中 > 低，无优先级垫底；同级星标提前，
             # 再按截止日升序（星标是主动标注，优先于被动"今天截止"）。
             # decorate：due_delta（含 ISO 解析）每卡只算一次
@@ -2167,7 +2201,35 @@ class BoardView(QWidget):
                         delta if delta is not None else 999)
             cards.sort(key=_today_sort_key)
             return cards
-        return self._filter_cards(lst, q)
+        if not q and not tag:
+            return None
+        cards = self._filter_cards(lst, q) if q else list(lst.cards)
+        if tag:
+            cards = [c for c in cards if tag in c.labels]
+        return cards
+
+    def _on_label_clicked(self, key: str) -> None:
+        """点卡片左缘色条按标签过滤全板；再点同色清除"""
+        self._label_filter = None if self._label_filter == key else key
+        self._update_label_chip()
+        self._apply_filter()
+
+    def _clear_label_filter(self) -> None:
+        if self._label_filter is None:
+            return
+        self._label_filter = None
+        self._update_label_chip()
+        self._apply_filter()
+
+    def _update_label_chip(self) -> None:
+        """过滤 chip：过滤态显示「🏷 红 ✕」，清除后隐藏"""
+        if self._label_filter:
+            name = AppConfig.LABEL_NAMES.get(self._label_filter,
+                                             self._label_filter)
+            self._label_chip.setText(f"🏷 {name} ✕")
+            self._label_chip.show()
+        else:
+            self._label_chip.hide()
 
     def _on_search_edited(self, _text: str) -> None:
         """重启搜索防抖计时器：输入停顿后才真正过滤"""
@@ -2251,6 +2313,8 @@ class BoardView(QWidget):
         col.signal_card_pomo.connect(self.signal_card_pomo)
         col.signal_card_archive.connect(self.signal_card_archive)
         col.signal_card_star.connect(self.signal_card_star)
+        # 标签过滤是纯视图态：内部消化，不冒泡控制器
+        col.signal_label_clicked.connect(self._on_label_clicked)
         col.signal_collapsed_changed.connect(self.signal_list_collapsed)
         self._columns.append(col)
         # 恢复上次折叠状态（save=False 不触发持久化回调；建列时不播动画）
@@ -2270,6 +2334,16 @@ class BoardView(QWidget):
             else:
                 total = sum(len(v or []) for v in visibles.values())
             self._stats_label.setText(f"匹配 {total} 张")
+            return
+        if self._label_filter:
+            # 标签过滤态：统计行持续反馈（数据变更经 refresh 刷新也不丢）
+            if visibles is None:
+                total = sum(len(self._visible_cards_for(l) or []) for l in lists)
+            else:
+                total = sum(len(v or []) for v in visibles.values())
+            name = AppConfig.LABEL_NAMES.get(self._label_filter,
+                                             self._label_filter)
+            self._stats_label.setText(f"标签 {name} · {total} 张")
             return
         if stats is not None:
             self._stats_label.setText(

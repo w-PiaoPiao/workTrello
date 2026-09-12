@@ -20,12 +20,13 @@ os.environ["PET_BOARD_DATA_DIR"] = tempfile.mkdtemp()
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from PySide6.QtCore import QPoint
 from PySide6.QtWidgets import QApplication, QPushButton
 
 _qapp = QApplication.instance() or QApplication([])
 
 from app.models.board import BoardList, Card
-from app.views.board_view import BoardView
+from app.views.board_view import BoardView, CardWidget
 
 
 def make_lists(spec):
@@ -49,6 +50,70 @@ class BoardViewRefreshTest(unittest.TestCase):
 
     def widget_titles(self, col):
         return [cw.card().title for cw in col._card_widgets]
+
+    # ── 标签点击过滤（点卡片左缘色条） ─────────────────────
+
+    def test_label_filter_via_stripe_click(self):
+        """点色条按标签过滤：异色切换、同色清除、无标签列被滤空"""
+        lst_a, lst_b = self.lists
+        lst_a.cards[0].labels = ["red"]
+        lst_a.cards[1].labels = ["red", "blue"]
+        lst_b.cards[0].labels = []
+        self.view.refresh(self.lists)
+        col_a, col_b = self.view._columns
+        # 点红色 → 只剩两张红标卡
+        col_a.signal_label_clicked.emit("red")
+        self.assertEqual(self.view._label_filter, "red")
+        self.assertFalse(self.view._label_chip.isHidden())
+        self.assertIn("红", self.view._label_chip.text())
+        self.assertEqual(self.widget_titles(col_a), ["A", "B"])
+        self.assertEqual(self.widget_titles(col_b), [])
+        self.assertIn("标签 红", self.view._stats_label.text())
+        # 异色切换 → 只剩蓝标卡
+        col_a.signal_label_clicked.emit("blue")
+        self.assertEqual(self.widget_titles(col_a), ["B"])
+        # 再点同色清除 → 恢复全量
+        col_a.signal_label_clicked.emit("blue")
+        self.assertIsNone(self.view._label_filter)
+        self.assertTrue(self.view._label_chip.isHidden())
+        self.assertEqual(self.widget_titles(col_a), ["A", "B"])
+        self.assertEqual(self.widget_titles(col_b), ["C"])
+
+    def test_label_filter_cleared_via_chip(self):
+        """过滤 chip 点击清除过滤态"""
+        lst_a = self.lists[0]
+        lst_a.cards[0].labels = ["teal"]
+        self.view.refresh(self.lists)
+        self.view._columns[0].signal_label_clicked.emit("teal")
+        self.assertEqual(self.view._label_filter, "teal")
+        self.view._label_chip.click()
+        self.assertIsNone(self.view._label_filter)
+        self.assertTrue(self.view._label_chip.isHidden())
+        self.assertEqual(len(self.widget_titles(self.view._columns[0])), 2)
+
+    def test_label_filter_survives_data_refresh(self):
+        """数据变更（refresh）不丢标签过滤态，统计行持续反馈"""
+        lst_a, lst_b = self.lists
+        lst_a.cards[0].labels = ["orange"]
+        self.view.refresh(self.lists)
+        self.view._columns[0].signal_label_clicked.emit("orange")
+        self.assertEqual(self.widget_titles(self.view._columns[0]), ["A"])
+        # 数据变更路径：refresh（stats 单趟统计）
+        self.view.refresh(self.lists)
+        self.assertEqual(self.widget_titles(self.view._columns[0]), ["A"])
+        self.assertIn("标签 橙色", self.view._stats_label.text())
+
+    def test_label_key_at_matches_paint_geometry(self):
+        """色条点击几何与 paintEvent 一致：x=1 起每条 4px，最多 4 条"""
+        cw = CardWidget(Card(title="色条卡", labels=["red", "blue"]))
+        self.assertEqual(cw._label_key_at(QPoint(2, 5)), "red")
+        self.assertEqual(cw._label_key_at(QPoint(5, 5)), "blue")
+        self.assertIsNone(cw._label_key_at(QPoint(0, 5)))   # 左边框
+        self.assertIsNone(cw._label_key_at(QPoint(9, 5)))   # 越出两色条
+        cw.deleteLater()
+        cw2 = CardWidget(Card(title="无标签"))
+        self.assertIsNone(cw2._label_key_at(QPoint(2, 5)))
+        cw2.deleteLater()
 
     def _flush_search(self):
         """手动触发搜索防抖计时器（离屏无事件循环，直接驱动到点逻辑）"""
