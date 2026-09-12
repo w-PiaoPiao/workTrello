@@ -95,6 +95,7 @@ class MainWindow(QWidget):
     zoom_state_changed = Signal(bool)
     undo_shortcut = Signal()      # Windows/Linux：Ctrl+Z 触发撤销
     new_card_shortcut = Signal()  # Windows/Linux：Ctrl+N 触发快速新建卡片
+    signal_about_to_expand = Signal()  # 展开动画启动前（控制器延迟构建看板）
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -239,6 +240,8 @@ class MainWindow(QWidget):
             return
         if not self.isVisible():
             self.show()  # 展开前确保窗口可见（单击桌面宠物时）
+        # 动画与视图切换前通知控制器（首展开时同步构建看板控件）
+        self.signal_about_to_expand.emit()
         self._set_pet_idle(False)
         self._zoomed = False
         target = self._effective_expanded_size()
@@ -451,6 +454,10 @@ class MainWindow(QWidget):
                       delta: QPoint | None = None,
                       base_geo: QRect | None = None) -> None:
         self._animation_running = True
+        old = getattr(self, "anim", None)
+        if old is not None:
+            old.stop()
+            old.deleteLater()   # 带 parent 的旧动画不被 GC，逐次展开/折叠会累积
         self.anim = QPropertyAnimation(self, b"geometry")
         self.anim.setDuration(AppConfig.ANIMATION_MS)
         self.anim.setEasingCurve(QEasingCurve.OutCubic)

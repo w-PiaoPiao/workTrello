@@ -708,10 +708,24 @@ class PetView(QWidget):
         self._count = count
         self._layout_badge()
 
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self._badge is not None:
+            # 隐藏到托盘期间计数/倒计时可能已变（_layout_badge 对隐藏态
+            # 短路跳过排版），重新显示后补一次。必须用闭包而非 bound
+            # method 直接作 slot：PySide6 在 showEvent 派发中连接 bound
+            # method 会段错误（offscreen 平台稳定复现）
+            QTimer.singleShot(0, lambda: self._layout_badge())
+
     def _layout_badge(self) -> None:
         """按当前计数/覆盖文本排版角标（尺寸未定时调用也安全）"""
         badge = self._badge
         if badge is None:
+            return
+        if not self.isVisible():
+            # 隐藏到托盘时每秒的番茄钟 tick 仍会驱动到这里：全量排版
+            # （adjustSize/raise_）是纯无效功；显示/尺寸变化时有
+            # showEvent/resizeEvent 补算路径，跳过不会漏排版
             return
         if self._badge_override is not None:
             text = self._badge_override        # 番茄钟倒计时等

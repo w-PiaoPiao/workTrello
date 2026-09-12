@@ -31,15 +31,10 @@ from app.models.board import Board, BoardList, BoardStore, Card
 from app.models.quick_syntax import parse_quick_input
 from app.services.tray_service import TrayService
 from app.views import motion
-from app.views.archive_dialog import ArchiveDialog
 from app.views.board_view import BoardView
-from app.views.card_dialog import CardDialog
 from app.views.main_window import MainWindow
 from app.views.pet_view import PetView
-from app.views.quick_add_dialog import BulkAddDialog, QuickAddDialog
-from app.views.settings_dialog import SettingsDialog
 from app.views.theme import AppTheme
-from app.views.today_popover import TodayPopover
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +60,9 @@ class AppController(QObject):
         self._window = MainWindow()
         self._pet_view = PetView()
         self._board_view = BoardView()
+        # 折叠态启动不构建看板控件（默认形态是桌宠，看板不可见），首次
+        # 展开时才全量构建列/卡控件——几百卡时省掉启动首帧前的最大一块
+        self._board_ui_built = False
 
         self._window.set_views(self._pet_view, self._board_view)
         self._window.set_visibility_callback(self._on_window_visibility)
@@ -178,8 +176,11 @@ class AppController(QObject):
             self._schedule_save()
         else:
             # 每次正常启动为上一份数据留档：即使随后被异常覆盖（如旧版
-            # exe 非原子写空板），快照链仍可恢复；空板不产生快照
-            json_io.snapshot_board(self._store.path)
+            # exe 非原子写空板），快照链仍可恢复；空板不产生快照。
+            # has_cards 用已加载的 board 结果，免 snapshot 内部二次全量解析
+            json_io.snapshot_board(
+                self._store.path,
+                has_cards=any(lst.cards for lst in board.lists))
         # 空板恢复引导（看板为空但有历史快照时询问，记住用户选择）
         self._maybe_offer_empty_restore()
 
@@ -282,8 +283,18 @@ class AppController(QObject):
 
     def _apply_board_to_ui(self, board) -> None:
         stats = board.today_stats(date.today())
-        self._board_view.refresh(board.lists, stats=stats)
+        if self._board_ui_built:
+            self._board_view.refresh(board.lists, stats=stats)
         self._refresh_pet_state(stats)
+
+    def _ensure_board_ui(self) -> None:
+        """首次展开前构建看板控件（折叠态启动跳过了全量构建）"""
+        if self._board_ui_built:
+            return
+        self._board_ui_built = True
+        board = self._store.load()
+        stats = board.today_stats(date.today())
+        self._board_view.refresh(board.lists, stats=stats)
 
     def _schedule_save(self) -> None:
         self._save_timer.start()
@@ -320,6 +331,8 @@ class AppController(QObject):
     # ── 信号 ──────────────────────────────────────────────
 
     def _connect_signals(self) -> None:
+        # 首次展开：先同步构建看板控件（折叠态启动时跳过了全量构建）
+        self._window.signal_about_to_expand.connect(self._ensure_board_ui)
         # 桌宠 → 展开
         self._pet_view.signal_expand_clicked.connect(self._window.expand)
         self._pet_view.signal_quick_add_clicked.connect(self._on_quick_add)
@@ -381,6 +394,8 @@ class AppController(QObject):
 
     def _on_quick_add(self) -> None:
         """桌宠右键快速添加：单行对话框（带速记实时预览），加到第一个列表"""
+        from app.views.quick_add_dialog import QuickAddDialog
+
         board = self._store.load()
         if not board.lists:
             self._notify(tr("看板还没有列表，先添加一个列表"))
@@ -404,6 +419,7 @@ class AppController(QObject):
         是最常见的批量来源。撤销一次回滚整批。列表选择内嵌在对话框里
         （此前是输入完再弹 QInputDialog 选列表两步走）。
         """
+        from app.views.quick_add_dialog import BulkAddDialog
         from PySide6.QtWidgets import QApplication
 
         board = self._store.load()
@@ -444,6 +460,8 @@ class AppController(QObject):
     def _on_today_list_open(self) -> None:
         """桌宠右键"今日清单"：浮窗概览今日待办（勾选/打开编辑直通控制器）"""
         if self._today_popover is None:
+            from app.views.today_popover import TodayPopover
+
             self._today_popover = TodayPopover()
             self._today_popover.signal_card_done.connect(self._on_card_done)
             self._today_popover.signal_card_edit.connect(self._on_card_edit)
@@ -464,6 +482,8 @@ class AppController(QObject):
         return Card(title=title or text.strip(), **fields)
 
     def _on_card_add(self, list_id: str, title: str = "") -> None:
+        from app.views.card_dialog import CardDialog
+
         lst = self._store.load().find_list(list_id)
         if lst is None:
             return
@@ -485,6 +505,8 @@ class AppController(QObject):
         self._after_data_change(tr("已添加卡片"))
 
     def _on_card_edit(self, list_id: str, card_id: str) -> None:
+        from app.views.card_dialog import CardDialog
+
         _lst, card = self._store.load().find_card(card_id)
         if card is None:
             return
@@ -508,16 +530,19 @@ class AppController(QObject):
             self._after_data_change(
                 tr("已完成 · 下次 {date}").format(date=next_day))
             return
-        self._after_data_change(None)
+        stats = self._after_data_change(None)
         if done:
-            self._notify_done(card)
+            self._notify_done(card, stats)
 
-    def _notify_done(self, card: Card) -> None:
-        """里程碑反馈：看板展开时走窗口内 toast，与 _notify 分流一致"""
-        board = self._store.load()
-        today_n = board.today_done_count()
-        total = board.total_cards()
-        done = board.done_cards()
+    def _notify_done(self, card: Card, stats: dict) -> None:
+        """里程碑反馈：看板展开时走窗口内 toast，与 _notify 分流一致
+
+        stats 复用 _after_data_change 单趟算好的统计，免再 3 趟全板扫描
+        （today_done_count/total_cards/done_cards 与字段逐一同口径）。
+        """
+        today_n = stats["done_today"]
+        total = stats["total"]
+        done = stats["done"]
         if total > 0 and done == total:
             self._notify(tr("全部完成！桌宠为你鼓掌 🎉"))
             if self._window.mode == "collapsed":
@@ -656,7 +681,8 @@ class AppController(QObject):
 
     # ── 数据变更后的统一刷新 ──────────────────────────────
 
-    def _after_data_change(self, notify: str | None) -> None:
+    def _after_data_change(self, notify: str | None) -> dict:
+        """数据变更后的统一刷新；返回 today_stats() 结果供调用方复用"""
         board = self._store.load()
         # 任何模型改动（增删改卡/列、拖拽、归档、番茄计数…）都必须在此标脏：
         # flush() 只在脏标记为真时落盘，只 start() 防抖计时器而不标脏，
@@ -668,7 +694,10 @@ class AppController(QObject):
         # 单趟统计一次算全 total/done/今日聚焦/逾期，喂给看板视图与
         # 桌宠状态，取代原先 4+ 趟全板扫描
         stats = board.today_stats(date.today())
-        self._board_view.refresh(board.lists, stats=stats)
+        # 看板控件尚未构建（折叠态启动后未展开过）时跳过视图刷新：
+        # 首次展开的 _ensure_board_ui 会用最新数据构建，无一致性缺口
+        if self._board_ui_built:
+            self._board_view.refresh(board.lists, stats=stats)
         self._refresh_pet_state(stats)
         self._refresh_archive()
         self._schedule_save()
@@ -681,6 +710,7 @@ class AppController(QObject):
             self._today_popover.set_items(
                 self._today_focus_items(stats["focus"]),
                 done_count=stats["done_today"])
+        return stats
 
     def _notify(self, text: str) -> None:
         """操作反馈：看板展开态走窗口内 toast，折叠/隐藏态走托盘气泡"""
@@ -716,6 +746,8 @@ class AppController(QObject):
 
     def _on_settings_open(self) -> None:
         """打开设置（三处入口共用）：惰性创建并同步当前偏好"""
+        from app.views.settings_dialog import SettingsDialog
+
         if self._settings_dialog is None:
             dlg = SettingsDialog(self._window)
             dlg.signal_theme_selected.connect(self._on_theme_pref_selected)
@@ -1114,6 +1146,8 @@ class AppController(QObject):
         self._after_data_change(tr("已归档"))
 
     def _on_archive_open(self) -> None:
+        from app.views.archive_dialog import ArchiveDialog
+
         if self._archive_dialog is None:
             self._archive_dialog = ArchiveDialog(self._window)
             self._archive_dialog.signal_restore_requested.connect(

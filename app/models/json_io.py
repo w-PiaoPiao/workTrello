@@ -174,15 +174,33 @@ def _snapshot_paths(path: Path) -> list[Path]:
     return sorted(path.parent.glob(f"{path.name}.snap.*.bak"))
 
 
-def snapshot_board(path: Path, keep: int = SNAPSHOT_KEEP) -> Path | None:
+def snapshot_board(path: Path, keep: int = SNAPSHOT_KEEP,
+                   has_cards: bool | None = None) -> Path | None:
     """启动快照：把当前含数据的文件复制为 <名>.snap.<时间戳>.bak
 
     每次正常启动调用一次，为上一份数据留档——即使数据文件随后被异常
     覆盖（如旧版 exe 非原子写入空板），快照链仍可一键恢复。
     空板/默认板不产生快照（不污染恢复候选）；保留最近 keep 份。
+    has_cards 传入调用方已解析的"含卡与否"结果时免二次全量解析；
+    数据与最新快照一致（size+mtime_ns 相同，即上次启动后未再写入）
+    时跳过复制，避免快照链积满内容相同的重复档。
     """
-    if not path.exists() or not doc_has_cards(path):
+    if not path.exists():
         return None
+    if has_cards is None:
+        has_cards = doc_has_cards(path)
+    if not has_cards:
+        return None
+    snaps = _snapshot_paths(path)
+    if snaps:
+        try:
+            cur = path.stat()
+            last = snaps[-1].stat()
+            if (cur.st_size, cur.st_mtime_ns) == (last.st_size,
+                                                  last.st_mtime_ns):
+                return None
+        except OSError:
+            pass
     snap = path.with_name(path.name + backup_ext("snap"))
     try:
         shutil.copy2(path, snap)

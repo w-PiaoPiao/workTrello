@@ -35,6 +35,9 @@ class ControllerFeatureTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.c = AppController()
+        # 启动已改为折叠态延迟构建看板：测试直接断言列/卡控件，先模拟
+        # 一次首次展开把看板 UI 构建出来
+        cls.c._ensure_board_ui()
 
     def _list(self):
         return self.c._store.load().lists[0]
@@ -272,9 +275,7 @@ class ControllerFeatureTest(unittest.TestCase):
         self._reset()
         lst = self._list()
         from app.views.quick_add_dialog import BulkAddDialog
-        with patch("app.controllers.app_controller.BulkAddDialog") as dlg_cls, \
-             patch("app.controllers.app_controller.QApplication") as qa:
-            qa.clipboard.return_value.text.return_value = ""   # 剪贴板无多行
+        with patch("app.views.quick_add_dialog.BulkAddDialog") as dlg_cls:
             dlg = dlg_cls.return_value
             dlg.exec.return_value = BulkAddDialog.Accepted
             dlg.text.return_value = "第三张\n改bug !P1 #红\n9月20日交房租\n"

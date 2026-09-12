@@ -360,6 +360,11 @@ class _CardCheckButton(QPushButton):
     _P0 = (3.6, 8.2)     # 对勾折点序列（相对勾选框左上角）
     _P1 = (7.0, 11.4)
     _P2 = (12.6, 4.6)
+    # 完成态画笔常量：paintEvent 每帧新建 QPen + cap/join 设置纯重复，
+    # QPen 是值语义，setPen 内部拷贝，多控件共享安全
+    _CHECK_PEN = QPen(QColor("#FFFFFF"), 1.8)
+    _CHECK_PEN.setCapStyle(Qt.RoundCap)
+    _CHECK_PEN.setJoinStyle(Qt.RoundJoin)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -418,10 +423,7 @@ class _CardCheckButton(QPushButton):
             painter.setPen(Qt.NoPen)
             painter.setBrush(QColor(c["success"]))
             painter.drawRoundedRect(box, radius, radius)
-            pen = QPen(QColor("#FFFFFF"), 1.8)
-            pen.setCapStyle(Qt.RoundCap)
-            pen.setJoinStyle(Qt.RoundJoin)
-            painter.setPen(pen)
+            painter.setPen(self._CHECK_PEN)
             bx, by = box.left(), box.top()
             p0 = QPointF(bx + self._P0[0], by + self._P0[1])
             p1 = QPointF(bx + self._P1[0], by + self._P1[1])
@@ -480,6 +482,8 @@ class CardWidget(QFrame):
         self._fit_state: tuple = ()                # 徽章显示组合缓存（避免重复重排）
         self._fit_width: int | None = None         # 上次徽章取舍时的卡片宽度
         self._fingerprint: tuple = ()
+        self._clip_path: QPainterPath | None = None   # 色条裁剪路径（按尺寸缓存）
+        self._clip_size: tuple[int, int] = ()
         self._focusing_id: str | None = None    # 当前正在专注的卡片 id
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_card_menu)
@@ -714,9 +718,15 @@ class CardWidget(QFrame):
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        # 裁剪到圆角轮廓内，色条端头跟随卡片圆角（与 #cardFrame 的 10px 对齐）
-        clip = QPainterPath()
-        clip.addRoundedRect(1, 1, self.width() - 2, self.height() - 2, 10, 10)
+        # 裁剪到圆角轮廓内，色条端头跟随卡片圆角（与 #cardFrame 的 10px 对齐）；
+        # 路径按尺寸缓存：hover 边框变色触发整卡重绘时免逐次重建
+        size = (self.width(), self.height())
+        clip = self._clip_path
+        if clip is None or self._clip_size != size:
+            clip = QPainterPath()
+            clip.addRoundedRect(1, 1, size[0] - 2, size[1] - 2, 10, 10)
+            self._clip_path = clip
+            self._clip_size = size
         painter.setClipPath(clip)
         x = 1.0
         for key in labels:
@@ -1293,22 +1303,32 @@ class _HeaderMenuButton(QPushButton):
 class _GearButton(QPushButton):
     """自绘齿轮图标按钮（⚙ 字形在部分平台缺字形，改矢量绘制）"""
 
+    # 环−孔布尔运算结果按控件尺寸缓存：paintEvent 每帧 subtracted 纯浪费
+    # （同文件 _ThemeToggleButton._moon_path_cache 同款范式）
+    _ring_cache: dict[tuple[int, int], QPainterPath] = {}
+
     def __init__(self, parent=None):
         super().__init__(parent)
 
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
-        c = AppTheme.colors()
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        center = QPointF(self.width() / 2, self.height() / 2)
+        w, h = self.width(), self.height()
+        center = QPointF(w / 2, h / 2)
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(c["text_primary"]))
-        ring = QPainterPath()
-        ring.addEllipse(center, 5.2, 5.2)
-        hole = QPainterPath()
-        hole.addEllipse(center, 2.2, 2.2)
-        painter.drawPath(ring.subtracted(hole))
+        painter.setBrush(QColor(AppTheme.colors()["text_primary"]))
+        ring = self._ring_cache.get((w, h))
+        if ring is None:
+            outer = QPainterPath()
+            outer.addEllipse(center, 5.2, 5.2)
+            hole = QPainterPath()
+            hole.addEllipse(center, 2.2, 2.2)
+            ring = outer.subtracted(hole)
+            if len(self._ring_cache) > 16:
+                self._ring_cache.clear()
+            self._ring_cache[(w, h)] = ring
+        painter.drawPath(ring)
         for i in range(8):
             painter.save()
             painter.translate(center)
@@ -2478,14 +2498,25 @@ class BoardView(QWidget):
 
     # ── paintEvent：渐变背景 ──────────────────────────────
 
+    # 渐变对象按 (宽, 高, 主题模式) 缓存：展开/缩放动画逐帧触发本方法，
+    # 每帧重建 QLinearGradient + 3×QColor 纯浪费；键空间随用户任意缩放
+    # 有界性不可保证，超上限整体清空兜底
+    _bg_gradient_cache: dict[tuple[int, int, str], QLinearGradient] = {}
+
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        c = AppTheme.colors()
-        gradient = QLinearGradient(0, 0, self.width(), self.height())
-        gradient.setColorAt(0.0, QColor(c["board_bg_start"]))
-        gradient.setColorAt(0.55, QColor(c["board_bg_mid"]))
-        gradient.setColorAt(1.0, QColor(c["board_bg_end"]))
+        # 纯 fillRect 无需抗锯齿（此前挂着无用的 Antialiasing 开销）
+        key = (self.width(), self.height(), AppTheme.mode())
+        gradient = self._bg_gradient_cache.get(key)
+        if gradient is None:
+            c = AppTheme.colors()
+            gradient = QLinearGradient(0, 0, key[0], key[1])
+            gradient.setColorAt(0.0, QColor(c["board_bg_start"]))
+            gradient.setColorAt(0.55, QColor(c["board_bg_mid"]))
+            gradient.setColorAt(1.0, QColor(c["board_bg_end"]))
+            if len(self._bg_gradient_cache) > 64:
+                self._bg_gradient_cache.clear()
+            self._bg_gradient_cache[key] = gradient
         painter.fillRect(self.rect(), gradient)
         painter.end()
 
@@ -2504,6 +2535,14 @@ class BoardView(QWidget):
         self._lists = lists
 
         visibles = {lst.id: self._visible_cards_for(lst) for lst in lists}
+
+        # _lower_cache 只增不减（注释此前自称"随卡量有界"并不成立）：
+        # 删除/撤销重建后 id 换代，死条目永驻。缓存膨胀到当前卡量的
+        # 2 倍以上时按现存卡集驱逐一次，常态下 O(1) 短路
+        if len(self._lower_cache) > 2 * sum(len(v or []) for v in visibles.values()):
+            alive = {c.id for lst in lists for c in lst.cards}
+            for dead in self._lower_cache.keys() - alive:
+                del self._lower_cache[dead]
 
         by_id = {col.list_id(): col for col in self._columns}
         prev_order = [col.list_id() for col in self._columns]
