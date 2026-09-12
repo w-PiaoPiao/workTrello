@@ -314,6 +314,74 @@ class ControllerFeatureTest(unittest.TestCase):
         self.assertTrue(self._list().cards[0].starred)
         self.assertFalse(self._list().cards[0].done)   # 不误改完成态
 
+    # ── 工作目录 ──────────────────────────────────────────
+
+    def test_workdir_open_missing_dir_notifies(self):
+        """目录不存在（外接盘未连接是常态）：走 _notify 轻提示，不崩不弹框"""
+        self._reset()
+        self.c._on_card_add(self._list().id, "离线盘任务")
+        card = self._list().cards[0]
+        card.workdir = "/Volumes/不存在的移动硬盘/proj"
+        notes = []
+        self.c._notify = lambda text: notes.append(text)
+        self.c._on_card_workdir_open(card.id)
+        self.assertEqual(notes, ["工作目录无法访问（设备可能未连接）"])
+
+    def test_workdir_open_calls_desktop_services(self):
+        """目录可达：经 QDesktopServices 打开"""
+        self._reset()
+        self.c._on_card_add(self._list().id, "有目录任务")
+        card = self._list().cards[0]
+        card.workdir = tempfile.mkdtemp()          # 测试中真实存在的目录
+        opened = []
+        with patch("app.controllers.app_controller.QDesktopServices") as ds, \
+             patch("app.controllers.app_controller.QUrl") as qurl:
+            ds.openUrl.side_effect = lambda url: opened.append(url)
+            self.c._on_card_workdir_open(card.id)
+        self.assertEqual(len(opened), 1)
+        qurl.fromLocalFile.assert_called_once_with(card.workdir)
+
+    def test_workdir_open_without_dir_short_circuit(self):
+        """卡片无目录（不应出现的状态）也安全：走提示而非异常"""
+        self._reset()
+        self.c._on_card_add(self._list().id, "无目录任务")
+        card_id = self._list().cards[0].id
+        notes = []
+        self.c._notify = lambda text: notes.append(text)
+        self.c._on_card_workdir_open(card_id)     # workdir 为空串
+        self.assertEqual(len(notes), 1)
+
+    def test_workdir_set_persists_with_undo(self):
+        """右键快捷设置目录：写卡 + 撤销可回滚"""
+        self._reset()
+        self.c._on_card_add(self._list().id, "要设目录的任务")
+        card_id = self._list().cards[0].id
+        target = tempfile.mkdtemp()
+        with patch("app.controllers.app_controller.QFileDialog") as fdlg:
+            fdlg.getExistingDirectory.return_value = target
+            self.c._on_card_workdir_set(card_id)
+        self.assertEqual(self._list().cards[0].workdir, target)
+        # 撤销 → 目录清空（回到设置前快照）
+        self.c._on_undo_requested(False)
+        self.assertEqual(self._list().cards[0].workdir, "")
+        self._flush_sync()
+        doc = json.loads(AppConfig.board_path().read_text(encoding="utf-8"))
+        card_doc = [c for lst in doc["lists"] for c in lst["cards"]
+                    if c["title"] == "要设目录的任务"][0]
+        self.assertEqual(card_doc["workdir"], "")
+
+    def test_workdir_set_cancelled_keeps_state(self):
+        """选择器取消（返回空串）：不改卡、不标脏"""
+        self._reset()
+        self.c._on_card_add(self._list().id, "取消设置")
+        card = self._list().cards[0]
+        self.c._store._dirty = False
+        with patch("app.controllers.app_controller.QFileDialog") as fdlg:
+            fdlg.getExistingDirectory.return_value = ""
+            self.c._on_card_workdir_set(card.id)
+        self.assertEqual(card.workdir, "")
+        self.assertFalse(self.c._store._dirty)
+
     def test_edit_persists_to_disk(self):
         """编辑落到 board.json（回归护栏）
 

@@ -11,8 +11,13 @@ import time
 from datetime import date, timedelta
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QThreadPool, QTimer, Signal
-from PySide6.QtGui import QAction, QGuiApplication, QKeySequence
+from PySide6.QtCore import QObject, Qt, QThreadPool, QTimer, QUrl, Signal
+from PySide6.QtGui import (
+    QAction,
+    QDesktopServices,
+    QGuiApplication,
+    QKeySequence,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -345,6 +350,10 @@ class AppController(QObject):
         self._board_view.signal_card_pomo.connect(self._on_card_pomo)
         self._board_view.signal_card_archive.connect(self._on_card_archive)
         self._board_view.signal_card_star.connect(self._on_card_star)
+        self._board_view.signal_card_workdir_open.connect(
+            self._on_card_workdir_open)
+        self._board_view.signal_card_workdir_set.connect(
+            self._on_card_workdir_set)
         self._board_view.signal_archive_open.connect(self._on_archive_open)
         self._board_view.signal_export.connect(self._on_export)
         self._board_view.signal_export_backup.connect(self._on_export_backup)
@@ -1133,6 +1142,38 @@ class AppController(QObject):
         card.starred = not card.starred
         self._after_data_change(
             tr("已加入今日") if card.starred else tr("已移出今日"))
+
+    def _on_card_workdir_open(self, card_id: str) -> None:
+        """打开卡片工作目录（📂 徽章 / 右键菜单）
+
+        目录常在外接移动硬盘上，不在是常态：先 is_dir 校验，打不开走
+        _notify 轻提示（展开态 toast / 折叠态托盘气泡），不弹错误框。
+        """
+        board = self._store.load()
+        _lst, card = board.find_card(card_id)
+        if card is None:
+            return
+        path = Path(card.workdir)
+        if not card.workdir or not path.is_dir():
+            self._notify(tr("工作目录无法访问（设备可能未连接）"))
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    def _on_card_workdir_set(self, card_id: str) -> None:
+        """右键快捷设置/更改工作目录：选完即存，不经过编辑对话框"""
+        board = self._store.load()
+        _lst, card = board.find_card(card_id)
+        if card is None:
+            return
+        start = (card.workdir if card.workdir and Path(card.workdir).is_dir()
+                 else str(Path.home()))
+        chosen = QFileDialog.getExistingDirectory(
+            self._window, tr("选择工作目录"), start)
+        if not chosen:
+            return
+        self._push_undo()
+        card.workdir = chosen
+        self._after_data_change(tr("已设置工作目录"))
 
     def _on_card_archive(self, card_id: str) -> None:
         board = self._store.load()

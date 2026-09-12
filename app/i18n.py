@@ -192,6 +192,15 @@ _zh_en: dict[str, str] = {
     "高": "High",
     "中": "Medium",
     "低": "Low",
+    "工作目录": "Work folder",
+    "浏览…": "Browse…",
+    "清除": "Clear",
+    "选择工作目录": "Choose Work Folder",
+    "打开工作目录": "Open work folder",
+    "设置工作目录…": "Set Work Folder…",
+    "已设置工作目录": "Work folder updated",
+    "工作目录无法访问（设备可能未连接）":
+        "Work folder is unavailable (device may be disconnected)",
     # ── 快速/批量添加 ──
     "快速添加卡片": "Quick Add Card",
     "卡片标题（支持速记：明天 / 周五 / !P1 / #红）":

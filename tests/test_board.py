@@ -55,24 +55,29 @@ class CardTest(unittest.TestCase):
         self.assertEqual(card.notes, "")
         self.assertEqual(card.labels, [])
         self.assertIsNone(card.due_date)
+        self.assertEqual(card.workdir, "")
         self.assertFalse(card.done)
 
     def test_apply_updates_fields(self):
         card = Card(title="旧标题", due_date="2026-09-01")
         card.apply({"title": " 新标题 ", "notes": "备注",
-                    "labels": ["red"], "due_date": None, "done": True})
+                    "labels": ["red"], "due_date": None, "done": True,
+                    "workdir": " /tmp/proj "})
         self.assertEqual(card.title, "新标题")
         self.assertEqual(card.due_date, None)
+        self.assertEqual(card.workdir, "/tmp/proj")
         self.assertTrue(card.done)
 
     def test_new_fields_roundtrip(self):
         card = Card(title="全字段", starred=True, pomodoros=3,
-                    done_at="2026-09-06T10:00:00+08:00", archived=True)
+                    done_at="2026-09-06T10:00:00+08:00", archived=True,
+                    workdir="/Volumes/SSD/项目")
         card2 = Card.from_dict(card.to_dict())
         self.assertTrue(card2.starred)
         self.assertEqual(card2.pomodoros, 3)
         self.assertEqual(card2.done_at, "2026-09-06T10:00:00+08:00")
         self.assertTrue(card2.archived)
+        self.assertEqual(card2.workdir, "/Volumes/SSD/项目")
 
     def test_apply_sets_done_at(self):
         card = Card(title="任务")

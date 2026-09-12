@@ -44,6 +44,7 @@ class Card:
     archived: bool = False              # 归档（不出现在看板）
     repeat: str = "never"               # never | daily | weekly（完成时自动滚到下一周期）
     priority: int = 0                   # 0=无 1=高 2=中 3=低（今日聚焦内排序用）
+    workdir: str = ""                   # 工作目录（可选；常在外接盘上，可能暂时不可用）
     # due_delta 解析缓存：(due_date, today_ordinal, delta|None)。
     # 自校验：due_date 一变即失配重算，无需写路径显式失效。
     # 一次数据变更管线里同一张卡会被 due_delta 问 3~4 次，缓存后只解析一次
@@ -65,6 +66,7 @@ class Card:
             "archived": self.archived,
             "repeat": self.repeat,
             "priority": self.priority,
+            "workdir": self.workdir,
         }
 
     @classmethod
@@ -104,6 +106,7 @@ class Card:
             archived=bool(data.get("archived", False)),
             repeat=repeat,
             priority=max(0, min(3, priority)),
+            workdir=str(data.get("workdir", "") or ""),
         )
 
     def set_done(self, done: bool) -> None:
@@ -120,6 +123,7 @@ class Card:
         self.notes = str(data.get("notes", self.notes)).strip()
         self.labels = list(data.get("labels", self.labels))
         self.due_date = data.get("due_date", self.due_date)
+        self.workdir = str(data.get("workdir", self.workdir) or "").strip()
         self.starred = bool(data.get("starred", self.starred))
         repeat = data.get("repeat", self.repeat)
         self.repeat = repeat if repeat in ("never", "daily", "weekly") \

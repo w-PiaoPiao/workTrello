@@ -26,7 +26,7 @@ from PySide6.QtWidgets import QApplication, QPushButton
 _qapp = QApplication.instance() or QApplication([])
 
 from app.models.board import BoardList, Card
-from app.views.board_view import BoardView, CardWidget
+from app.views.board_view import WORKDIR_BADGE_TEXT, BoardView, CardWidget
 
 
 def make_lists(spec):
@@ -222,7 +222,7 @@ class BoardViewRefreshTest(unittest.TestCase):
         # rebuild 会渲染进徽章的模型字段 → 必须全部参与指纹
         cw = self.view._columns[0]._card_widgets[0]
         rendered = {"title", "done", "due_date", "labels",
-                    "priority", "repeat", "pomodoros"}
+                    "priority", "repeat", "pomodoros", "workdir"}
         fp = cw._content_fingerprint()
         before = fp
         # 逐个改动渲染字段，每个都必须让指纹变化
@@ -822,6 +822,46 @@ class BoardViewRefreshTest(unittest.TestCase):
         cw.signal_card_archive.emit(cw.card().id)
         self.assertEqual(received["pomo"], cw.card().id)
         self.assertEqual(received["archive"], cw.card().id)
+
+    def test_workdir_signals_forward(self):
+        received = {"open": None, "set": None}
+        self.view.signal_card_workdir_open.connect(
+            lambda cid: received.__setitem__("open", cid))
+        self.view.signal_card_workdir_set.connect(
+            lambda cid: received.__setitem__("set", cid))
+        cw = self.view._columns[0]._card_widgets[0]
+        cw.signal_card_workdir_open.emit(cw.card().id)
+        cw.signal_card_workdir_set.emit(cw.card().id)
+        self.assertEqual(received["open"], cw.card().id)
+        self.assertEqual(received["set"], cw.card().id)
+
+    def test_workdir_badge_click_emits_open(self):
+        """点击 📂 徽章发出打开信号（事件过滤器 press 拦截路径）"""
+        from PySide6.QtCore import QEvent, QPointF, Qt
+        from PySide6.QtGui import QMouseEvent
+        lists = make_lists([("待办", ["A"])])
+        lists[0].cards[0].workdir = "/tmp/some-project"
+        self.view.refresh(lists)
+        cw = self.view._columns[0]._card_widgets[0]
+        badge = cw._workdir_badge
+        self.assertIsNotNone(badge)   # 设置了目录才构建徽章
+        self.assertEqual(badge.text(), WORKDIR_BADGE_TEXT)
+        received = []
+        cw.signal_card_workdir_open.connect(lambda cid: received.append(cid))
+        event = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(2, 2),
+                            QPointF(2, 2), Qt.MouseButton.LeftButton,
+                            Qt.MouseButton.LeftButton,
+                            Qt.KeyboardModifier.NoModifier)
+        cw.eventFilter(badge, event)
+        self.assertEqual(received, [cw.card().id])
+
+    def test_workdir_badge_hidden_without_dir(self):
+        """未设置目录不构建 📂 徽章（可选字段常态）"""
+        lists = make_lists([("待办", ["A"])])
+        self.assertFalse(lists[0].cards[0].workdir)
+        self.view.refresh(lists)
+        cw = self.view._columns[0]._card_widgets[0]
+        self.assertIsNone(cw._workdir_badge)
 
     # ── 列高随内容收缩 ────────────────────────────────────
 

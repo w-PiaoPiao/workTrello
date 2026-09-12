@@ -1,10 +1,11 @@
 """
-卡片编辑对话框：标题 / 备注 / 标签色 / 截止日期 / 完成勾选
+卡片编辑对话框：标题 / 备注 / 标签色 / 截止日期 / 工作目录 / 完成勾选
 """
 
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
 from PySide6.QtCore import QDate, QSize, Qt
 from PySide6.QtGui import QKeySequence, QShortcut
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QDateEdit,
     QDialog,
+    QFileDialog,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -280,6 +282,44 @@ class CardDialog(QDialog):
         priority_row.addStretch(1)
         root.addLayout(priority_row)
 
+        # 工作目录（可选）：常在外接移动硬盘上，对话框只存路径不校验
+        # 存在性——是否可达交给打开动作现场判断
+        cap7 = QLabel(tr("工作目录"))
+        cap7.setProperty("cap", True)
+        root.addWidget(cap7)
+        workdir_row = QHBoxLayout()
+        workdir_row.setSpacing(6)
+        self._workdir = (card.workdir if card else "")
+        self._workdir_label = QLabel()
+        self._workdir_browse_btn = QPushButton(tr("浏览…"))
+        self._workdir_browse_btn.setFlat(True)
+        self._workdir_browse_btn.setCursor(Qt.PointingHandCursor)
+        self._workdir_clear_btn = QPushButton(tr("清除"))
+        self._workdir_clear_btn.setFlat(True)
+        self._workdir_clear_btn.setCursor(Qt.PointingHandCursor)
+        flat_btn_qss = f"""
+            QPushButton {{
+                color: {c['accent']};
+                font-size: 11px;
+                background: transparent;
+                border: none;
+                padding: 2px 6px;
+            }}
+            QPushButton:hover {{
+                background: {c['accent_soft']};
+                border-radius: 6px;
+            }}
+        """
+        self._workdir_browse_btn.setStyleSheet(flat_btn_qss)
+        self._workdir_clear_btn.setStyleSheet(flat_btn_qss)
+        self._workdir_browse_btn.clicked.connect(self._on_browse_workdir)
+        self._workdir_clear_btn.clicked.connect(self._on_clear_workdir)
+        workdir_row.addWidget(self._workdir_label, 1)
+        workdir_row.addWidget(self._workdir_browse_btn)
+        workdir_row.addWidget(self._workdir_clear_btn)
+        root.addLayout(workdir_row)
+        self._apply_workdir_state()
+
         # 按钮
         btns = QHBoxLayout()
         btns.addStretch(1)
@@ -376,6 +416,51 @@ class CardDialog(QDialog):
         if not self._due_cleared:
             self._due_edit.setFocus()
 
+    def _apply_workdir_state(self) -> None:
+        """已设置=中段省略的路径（tooltip 存全路径），未设置=灰斜体"未设置"；
+        清除按钮仅在已设置时可见"""
+        c = AppTheme.colors()
+        if self._workdir:
+            fm = self._workdir_label.fontMetrics()
+            self._workdir_label.setText(
+                fm.elidedText(self._workdir, Qt.ElideMiddle, 300))
+            self._workdir_label.setToolTip(self._workdir)
+            self._workdir_label.setStyleSheet(f"""
+                QLabel {{
+                    color: {c['text_secondary']};
+                    font-size: 12px;
+                    background: transparent;
+                }}
+            """)
+        else:
+            self._workdir_label.setText(tr("未设置"))
+            self._workdir_label.setToolTip("")
+            self._workdir_label.setStyleSheet(f"""
+                QLabel {{
+                    color: {c['text_disabled']};
+                    font-size: 13px;
+                    font-style: italic;
+                    background: transparent;
+                }}
+            """)
+        self._workdir_clear_btn.setVisible(bool(self._workdir))
+
+    def _on_browse_workdir(self) -> None:
+        """浏览选择工作目录；现有路径可达时以其为起始目录"""
+        start = (self._workdir
+                 if self._workdir and Path(self._workdir).is_dir()
+                 else str(Path.home()))
+        chosen = QFileDialog.getExistingDirectory(
+            self, tr("选择工作目录"), start)
+        if not chosen:
+            return
+        self._workdir = chosen
+        self._apply_workdir_state()
+
+    def _on_clear_workdir(self) -> None:
+        self._workdir = ""
+        self._apply_workdir_state()
+
     def _on_insert_time(self) -> None:
         """在备注光标处插入紧凑时间戳 MM-DD HH:MM（不占位置）"""
         stamp = datetime.now().strftime("%m-%d %H:%M")
@@ -423,4 +508,5 @@ class CardDialog(QDialog):
                             if b.isChecked()), "never"),
             "priority": next((k for k, b in self._priority_choices.items()
                               if b.isChecked()), 0),
+            "workdir": self._workdir.strip(),
         }

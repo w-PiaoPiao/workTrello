@@ -13,6 +13,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 # 数据目录隔离：单文件 / discover / pytest 运行方式下
@@ -81,6 +82,62 @@ class DueDateOptionalTest(unittest.TestCase):
         self.assertFalse(dlg._due_cleared)
         dlg._due_edit.setDate(QDate(2026, 10, 1))
         self.assertEqual(dlg.result_card()["due_date"], "2026-10-01")
+        dlg.deleteLater()
+
+
+class WorkDirOptionalTest(unittest.TestCase):
+    """工作目录可选：新建默认未设置，编辑回填，浏览/清除，提交进 result_card"""
+
+    def test_new_card_defaults_to_empty(self):
+        """新建卡片：默认"未设置"，清除按钮隐藏，提交 workdir 为空串"""
+        dlg = CardDialog(None)
+        self.assertEqual(dlg._workdir, "")
+        self.assertEqual(dlg._workdir_label.text(), "未设置")
+        self.assertFalse(dlg._workdir_clear_btn.isVisibleTo(dlg))
+        self.assertEqual(dlg.result_card()["workdir"], "")
+        dlg.deleteLater()
+
+    def test_edit_existing_card_backfills_path(self):
+        """编辑已有目录的卡：回填路径 + tooltip 存全路径，提交保留"""
+        card = Card(title="x", workdir="/Volumes/SSD/项目")
+        dlg = CardDialog(card)
+        self.assertEqual(dlg._workdir, "/Volumes/SSD/项目")
+        self.assertIn("项目", dlg._workdir_label.text())   # 路径已显示（可能带省略）
+        self.assertEqual(dlg._workdir_label.toolTip(), "/Volumes/SSD/项目")
+        self.assertTrue(dlg._workdir_clear_btn.isVisibleTo(dlg))
+        self.assertEqual(dlg.result_card()["workdir"], "/Volumes/SSD/项目")
+        dlg.deleteLater()
+
+    def test_clear_resets_to_not_set(self):
+        """清除后回到"未设置"态，提交空串"""
+        card = Card(title="x", workdir="/tmp/proj")
+        dlg = CardDialog(card)
+        dlg._on_clear_workdir()
+        self.assertEqual(dlg._workdir, "")
+        self.assertEqual(dlg._workdir_label.text(), "未设置")
+        self.assertFalse(dlg._workdir_clear_btn.isVisibleTo(dlg))
+        self.assertEqual(dlg.result_card()["workdir"], "")
+        dlg.deleteLater()
+
+    def test_browse_sets_path(self):
+        """「浏览…」选中目录即写入状态（QFileDialog mock 掉）"""
+        with patch("app.views.card_dialog.QFileDialog") as fd:
+            fd.getExistingDirectory.return_value = "/tmp/picked"
+            dlg = CardDialog(None)
+            dlg._on_browse_workdir()
+        self.assertEqual(dlg._workdir, "/tmp/picked")
+        self.assertTrue(dlg._workdir_clear_btn.isVisibleTo(dlg))
+        self.assertEqual(dlg.result_card()["workdir"], "/tmp/picked")
+        dlg.deleteLater()
+
+    def test_browse_cancelled_keeps_state(self):
+        """浏览取消（返回空串）不改动现有状态"""
+        card = Card(title="x", workdir="/tmp/proj")
+        dlg = CardDialog(card)
+        with patch("app.views.card_dialog.QFileDialog") as fd:
+            fd.getExistingDirectory.return_value = ""
+            dlg._on_browse_workdir()
+        self.assertEqual(dlg._workdir, "/tmp/proj")
         dlg.deleteLater()
 
 

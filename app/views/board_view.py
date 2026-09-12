@@ -126,6 +126,10 @@ def _set_prop(widget: QWidget, name: str, value) -> None:
 # 卡片徽章底色随主题色键取值（tone 动态属性 → QSS 属性选择器）
 _BADGE_TONES = ("danger", "warning", "accent", "text_secondary")
 
+# 工作目录徽章的显示文本（真实路径放徽章 tooltip；收集/构建/事件过滤
+# 三处靠它识别是目录徽章）
+WORKDIR_BADGE_TEXT = "📂"
+
 
 @lru_cache(maxsize=4)
 def _board_qss(mode: str) -> str:
@@ -462,6 +466,8 @@ class CardWidget(QFrame):
     signal_card_pomo = Signal(str)              # card_id
     signal_card_archive = Signal(str)           # card_id
     signal_card_star = Signal(str)              # card_id（星标 toggle）
+    signal_card_workdir_open = Signal(str)      # card_id（打开工作目录）
+    signal_card_workdir_set = Signal(str)       # card_id（右键快捷设置目录）
     signal_label_clicked = Signal(str)          # label key（点色条过滤）
     signal_drag_blocked = Signal()              # 过滤态下拖拽被拒（提示入口）
 
@@ -479,6 +485,7 @@ class CardWidget(QFrame):
         self._meta_badges: list[tuple[QLabel, str]] = []
         self._notes_badge: QLabel | None = None    # "≡ 有备注"徽章（悬停弹备注预览）
         self._more_badge: QLabel | None = None     # 装不下的徽章用 "…" 提示
+        self._workdir_badge: QLabel | None = None  # "📂"徽章（点击打开工作目录）
         self._fit_state: tuple = ()                # 徽章显示组合缓存（避免重复重排）
         self._fit_width: int | None = None         # 上次徽章取舍时的卡片宽度
         self._fingerprint: tuple = ()
@@ -502,6 +509,12 @@ class CardWidget(QFrame):
         act_star = menu.addAction(
             tr("☆ 移出今日") if self._card.starred else tr("⭐ 加入今日"))
         menu.addSeparator()
+        # 工作目录：有目录先给"打开"，设置项无目录也提供（含更改语义，
+        # 清除走编辑对话框）
+        act_workdir_open = (menu.addAction(tr("📂 打开工作目录"))
+                            if self._card.workdir else None)
+        act_workdir_set = menu.addAction(tr("📁 设置工作目录…"))
+        menu.addSeparator()
         if self._card.id == self._focusing_id:
             act_pomo = menu.addAction(tr("⏹ 停止专注"))
         else:
@@ -512,6 +525,10 @@ class CardWidget(QFrame):
         menu.deleteLater()   # exec 返回即弃用：挂在卡片控件上会随卡片累积
         if chosen is act_star:
             self.signal_card_star.emit(self._card.id)
+        elif act_workdir_open is not None and chosen is act_workdir_open:
+            self.signal_card_workdir_open.emit(self._card.id)
+        elif chosen is act_workdir_set:
+            self.signal_card_workdir_set.emit(self._card.id)
         elif chosen is act_pomo:
             self.signal_card_pomo.emit(self._card.id)
         elif chosen is act_archive:
@@ -547,8 +564,8 @@ class CardWidget(QFrame):
         刷新。tests/test_board_view.py 有字段覆盖断言兜底。
         """
         c = self._card
-        return (c.title, c.done, c.due_date, bool(c.notes), tuple(c.labels),
-                c.priority, c.repeat, c.pomodoros)
+        return (c.title, c.done, c.due_date, bool(c.notes), bool(c.workdir),
+                tuple(c.labels), c.priority, c.repeat, c.pomodoros)
 
     def reapply_style(self) -> None:
         """主题切换后同步卡片内部状态，不重建子控件（保留悬停状态）
@@ -597,6 +614,7 @@ class CardWidget(QFrame):
         self._title_label = None
         self._meta_badges = []
         self._notes_badge = None
+        self._workdir_badge = None
         self._more_badge = None
         self._fit_state = ()
         self._fit_width = None   # 徽章重建后宽度取舍必须重算
@@ -662,6 +680,9 @@ class CardWidget(QFrame):
             meta_items.append((tr("≡ 有备注"), "text_secondary", True))
         if card.pomodoros:
             meta_items.append((f"🍅 ×{card.pomodoros}", "text_secondary", False))
+        if card.workdir:
+            # "📂"占位文本，真实路径放 tooltip；有目录才显示，点击打开
+            meta_items.append((WORKDIR_BADGE_TEXT, "text_secondary", False))
 
         if meta_items:
             meta_row = QHBoxLayout()
@@ -686,6 +707,13 @@ class CardWidget(QFrame):
                     # 自绘浮层上造成双重叠字；「点击固定」提示在浮层内呈现
                     self._notes_badge = badge
                     badge.setCursor(Qt.PointingHandCursor)
+                    badge.installEventFilter(self)
+                elif text == WORKDIR_BADGE_TEXT:
+                    # 工作目录徽章：点击打开目录；完整路径走原生 tooltip
+                    # （只拦截 press，Enter/Leave 放行，tooltip 正常弹出）
+                    self._workdir_badge = badge
+                    badge.setCursor(Qt.PointingHandCursor)
+                    badge.setToolTip(card.workdir)
                     badge.installEventFilter(self)
                 meta_row.addWidget(badge)
             # 折叠指示：装不下的徽章数用 "…" 提示。不进 _meta_badges
@@ -810,6 +838,12 @@ class CardWidget(QFrame):
 
     def eventFilter(self, obj, event):
         """备注徽章：Enter 弹预览浮层；Leave 延迟关闭；左键点击固定/收起"""
+        if obj is self._workdir_badge:
+            if (event.type() == QEvent.MouseButtonPress
+                    and event.button() == Qt.LeftButton):
+                self.signal_card_workdir_open.emit(self._card.id)
+                return True   # 拦截冒泡，避免误开卡片编辑框
+            return False
         if obj is self._notes_badge:
             if event.type() == QEvent.Enter:
                 pop = notes_popover()
@@ -1409,6 +1443,8 @@ class ListColumn(QFrame):
     signal_card_pomo = Signal(str)             # card_id
     signal_card_archive = Signal(str)          # card_id
     signal_card_star = Signal(str)             # card_id（星标 toggle）
+    signal_card_workdir_open = Signal(str)     # card_id（打开工作目录）
+    signal_card_workdir_set = Signal(str)      # card_id（右键快捷设置目录）
     signal_label_clicked = Signal(str)         # label key（点色条过滤）
     signal_drag_blocked = Signal()             # 过滤态下拖拽被拒（→ 看板 toast）
     signal_list_move = Signal(str, str, bool)  # moved_list_id, target_list_id, insert_before
@@ -1516,6 +1552,8 @@ class ListColumn(QFrame):
         cw.signal_card_pomo.connect(self.signal_card_pomo)
         cw.signal_card_archive.connect(self.signal_card_archive)
         cw.signal_card_star.connect(self.signal_card_star)
+        cw.signal_card_workdir_open.connect(self.signal_card_workdir_open)
+        cw.signal_card_workdir_set.connect(self.signal_card_workdir_set)
         cw.signal_label_clicked.connect(self.signal_label_clicked)
         cw.signal_drag_blocked.connect(self.signal_drag_blocked)
         return cw
@@ -2123,6 +2161,8 @@ class BoardView(QWidget):
     signal_card_pomo = Signal(str)              # card_id
     signal_card_archive = Signal(str)           # card_id
     signal_card_star = Signal(str)              # card_id（星标 toggle）
+    signal_card_workdir_open = Signal(str)      # card_id（打开工作目录）
+    signal_card_workdir_set = Signal(str)       # card_id（右键快捷设置目录）
     signal_archive_open = Signal()
     signal_settings_clicked = Signal()          # 打开设置界面
     signal_export = Signal(str)                 # "md" | "csv"
@@ -2745,6 +2785,8 @@ class BoardView(QWidget):
         col.signal_card_pomo.connect(self.signal_card_pomo)
         col.signal_card_archive.connect(self.signal_card_archive)
         col.signal_card_star.connect(self.signal_card_star)
+        col.signal_card_workdir_open.connect(self.signal_card_workdir_open)
+        col.signal_card_workdir_set.connect(self.signal_card_workdir_set)
         # 标签过滤是纯视图态：内部消化，不冒泡控制器
         col.signal_label_clicked.connect(self._on_label_clicked)
         # 过滤态起拖被拒：解释原因（列已禁 drop，用户只会看到禁止光标）
