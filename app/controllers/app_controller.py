@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 from app.config import AppConfig
 from app.models import json_io
 from app.models.board import Board, BoardList, BoardStore, Card
+from app.models.quick_syntax import parse_quick_input
 from app.services.tray_service import TrayService
 from app.views import motion
 from app.views.archive_dialog import ArchiveDialog
@@ -368,12 +369,50 @@ class AppController(QObject):
     # ── 卡片操作 ──────────────────────────────────────────
 
     def _on_quick_add(self) -> None:
-        """桌宠右键快速添加：弹输入框，加到第一个列表"""
+        """桌宠右键快速添加：弹输入框，加到第一个列表（支持速记语法）"""
         title, ok = QInputDialog.getText(self._window, "快速添加卡片", "卡片标题：")
         if ok and title.strip():
             board = self._store.load()
             if board.lists:
                 self._on_card_add(board.lists[0].id, title.strip())
+
+    def _on_bulk_add(self) -> None:
+        """批量添加：每行一张卡（支持速记语法），适合迁移清单/会议行动项
+
+        打开时剪贴板为多行文本则自动预填——"复制若干行 → 一键入库"
+        是最常见的批量来源。撤销一次回滚整批。
+        """
+        from PySide6.QtWidgets import QApplication
+
+        clipboard = QApplication.clipboard()
+        clip = clipboard.text() if clipboard is not None else ""
+        prefill = clip if "\n" in clip else ""
+        text, ok = QInputDialog.getMultiLineText(
+            self._window, "批量添加卡片",
+            "每行一张卡片；行内支持速记：明天 / 周五 / 3天后 / 9月20日、"
+            "!P1、#红", prefill)
+        if not ok:
+            return
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()][:100]
+        if not lines:
+            return
+        board = self._store.load()
+        if not board.lists:
+            return
+        if len(board.lists) == 1:
+            target = board.lists[0]
+        else:
+            names = [l.title for l in board.lists]
+            choice, ok = QInputDialog.getItem(
+                self._window, "批量添加卡片", "添加到列表：", names, 0, False)
+            if not ok:
+                return
+            target = board.lists[names.index(choice)]
+        self._push_undo()
+        new_cards = [self._make_card_from_text(ln) for ln in lines]
+        target.cards[0:0] = new_cards   # 保序插入列首（第一行在最上）
+        board.invalidate_index()
+        self._after_data_change(f"已批量添加 {len(new_cards)} 张卡片")
 
     def _today_focus_items(self, focus=None) -> list[tuple[BoardList, Card]]:
         """今日聚焦卡片（含所属列表），供今日清单浮窗显示
@@ -401,6 +440,14 @@ class AppController(QObject):
             done_count=stats["done_today"])
         self._today_popover.show_below(self._window.frameGeometry())
 
+    def _make_card_from_text(self, text: str) -> Card:
+        """速记语法建卡：行内可写截止日（明天/周五/9/20）、优先级（!P1）、标签（#红）
+
+        解析后标题为空（整行全是语法 token）时回退原文，不吞用户输入。
+        """
+        title, fields = parse_quick_input(text)
+        return Card(title=title or text.strip(), **fields)
+
     def _on_card_add(self, list_id: str, title: str = "") -> None:
         lst = self._store.load().find_list(list_id)
         if lst is None:
@@ -416,7 +463,7 @@ class AppController(QObject):
             card = Card(**dialog.result_card())
         else:
             self._push_undo()
-            card = Card(title=title)
+            card = self._make_card_from_text(title)
         lst.cards.insert(0, card)
         board = self._store.load()
         board.invalidate_index()   # 直接改 cards 结构，索引在变更点立即失效
@@ -690,6 +737,9 @@ class AppController(QObject):
         act_list = QAction("新建列表", self)
         act_list.triggered.connect(self._on_list_add)
         m_file.addAction(act_list)
+        act_bulk = QAction("批量添加卡片", self)
+        act_bulk.triggered.connect(self._on_bulk_add)
+        m_file.addAction(act_bulk)
         m_file.addSeparator()
         act_md = QAction("导出 Markdown", self)
         act_md.triggered.connect(lambda: self._on_export("md"))

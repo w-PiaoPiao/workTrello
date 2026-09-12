@@ -267,6 +267,28 @@ class ControllerFeatureTest(unittest.TestCase):
             self._flush_sync()
         clear.assert_called_once()
 
+    def test_bulk_add_lines(self):
+        """批量添加：每行一张保序、速记语法生效、撤销一次回滚整批"""
+        self._reset()
+        lst = self._list()
+        with patch("app.controllers.app_controller.QInputDialog") as qid, \
+             patch("app.controllers.app_controller.QApplication") as qa:
+            qa.clipboard.return_value.text.return_value = ""   # 剪贴板无多行
+            qid.getMultiLineText.return_value = (
+                "第三张\n改bug !P1 #红\n9月20日交房租\n", True)
+            qid.getItem.return_value = (lst.title, True)
+            self.c._on_bulk_add()
+        cards = self._list().cards
+        self.assertEqual([c.title for c in cards[:3]],
+                         ["第三张", "改bug", "交房租"])
+        self.assertEqual(cards[1].priority, 1)
+        self.assertEqual(cards[1].labels, ["red"])
+        self.assertEqual(cards[2].due_date,
+                         date(date.today().year, 9, 20).isoformat())
+        # 撤销一次回滚整批（单个撤销快照）
+        self.c._on_undo_requested(False)
+        self.assertEqual([c.title for c in self._list().cards][:2], [])
+
     def test_edit_marks_store_dirty(self):
         """数据变更必须标脏——flush() 只在脏时落盘，漏标则编辑只留内存"""
         self._reset()
@@ -350,8 +372,8 @@ class ControllerFeatureTest(unittest.TestCase):
             for x in lst.cards:
                 x.due_date = None
         self.c._after_data_change(None)
-        # 一张今天到期、一张已逾期
-        self.c._on_card_add(self._list().id, "今天到期")
+        # 一张今天到期、一张已逾期（标题避开日期词——速记会把"今天"消费为截止日）
+        self.c._on_card_add(self._list().id, "当天到期")
         self._list().cards[0].due_date = date.today().isoformat()
         self.c._on_card_add(self._list().id, "已逾期")
         self._list().cards[0].due_date = (
@@ -372,7 +394,7 @@ class ControllerFeatureTest(unittest.TestCase):
             self.c._check_due_dates()
         notify.assert_called_once()
         self.assertIn("已逾期", notify.call_args.args[0])
-        self.assertIn("今天到期", notify.call_args.args[0])
+        self.assertIn("当天到期", notify.call_args.args[0])
 
         # 当天签名已入库：重复检查不触发通知、不写日志
         with patch.object(self.c._tray, "show_notification") as notify2, \
