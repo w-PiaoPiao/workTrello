@@ -177,7 +177,8 @@ class NotesPopover(QFrame):
                 and self._recent_hint == hint)
         was_visible = self.isVisible()
         if not same:
-            self.reapply_style()
+            # 样式只依赖主题（主题回调已下发），内容/锚点变化不再
+            # reapply_style——多张带备注卡间快速划过时反复 reparse 纯浪费
             self._body.setText(text)
             self._hint.setVisible(hint)
             # 按最长行估算自然宽度并封顶，保证多行/长文本折行且短文本不拉宽

@@ -57,13 +57,16 @@ class PetCanvas(QWidget):
         self._squash = 0.0          # 落地压扁量 0..1（小动作落地弹性）
         self._focus_mode = False    # 专注模式：闭眼打瞌睡
         self._mood = "happy"        # happy / sad（有逾期卡片时难过）
+        # 绘制资源缓存（见 _paint_assets）：按 (皮肤, 尺寸) 分档
+        self._paint_assets_cache: dict = {}
+        self._blink_enabled = True
         self.setAttribute(Qt.WA_TranslucentBackground, True)
 
-        # 眨眼定时器
+        # 眨眼定时器：显示后才开始（隐藏/暂停动画时停，见 showEvent/hideEvent），
+        # 不再构造即常驻自续——桌宠隐藏到托盘后事件循环不该被持续唤醒
         self._blink_timer = QTimer(self)
         self._blink_timer.setSingleShot(True)
         self._blink_timer.timeout.connect(self._do_blink)
-        self._schedule_blink()
 
     # ── Qt 属性（动画驱动） ─────────────────────────────────
 
@@ -131,6 +134,25 @@ class PetCanvas(QWidget):
             self._mood = mood
             self.update()
 
+    # ── 可见性与眨眼启停 ──────────────────────────────────
+
+    def set_blink_enabled(self, on: bool) -> None:
+        """"暂停动画"总开关同步：关=停眨眼；开=可见时恢复"""
+        self._blink_enabled = on
+        if not on:
+            self._blink_timer.stop()
+        elif self.isVisible():
+            self._schedule_blink()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self._blink_enabled:
+            self._schedule_blink()
+
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        self._blink_timer.stop()
+
     # ── 皮肤 ──────────────────────────────────────────────
 
     def skin(self) -> dict:
@@ -169,80 +191,47 @@ class PetCanvas(QWidget):
     def _draw_pet(self, painter: QPainter, s: float) -> None:
         """绘制卡通形象（以中心为原点，s 为基准尺寸）"""
         half = s / 2
-
-        # ── 配色（皮肤可换，见 AppConfig.PET_SKINS） ──
-        skin = self.skin()
-        body_top = QColor(*skin["body_top"])
-        body_bottom = QColor(*skin["body_bottom"])
-        outline = QColor(*skin["outline"])
-        blush = QColor(*skin["blush"])
-        eye_color = QColor(*skin["eye"])
-        accent = QColor(*skin["ear_inner"])
-        belly = QColor(*skin["belly"])
+        a = self._paint_assets(s)
 
         blinking = self._focus_mode or time.monotonic() < self._blink_until
 
         # ── 影子（脚下椭圆） ──
-        shadow = QColor(60, 40, 20, 28)
         painter.setPen(Qt.NoPen)
-        painter.setBrush(shadow)
+        painter.setBrush(a["shadow"])
         painter.drawEllipse(
             int(-half * 0.62), int(half * 0.80),
             int(half * 1.24), int(half * 0.26))
 
         # ── 耳朵（两只三角圆耳） ──
-        painter.setPen(QPen(outline, max(2.0, s * 0.022)))
-        painter.setBrush(QBrush(body_bottom))
-        for side in (-1, 1):
-            ear = QPainterPath()
-            ear_x = side * half * 0.52
-            ear_y = -half * 0.62
-            ear.moveTo(ear_x - half * 0.16, ear_y + half * 0.18)
-            ear.quadTo(
-                ear_x - half * 0.02, ear_y - half * 0.42,
-                ear_x + half * 0.18, ear_y + half * 0.14)
-            ear.quadTo(
-                ear_x, ear_y + half * 0.24,
-                ear_x - half * 0.16, ear_y + half * 0.18)
+        painter.setPen(a["ear_pen"])
+        painter.setBrush(a["body_brush"])
+        for ear, inner in a["ears"]:
             painter.drawPath(ear)
             # 耳内
             painter.setPen(Qt.NoPen)
-            painter.setBrush(accent)
-            inner = QPainterPath()
-            inner.moveTo(ear_x - half * 0.08, ear_y + half * 0.16)
-            inner.quadTo(
-                ear_x + side * half * 0.02, ear_y - half * 0.24,
-                ear_x + half * 0.09, ear_y + half * 0.12)
+            painter.setBrush(a["accent"])
             painter.drawPath(inner)
-            painter.setPen(QPen(outline, max(2.0, s * 0.022)))
-            painter.setBrush(QBrush(body_bottom))
+            painter.setPen(a["ear_pen"])
+            painter.setBrush(a["body_brush"])
 
         # ── 身体（圆润胶囊形） ──
-        body = QPainterPath()
-        body.addRoundedRect(
-            int(-half * 0.78), int(-half * 0.72),
-            int(half * 1.56), int(half * 1.52),
-            int(half * 0.62), int(half * 0.62))
-        gradient = QRadialGradient(0, -half * 0.3, half * 1.4)
-        gradient.setColorAt(0, body_top)
-        gradient.setColorAt(1, body_bottom)
-        painter.fillPath(body, QBrush(gradient))
+        painter.fillPath(a["body"], a["gradient_brush"])
 
         # 肚皮（浅色椭圆）
         painter.setPen(Qt.NoPen)
-        painter.setBrush(belly)
+        painter.setBrush(a["belly_brush"])
         painter.drawEllipse(
             int(-half * 0.34), int(half * 0.08),
             int(half * 0.68), int(half * 0.52))
 
         # 身体描边
-        painter.setPen(QPen(outline, max(2.2, s * 0.024)))
+        painter.setPen(a["body_pen"])
         painter.setBrush(Qt.NoBrush)
-        painter.drawPath(body)
+        painter.drawPath(a["body"])
 
         # ── 腮红 ──
         painter.setPen(Qt.NoPen)
-        painter.setBrush(blush)
+        painter.setBrush(a["blush_brush"])
         painter.drawEllipse(
             int(-half * 0.56), int(-half * 0.06),
             int(half * 0.20), int(half * 0.13))
@@ -256,9 +245,7 @@ class PetCanvas(QWidget):
         eye_r = half * 0.085
         if blinking:
             # 闭眼：两条弧线
-            pen = QPen(eye_color, max(2.0, s * 0.028))
-            pen.setCapStyle(Qt.RoundCap)
-            painter.setPen(pen)
+            painter.setPen(a["eye_pen"])
             painter.setBrush(Qt.NoBrush)
             for side in (-1, 1):
                 painter.drawLine(
@@ -266,22 +253,20 @@ class PetCanvas(QWidget):
                     int(side * eye_dx + eye_r), int(eye_y))
         else:
             painter.setPen(Qt.NoPen)
-            painter.setBrush(eye_color)
+            painter.setBrush(a["eye_brush"])
             for side in (-1, 1):
                 painter.drawEllipse(
                     int(side * eye_dx - eye_r), int(eye_y - eye_r),
                     int(eye_r * 2), int(eye_r * 2))
             # 高光
-            painter.setBrush(QColor(255, 255, 255, 220))
+            painter.setBrush(a["highlight"])
             for side in (-1, 1):
                 painter.drawEllipse(
                     int(side * eye_dx - eye_r * 0.15), int(eye_y - eye_r * 0.55),
                     int(eye_r * 0.55), int(eye_r * 0.55))
 
         # ── 嘴巴（小 w 形；难过时下弯；今天有截止时小圆嘴+汗珠） ──
-        pen = QPen(eye_color, max(1.8, s * 0.022))
-        pen.setCapStyle(Qt.RoundCap)
-        painter.setPen(pen)
+        painter.setPen(a["mouth_pen"])
         painter.setBrush(Qt.NoBrush)
         mouth_y = half * 0.02
         w = half * 0.09
@@ -294,7 +279,7 @@ class PetCanvas(QWidget):
                 int(w * 0.9), int(w * 0.9))
             # 额头汗珠（颜色随皮肤调色板）
             painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(*skin["sweat"]))
+            painter.setBrush(a["sweat"])
             hx = int(-half * 0.42)
             hy = int(-half * 0.54)
             painter.drawEllipse(
@@ -307,12 +292,86 @@ class PetCanvas(QWidget):
                 int(0), int(mouth_y - w * 0.5), int(w), int(w), 180 * 16, 180 * 16)
 
         # ── 脚（两个小半圆） ──
-        painter.setPen(QPen(outline, max(2.0, s * 0.022)))
-        painter.setBrush(QBrush(accent))
+        painter.setPen(a["foot_pen"])
+        painter.setBrush(a["foot_brush"])
         painter.drawEllipse(
             int(-half * 0.40), int(half * 0.62), int(half * 0.30), int(half * 0.20))
         painter.drawEllipse(
             int(half * 0.10), int(half * 0.62), int(half * 0.30), int(half * 0.20))
+
+    def _paint_assets(self, s: float) -> dict:
+        """按 (皮肤, 尺寸) 分档缓存绘制资源
+
+        色彩/画笔/路径/渐变在帧间完全不变，逐帧重建是纯对象 churn——
+        桌宠态即闲置态，这是应用最长的稳态负载路径。换皮肤走新 key，
+        resize 另起新档；档位超限整体清空（防尺寸抖动积累）。
+        """
+        key = (self._skin_key, int(s))
+        assets = self._paint_assets_cache.get(key)
+        if assets is not None:
+            return assets
+        skin = self.skin()
+        half = s / 2
+
+        # 耳朵与耳内路径（左右对称各一份）
+        ears: list[tuple[QPainterPath, QPainterPath]] = []
+        for side in (-1, 1):
+            ear = QPainterPath()
+            ear_x = side * half * 0.52
+            ear_y = -half * 0.62
+            ear.moveTo(ear_x - half * 0.16, ear_y + half * 0.18)
+            ear.quadTo(
+                ear_x - half * 0.02, ear_y - half * 0.42,
+                ear_x + half * 0.18, ear_y + half * 0.14)
+            ear.quadTo(
+                ear_x, ear_y + half * 0.24,
+                ear_x - half * 0.16, ear_y + half * 0.18)
+            inner = QPainterPath()
+            inner.moveTo(ear_x - half * 0.08, ear_y + half * 0.16)
+            inner.quadTo(
+                ear_x + side * half * 0.02, ear_y - half * 0.24,
+                ear_x + half * 0.09, ear_y + half * 0.12)
+            ears.append((ear, inner))
+
+        body = QPainterPath()
+        body.addRoundedRect(
+            int(-half * 0.78), int(-half * 0.72),
+            int(half * 1.56), int(half * 1.52),
+            int(half * 0.62), int(half * 0.62))
+        gradient = QRadialGradient(0, -half * 0.3, half * 1.4)
+        gradient.setColorAt(0, QColor(*skin["body_top"]))
+        gradient.setColorAt(1, QColor(*skin["body_bottom"]))
+
+        eye_pen = QPen(QColor(*skin["eye"]), max(2.0, s * 0.028))
+        eye_pen.setCapStyle(Qt.RoundCap)
+        mouth_pen = QPen(QColor(*skin["eye"]), max(1.8, s * 0.022))
+        mouth_pen.setCapStyle(Qt.RoundCap)
+
+        assets = {
+            "shadow": QColor(60, 40, 20, 28),
+            "outline": QColor(*skin["outline"]),
+            "accent": QColor(*skin["ear_inner"]),
+            "belly": QColor(*skin["belly"]),
+            "sweat": QColor(*skin["sweat"]),
+            "ear_pen": QPen(QColor(*skin["outline"]), max(2.0, s * 0.022)),
+            "body_pen": QPen(QColor(*skin["outline"]), max(2.2, s * 0.024)),
+            "eye_pen": eye_pen,
+            "mouth_pen": mouth_pen,
+            "foot_pen": QPen(QColor(*skin["outline"]), max(2.0, s * 0.022)),
+            "body_brush": QBrush(QColor(*skin["body_bottom"])),
+            "belly_brush": QBrush(QColor(*skin["belly"])),
+            "blush_brush": QBrush(QColor(*skin["blush"])),
+            "eye_brush": QBrush(QColor(*skin["eye"])),
+            "foot_brush": QBrush(QColor(*skin["ear_inner"])),
+            "gradient_brush": QBrush(gradient),
+            "highlight": QColor(255, 255, 255, 220),
+            "ears": ears,
+            "body": body,
+        }
+        if len(self._paint_assets_cache) >= 8:
+            self._paint_assets_cache.clear()
+        self._paint_assets_cache[key] = assets
+        return assets
 
 
 class PetView(QWidget):
@@ -552,12 +611,14 @@ class PetView(QWidget):
             return
         self._float_anim.start()
         self._breath_anim.start()
+        self._pet_canvas.set_blink_enabled(True)
         self._schedule_random_action()
 
     def stop_idle(self) -> None:
         self._float_anim.stop()
         self._breath_anim.stop()
         self._action_timer.stop()
+        self._pet_canvas.set_blink_enabled(False)
         if self._active_action is not None:
             self._active_action.stop()
             self._active_action = None
@@ -630,9 +691,15 @@ class PetView(QWidget):
     # ── 更新 ──────────────────────────────────────────────
 
     def update_count(self, count: int) -> None:
-        """更新角标为当前卡片总数；0 张时隐藏角标"""
+        """更新角标为当前卡片总数；0 张时隐藏角标
+
+        只动角标不动主题：样式随主题切换回调下发，此前每次计数都
+        reapply_theme（重拼全局 QSS + setStyleSheet re-polish）是
+        与计数无关的纯浪费。
+        """
+        if count == self._count:
+            return
         self._count = count
-        self.reapply_theme()
         self._layout_badge()
 
     def _layout_badge(self) -> None:
@@ -646,6 +713,12 @@ class PetView(QWidget):
             text = "99+" if self._count > 99 else str(self._count)
         else:
             badge.hide()
+            return
+        # 文本未变只跟随窗口宽度挪位：倒计时逐秒变化但等宽，adjustSize/
+        # setFixedWidth/raise_ 全套每秒执行是无效功（set_badge_override
+        # 每秒驱动一次）
+        if badge.text() == text and badge.isVisible():
+            badge.move(self.width() - badge.width() - 6, 6)
             return
         badge.setText(text)
         badge.adjustSize()
@@ -713,7 +786,7 @@ class PetView(QWidget):
     def reapply_theme(self) -> None:
         c = AppTheme.colors()
         if self._badge is not None:
-            self._badge.setStyleSheet(f"""
+            qss = f"""
                 QLabel {{
                     background: {c['accent']};
                     color: white;
@@ -722,5 +795,10 @@ class PetView(QWidget):
                     font-weight: bold;
                     padding: 0 5px;
                 }}
-            """)
-        self._context_menu.setStyleSheet(AppTheme.global_qss())
+            """
+            # 内容相同也触发 re-polish：仅在真正变化时下发
+            if self._badge.styleSheet() != qss:
+                self._badge.setStyleSheet(qss)
+        gqss = AppTheme.global_qss()
+        if self._context_menu.styleSheet() != gqss:
+            self._context_menu.setStyleSheet(gqss)

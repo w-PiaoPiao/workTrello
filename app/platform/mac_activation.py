@@ -89,7 +89,17 @@ def set_activation_policy(policy: int, activate: bool = False) -> bool:
 
 
 def activate_app() -> None:
-    """让本应用接管菜单栏并前置（accessory 面板点击不会自动激活）"""
+    """让本应用接管菜单栏并前置（accessory 面板点击不会自动激活）
+
+    幂等短路：已处于 regular 且应用已激活（菜单栏已在本应用）时跳过——
+    事件过滤器挂在 QApplication 上，应用内每次鼠标按下都会进来，此时
+    再执行 setActivationPolicy + activateIgnoringOtherApps 两次 objc
+    调用并触发 AppKit 激活处理是高频点击下的无谓主线程开销。
+    """
+    if (_current_policy == _REGULAR
+            and QApplication.applicationState()
+            == Qt.ApplicationState.ApplicationActive):
+        return
     set_activation_policy(_REGULAR, activate=True)
 
 

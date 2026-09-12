@@ -65,14 +65,19 @@ class LabelChip(QPushButton):
         return self._key
 
     def reapply(self) -> None:
+        """下发本 chip 的完整配色（含 :checked 选中态）
+
+        选中/取消由 Qt 伪态自动切换边框，点击时无需再重设样式表——
+        此前每点一个 chip 会对全部 6 个 chip 重新拼接并 reparse。
+        """
         bg, fg = AppTheme.label_style(self._key)
-        border = "2px solid " + fg if self.isChecked() else "1px solid transparent"
         self.setStyleSheet(f"""
             QPushButton {{
                 background: {bg};
-                border: {border};
+                border: 1px solid transparent;
                 border-radius: 6px;
             }}
+            QPushButton:checked {{ border: 2px solid {fg}; }}
             QPushButton:hover {{ border: 2px solid {fg}; }}
         """)
 
@@ -157,8 +162,7 @@ class CardDialog(QDialog):
         for key in AppConfig.LABEL_COLORS:
             chip = LabelChip(key)
             if card and key in card.labels:
-                chip.setChecked(True)
-            chip.clicked.connect(self._on_chip_toggled)
+                chip.setChecked(True)   # 选中态边框由 :checked 伪态自动切换
             self._label_chips.append(chip)
             labels_row.addWidget(chip)
         labels_row.addStretch(1)
@@ -334,10 +338,6 @@ class CardDialog(QDialog):
         """关闭/确定/取消统一出口：记住当前尺寸（X 关闭走 closeEvent → reject）"""
         AppConfig.save_card_dialog_size(self.size())
         super().done(result)
-
-    def _on_chip_toggled(self) -> None:
-        for chip in self._label_chips:
-            chip.reapply()
 
     def _on_repeat_clicked(self) -> None:
         """重复周期单选：被点击的成为唯一选中项"""

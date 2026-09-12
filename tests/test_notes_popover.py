@@ -362,7 +362,11 @@ class PopoverUnitTest(unittest.TestCase):
         self.assertIs(notes_popover(), notes_popover())
 
     def test_repeated_show_same_content_skips_rebuild(self):
-        """同内容同锚重复展示跳过样式/排版重建；变化或隐藏后重建"""
+        """显隐/换内容均不触发样式重设（样式只随主题回调下发，回归护栏）
+
+        此前 _show 里调用 reapply_style：样式明明只依赖主题，却在多张
+        带备注卡间快速划过时反复 reparse。
+        """
         from PySide6.QtCore import QRect
         pop = notes_popover()
         calls = []
@@ -370,14 +374,11 @@ class PopoverUnitTest(unittest.TestCase):
         pop.reapply_style = lambda: (calls.append(1), orig())
         anchor = QRect(200, 200, 60, 18)
         pop.show_for("同一段备注", anchor)
-        self.assertEqual(len(calls), 1)        # 首次展示需重建
-        pop.show_for("同一段备注", anchor)      # 重复展示 → 跳过
-        self.assertEqual(len(calls), 1)
-        pop.show_for("换一段备注", anchor)      # 内容变化 → 重建
-        self.assertEqual(len(calls), 2)
+        pop.show_for("同一段备注", anchor)      # 重复展示 → 跳过排版重建
+        pop.show_for("换一段备注", anchor)      # 内容变化 → 只重建排版
         pop.hide_now()
-        pop.show_for("同一段备注", anchor)      # 隐藏后重新展示 → 重建
-        self.assertEqual(len(calls), 3)
+        pop.show_for("同一段备注", anchor)      # 隐藏后重新展示
+        self.assertEqual(len(calls), 0)        # 样式重设从不由 show 触发
         pop.hide_now()
 
 

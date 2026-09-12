@@ -133,13 +133,13 @@ class MainWindow(QWidget):
         self._last_edge_cursor: Qt.CursorShape | None = None
         if AppConfig.IS_WINDOWS:
             self.setMouseTracking(True)
-            # 展开态常驻轻量光标轮询：系统缩放期间 Qt 收不到鼠标事件、
+            # 展开态轻量光标轮询：系统缩放期间 Qt 收不到鼠标事件、
             # 结束后 hover/move 链可能不重建，轮询保证光标始终按鼠标真实
-            # 位置回正（刷新函数内含展开态/窗口内守卫，非展开态自动空转）
+            # 位置回正（刷新函数内含展开态/窗口内守卫）。随展开/折叠与
+            # 显隐启停——桌宠折叠态/隐藏态不再每 150ms 空转唤醒事件循环
             self._edge_cursor_timer = QTimer(self)
             self._edge_cursor_timer.setInterval(AppConfig.EDGE_CURSOR_POLL_MS)
             self._edge_cursor_timer.timeout.connect(self._refresh_edge_cursor)
-            self._edge_cursor_timer.start()
 
         # 子视图占位（外部注入）
         self._collapsed_view: QWidget | None = None
@@ -254,7 +254,10 @@ class MainWindow(QWidget):
         self._animate_size(
             target.width(), target.height(),
             delta=self._expand_delta, base_geo=base_geo)
-        # 展开后光标由 EDGE_CURSOR_POLL_MS 常驻轮询持续刷新（此处无需兜底）
+        # 展开后光标由 EDGE_CURSOR_POLL_MS 轮询持续刷新（动画期守卫空转，
+        # 动画结束即正常生效；折叠/隐藏时停止）
+        if AppConfig.IS_WINDOWS:
+            self._edge_cursor_timer.start()
 
     def collapse(self) -> None:
         if self._mode == "collapsed" or self._animation_running:
@@ -263,6 +266,8 @@ class MainWindow(QWidget):
         self._zoomed = False
         base_geo = self.geometry()
         self._mode = "collapsed"
+        if AppConfig.IS_WINDOWS:
+            self._edge_cursor_timer.stop()   # 折叠态轮询是纯空转
 
         self.setMaximumSize(16777215, 16777215)
         self.setMinimumSize(0, 0)
@@ -420,6 +425,8 @@ class MainWindow(QWidget):
             self.anim.stop()
         self._animation_running = False
         self._expanding = False
+        if AppConfig.IS_WINDOWS:
+            self._edge_cursor_timer.stop()   # 隐藏态不再轮询光标
         self._finish_board_rename()    # 隐藏前提交未完成的重命名
         if self._collapsed_view is not None:
             self._set_pet_idle(False)

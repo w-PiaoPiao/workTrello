@@ -60,6 +60,82 @@ class _TitleLabel(QLabel):
         super().mouseReleaseEvent(event)
 
 
+class _PopRow(QFrame):
+    """今日清单行：勾选框 + 标题 + 截止徽章（控件复用，数据可重绑）
+
+    浮窗可见时每次数据变更都会 set_items（勾选今日卡正是在浮窗打开时
+    操作的），此前全量销毁重建所有行 + 每行 3 次 setStyleSheet 是热路径；
+    与 ListColumn.refresh_cards 同一策略按 card.id 复用行控件。
+    """
+
+    signal_card_done = Signal(str, str, bool)   # list_id, card_id, done=勾选完成
+    signal_card_edit = Signal(str, str)   # list_id, card_id
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._list_id = ""
+        self._card_id = ""
+        self.setObjectName("popRow")
+        self.setMinimumHeight(_ROW_MIN_H)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(8, 4, 8, 4)
+        lay.setSpacing(6)
+
+        self._check = _CardCheckButton()
+        self._check.clicked.connect(self._emit_done)
+        lay.addWidget(self._check)
+
+        self._title = _TitleLabel("")
+        self._title.clicked.connect(self._emit_edit)
+        lay.addWidget(self._title, 1)
+
+        self._badge = QLabel()
+        self._badge.hide()
+        lay.addWidget(self._badge)
+        self.reapply_theme()
+
+    def _emit_done(self) -> None:
+        self.signal_card_done.emit(self._list_id, self._card_id, True)
+
+    def _emit_edit(self) -> None:
+        self.signal_card_edit.emit(self._list_id, self._card_id)
+
+    def update_row(self, lst: BoardList, card: Card) -> None:
+        """重绑到另一张卡：换 id、标题与截止徽章，勾选态复位"""
+        self._list_id = lst.id
+        self._card_id = card.id
+        self._check.set_done(False)
+        self._title.setText(card.title)
+        if card.due_date:
+            self._badge.setText(_fmt_due_short(card.due_date))
+            self._badge.show()
+        else:
+            self._badge.hide()
+
+    def reapply_theme(self) -> None:
+        """行配色快照随主题重下（内容相同也 re-polish，仅主题切换时调用）"""
+        c = AppTheme.colors()
+        self.setStyleSheet(f"""
+            QFrame#popRow {{
+                background: {c['bg_card']};
+                border: 1px solid {c['border']};
+                border-radius: 8px;
+            }}
+            QFrame#popRow:hover {{ border: 1px solid {c['accent']}; }}
+        """)
+        self._title.setStyleSheet(
+            f"color: {c['text_primary']}; font-size: 12px; background: transparent;")
+        self._badge.setStyleSheet(f"""
+            QLabel {{
+                color: {c['text_secondary']};
+                font-size: 11px;
+                background: {c['accent_soft']};
+                border-radius: 6px;
+                padding: 1px 6px;
+            }}
+        """)
+
+
 class TodayPopover(QWidget):
     """今日待办浮窗（内容由 set_items 注入，勾选即从列表移除）"""
 
@@ -81,30 +157,33 @@ class TodayPopover(QWidget):
     def _on_theme_changed(self) -> None:
         """主题切换：外壳与每行的配色都是构建时的快照，需重刷
 
-        与 archive_dialog.reapply_theme 同一意图。外壳布局保留不重建
-        （QWidget 同一时刻只能有一个布局，重建会告警），只重设样式并按
-        缓存数据重建行。
+        行控件不重建，只对现存的行重下样式（set_items 会复用行）。
         """
         if not self._built:
             return
         self._apply_style()
-        self.set_items(self._items)
+        for _lid, _cid, row in self._rows:
+            row.reapply_theme()
 
     # ── 数据注入 ──────────────────────────────────────────
 
     def set_items(self, items: list[tuple[BoardList, Card]]) -> None:
         self._rebuild_row_widget()
         self._items = list(items)
+        self._title_label.setText(f"今日待办 · {len(items)}")
         layout = self._rows_layout
+        # 按 card.id 复用行控件（与 ListColumn.refresh_cards 同一策略）
+        reusable = {card_id: row for _lid, card_id, row in self._rows}
+        self._rows.clear()
         while layout.count():
             item = layout.takeAt(0)
             w = item.widget()
-            if w is not None:
-                w.setParent(None)
-                w.deleteLater()
-        self._rows.clear()
+            if w is None:
+                continue
+            w.setParent(None)
+            if isinstance(w, _PopRow) and w not in reusable.values():
+                w.deleteLater()   # 没有卡可再绑定的行才销毁
 
-        self._title_label.setText(f"今日待办 · {len(items)}")
         if not items:
             empty = QLabel("今天没有待办 🎉")
             empty.setAlignment(Qt.AlignCenter)
@@ -116,56 +195,20 @@ class TodayPopover(QWidget):
             return
 
         for lst, card in items:
-            row = self._make_row(lst, card)
+            row = reusable.pop(card.id, None)
+            if row is None:
+                row = _PopRow()
+                # 行信号直通浮窗信号（每行只连一次，随行复用）
+                row.signal_card_done.connect(self.signal_card_done)
+                row.signal_card_edit.connect(self.signal_card_edit)
+            else:
+                row.setParent(self)
+            row.update_row(lst, card)
             layout.addWidget(row)
             self._rows.append((lst.id, card.id, row))
         layout.addStretch(1)
         h = min(_MAX_POP_H, 62 + _ROW_MIN_H * len(items))
         self.setFixedHeight(h)
-
-    def _make_row(self, lst: BoardList, card: Card) -> QFrame:
-        c = AppTheme.colors()
-        row = QFrame()
-        row.setObjectName("popRow")
-        row.setMinimumHeight(_ROW_MIN_H)
-        row.setStyleSheet(f"""
-            QFrame#popRow {{
-                background: {c['bg_card']};
-                border: 1px solid {c['border']};
-                border-radius: 8px;
-            }}
-            QFrame#popRow:hover {{ border: 1px solid {c['accent']}; }}
-        """)
-        lay = QHBoxLayout(row)
-        lay.setContentsMargins(8, 4, 8, 4)
-        lay.setSpacing(6)
-
-        # 勾选框复用看板自绘控件（与卡片同一视觉语言）
-        check = _CardCheckButton()
-        check.clicked.connect(
-            lambda: self.signal_card_done.emit(lst.id, card.id, True))
-        lay.addWidget(check)
-
-        title = _TitleLabel(card.title)
-        title.setStyleSheet(
-            f"color: {c['text_primary']}; font-size: 12px; background: transparent;")
-        title.clicked.connect(
-            lambda: self.signal_card_edit.emit(lst.id, card.id))
-        lay.addWidget(title, 1)
-
-        if card.due_date:
-            badge = QLabel(_fmt_due_short(card.due_date))
-            badge.setStyleSheet(f"""
-                QLabel {{
-                    color: {c['text_secondary']};
-                    font-size: 11px;
-                    background: {c['accent_soft']};
-                    border-radius: 6px;
-                    padding: 1px 6px;
-                }}
-            """)
-            lay.addWidget(badge)
-        return row
 
     # ── 基础 UI ──────────────────────────────────────────
 
