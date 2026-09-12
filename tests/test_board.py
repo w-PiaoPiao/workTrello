@@ -26,7 +26,6 @@ from app.models.json_io import (
     atomic_write_json,
     doc_has_cards,
     good_prev_copy,
-    latest_backup,
     load_json_doc,
     nonempty_snapshots,
     restore_from_backup,
@@ -440,12 +439,11 @@ class PrevBackupRecoveryTest(unittest.TestCase):
         bak.write_text("不是JSON", encoding="utf-8")
         self.assertFalse(restore_from_backup(self.path, bak))
 
-    def test_latest_backup_helpers(self):
+    def test_good_prev_copy_helper(self):
         self.assertIsNone(good_prev_copy(self.path))  # 仅写过一次，无 .prev
         self.path.write_text("{坏", encoding="utf-8")
         doc = load_json_doc(self.path, on_problem=lambda *_: None)
         self.assertEqual(doc, {})
-        self.assertIsNotNone(latest_backup(self.path))
         self.assertIsNone(good_prev_copy(self.path))  # 损坏备份 ≠ 好副本
 
     # ── 启动快照链（防空板覆盖事故的多层备份） ──

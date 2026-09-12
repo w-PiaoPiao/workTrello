@@ -10,7 +10,7 @@ import logging
 from datetime import date, timedelta
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QTimer
+from PySide6.QtCore import QObject, Qt, QTimer
 from PySide6.QtGui import QAction, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -82,6 +82,7 @@ class AppController(QObject):
         # 之后由 DUE_CHECK_INTERVAL_MS 周期驱动
         QTimer.singleShot(2000, self._check_due_dates)
         self._pomo_card_id: str | None = None
+        self._pomo_shown_minute: int | None = None   # 托盘 tooltip 已显示的分钟位
         self._pomo_left = 0
         self._pomo_timer = QTimer(self)
         self._pomo_timer.setInterval(1000)
@@ -93,8 +94,9 @@ class AppController(QObject):
                 self._on_system_scheme_changed)
 
         # ── 加载数据（含损坏恢复询问） ─────────────────────
+        # 启动检查只走上方 2s 延迟那一次（等窗口就绪，避免提醒弹在
+        # 启动瞬间）；此处不再立即调用，否则重复全板扫描且提醒抢跑
         self._load_data()
-        self._check_due_dates()
 
         # ── 连接信号 ──────────────────────────────────────
         self._connect_signals()
@@ -361,6 +363,9 @@ class AppController(QObject):
             return
         if not title:
             dialog = CardDialog(None, self._window)
+            # exec 返回后对话框即弃用：关闭时销毁，避免 widget 树在
+            # 主窗口下以隐藏状态无限累积（QDialog.exec 已 close）
+            dialog.setAttribute(Qt.WA_DeleteOnClose)
             if dialog.exec() != CardDialog.Accepted:
                 return
             self._push_undo()
@@ -376,6 +381,7 @@ class AppController(QObject):
         if card is None:
             return
         dialog = CardDialog(card, self._window)
+        dialog.setAttribute(Qt.WA_DeleteOnClose)   # 同 _on_card_add：用完即销毁
         if dialog.exec() != CardDialog.Accepted:
             return
         self._push_undo()
@@ -800,6 +806,7 @@ class AppController(QObject):
 
     def _pomo_start(self, card: Card) -> None:
         self._pomo_card_id = card.id
+        self._pomo_shown_minute = None   # 强制首个 tick 刷新托盘 tooltip
         self._pomo_left = AppConfig.POMODORO_MINUTES * 60
         self._pomo_timer.start()
         self._board_view.set_focusing_card(card.id)
@@ -840,10 +847,14 @@ class AppController(QObject):
             return
         m, s = divmod(self._pomo_left, 60)
         self._pet_view.set_badge_override(f"{m:02d}:{s:02d}")
-        board = self._store.load()
-        _lst, card = board.find_card(self._pomo_card_id)
-        title = card.title[:16] if card else ""
-        self._tray.set_tooltip(f"专注中 {m:02d}:{s:02d} · {title}")
+        # 托盘 tooltip 是平台调用（触发系统托盘重绘），文案分钟粒度才变：
+        # 只在分钟位变化时更新，顺带省掉每秒一次的全板 find_card
+        if m != self._pomo_shown_minute:
+            self._pomo_shown_minute = m
+            board = self._store.load()
+            _lst, card = board.find_card(self._pomo_card_id)
+            title = card.title[:16] if card else ""
+            self._tray.set_tooltip(f"专注中 {m:02d}:{s:02d} · {title}")
 
     # ── 归档 ──────────────────────────────────────────────
 
@@ -862,7 +873,7 @@ class AppController(QObject):
         if self._archive_dialog is None:
             self._archive_dialog = ArchiveDialog(self._window)
             self._archive_dialog.signal_restore_requested.connect(
-                lambda card_id: self._on_card_restore(card_id))
+                self._on_card_restore)
         self._archive_dialog.show()
         self._archive_dialog.raise_()
         self._archive_dialog.activateWindow()

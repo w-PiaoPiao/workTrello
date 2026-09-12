@@ -41,10 +41,29 @@ class Toast(QLabel):
         self._fade.setDuration(260)
         self._fade.finished.connect(self._on_fade_finished)
 
+    def _rebuild_effect(self) -> None:
+        """重建 effect 与其动画（setGraphicsEffect(None) 会销毁 effect）"""
+        self._effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self._effect)
+        self._fade = QPropertyAnimation(self._effect, b"opacity", self)
+        self._fade.setDuration(260)
+        self._fade.finished.connect(self._on_fade_finished)
+
+    def _drop_effect(self) -> None:
+        """摘掉 effect：隐藏期不走离屏渲染通道（对齐 motion.py"播完即卸"）"""
+        if self._effect is None:
+            return
+        self._fade.stop()
+        self.setGraphicsEffect(None)
+        self._effect = None
+        self._fade = None
+
     # ── 对外 ──────────────────────────────────────────────
 
     def show_message(self, text: str) -> None:
         """显示提示（重置淡出计时与透明度）"""
+        if self._effect is None:
+            self._rebuild_effect()
         self._fade.stop()
         self._effect.setOpacity(1.0)
         self.setText(text)
@@ -60,9 +79,8 @@ class Toast(QLabel):
     def hide_now(self) -> None:
         """立即隐藏（不播放淡出）"""
         self._timer.stop()
-        self._fade.stop()
-        self._effect.setOpacity(1.0)
         self.hide()
+        self._drop_effect()
 
     # ── 淡出 ──────────────────────────────────────────────
 
@@ -73,5 +91,6 @@ class Toast(QLabel):
         self._fade.start()
 
     def _on_fade_finished(self) -> None:
-        if self._effect.opacity() <= 0.01:
+        if self._effect is not None and self._effect.opacity() <= 0.01:
             self.hide()
+            self._drop_effect()

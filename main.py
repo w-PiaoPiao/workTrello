@@ -71,7 +71,9 @@ def main():
     # ── 启动控制器 ────────────────────────────────────────
     from app.controllers.app_controller import AppController
 
-    _ = AppController()
+    # 显式挂在 app 上保活：控制器无 Qt 父级，仅靠栈帧局部变量引用
+    # 在重构（如提前 return）时容易被回收
+    app._controller = AppController()
 
     sys.exit(app.exec())
 

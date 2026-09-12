@@ -127,12 +127,6 @@ def backup_corrupted(path: Path) -> Path | None:
     return bak_path
 
 
-def latest_backup(path: Path) -> Path | None:
-    """最近的损坏隔离备份（board.json.corrupt.<时间戳>.bak）"""
-    backups = sorted(path.parent.glob(f"{path.name}.corrupt.*.bak"))
-    return backups[-1] if backups else None
-
-
 def good_prev_copy(path: Path) -> Path | None:
     """最近一次成功写入轮转出的好副本（<文件名>.prev），不存在返回 None"""
     prev = path.with_name(path.name + ".prev")

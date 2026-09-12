@@ -129,9 +129,19 @@ def render_pixmap(size: int) -> QPixmap:
     return pm
 
 
+_icon_cache: QIcon | None = None
+
+
 def create_app_icon() -> QIcon:
-    """多尺寸应用图标（托盘 / 窗口 / 任务栏共用）"""
-    icon = QIcon()
-    for size in (16, 24, 32, 48, 64, 128, 256):
-        icon.addPixmap(render_pixmap(size))
-    return icon
+    """多尺寸应用图标（托盘 / 窗口 / 任务栏共用）
+
+    进程内只渲染一次：7 个尺寸含 4x 超采样，重复渲染是启动路径上的
+    纯浪费（main 与 TrayService 各调一次）。图标静态，缓存安全。
+    """
+    global _icon_cache
+    if _icon_cache is None:
+        icon = QIcon()
+        for size in (16, 24, 32, 48, 64, 128, 256):
+            icon.addPixmap(render_pixmap(size))
+        _icon_cache = icon
+    return _icon_cache

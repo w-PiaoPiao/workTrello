@@ -433,6 +433,7 @@ class CardWidget(QFrame):
         menu.addSeparator()
         act_archive = menu.addAction("归档")
         chosen = menu.exec(self.mapToGlobal(pos))
+        menu.deleteLater()   # exec 返回即弃用：挂在卡片控件上会随卡片累积
         if chosen is act_pomo:
             self.signal_card_pomo.emit(self._card.id)
         elif chosen is act_archive:
@@ -2068,10 +2069,13 @@ class BoardView(QWidget):
                 cards = [c for c in cards
                          if q in c.title.lower() or q in c.notes.lower()]
             # 今日聚焦内排序：高 > 中 > 低，无优先级垫底；同级星标提前，
-            # 再按截止日升序（星标是主动标注，优先于被动"今天截止"）
-            cards.sort(key=lambda c: (
-                c.priority == 0, c.priority, not c.starred,
-                c.due_delta(today) if c.due_delta(today) is not None else 999))
+            # 再按截止日升序（星标是主动标注，优先于被动"今天截止"）。
+            # decorate：due_delta（含 ISO 解析）每卡只算一次
+            def _today_sort_key(c: Card):
+                delta = c.due_delta(today)
+                return (c.priority == 0, c.priority, not c.starred,
+                        delta if delta is not None else 999)
+            cards.sort(key=_today_sort_key)
             return cards
         return self._filter_cards(lst, q)
 
@@ -2117,6 +2121,7 @@ class BoardView(QWidget):
         act_import = menu.addAction("从备份导入…")
         chosen = menu.exec(self.mapToGlobal(
             QPoint(self._export_btn.x(), self._export_btn.height())))
+        menu.deleteLater()   # 常驻 BoardView 上的菜单不销毁会每次导出累积一个
         if chosen is act_md:
             self.signal_export.emit("md")
         elif chosen is act_csv:
