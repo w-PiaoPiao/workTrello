@@ -12,6 +12,13 @@ from pathlib import Path
 from PySide6.QtCore import QSettings
 
 
+# 按 env key 缓存的 QSettings 单例（PET_BOARD_DATA_DIR 进程内不变，
+# key 维度切分即可保住测试隔离）。此前每次读写都新建 QSettings：
+# 构造涉及路径解析，析构还会触发整份配置 sync 写盘，而读写是高频路径
+# （窗口位置/尺寸、折叠列、提醒日志每分钟都在碰）。
+_settings_cache: dict[str, QSettings] = {}
+
+
 def _settings() -> QSettings:
     """应用设置（组织/应用名定位 QSettings）
 
@@ -24,15 +31,20 @@ def _settings() -> QSettings:
     QSettings(org, app) 这种两参构造无效（实测 fileName 仍指向注册表），
     故这里显式传 INI 路径。
     """
-    override = os.environ.get("PET_BOARD_DATA_DIR")
-    if override:
-        ini = Path(override) / "settings.ini"
-        try:
-            ini.parent.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            pass
-        return QSettings(str(ini), QSettings.IniFormat)
-    return QSettings(AppConfig.APP_ORG, AppConfig.APP_NAME)
+    override = os.environ.get("PET_BOARD_DATA_DIR") or ""
+    inst = _settings_cache.get(override)
+    if inst is None:
+        if override:
+            ini = Path(override) / "settings.ini"
+            try:
+                ini.parent.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
+            inst = QSettings(str(ini), QSettings.IniFormat)
+        else:
+            inst = QSettings(AppConfig.APP_ORG, AppConfig.APP_NAME)
+        _settings_cache[override] = inst
+    return inst
 
 
 class AppConfig:

@@ -271,8 +271,8 @@ class AppController(QObject):
             self._tray.show_notification(
                 "看板数据保存失败，请检查磁盘空间或文件权限")
             return
-        if had_cards:
-            # 保存过含卡数据：清除"已确认空板"标记，下次真空时会重新询问
+        if had_cards and AppConfig.get_empty_board_ack():
+            # 标记绝大多数时间缺席：先查再删，省掉每次保存的一次 QSettings remove
             AppConfig.clear_empty_board_ack()
 
     # ── 信号 ──────────────────────────────────────────────
@@ -760,7 +760,7 @@ class AppController(QObject):
         today = date.today()
         board = self._store.load()
         log = AppConfig.get_remind_log()
-        log_for_today = log.get(today.isoformat(), [])
+        log_for_today = set(log.get(today.isoformat(), ()))   # set 判重 O(1)
         items: list[tuple[str, str]] = []   # (卡片标题, 状态文案)
         for lst in board.lists:
             for c in lst.cards:
@@ -773,17 +773,19 @@ class AppController(QObject):
                 key = f"{c.id}:{c.due_date}:{kind}"
                 if key in log_for_today:
                     continue
-                log_for_today.append(key)
+                log_for_today.add(key)
                 items.append((c.title, "已逾期" if kind == "overdue"
                               else "今天截止"))
-        if not items:
-            return
-        # 清旧日志：只保留今天与昨天（防无限增长）
+        # 清旧日志（只留今天与昨天）：必须无条件执行——放在"无新提醒就
+        # 早退"之后会让旧条目在无提醒的日子永不修剪，日志越积越大
         keep = (today.isoformat(),
                 (today - timedelta(days=1)).isoformat())
-        log = {d: v for d, v in log.items() if d in keep}
-        log[today.isoformat()] = log_for_today
-        AppConfig.save_remind_log(log)
+        trimmed = {d: v for d, v in log.items() if d in keep}
+        trimmed[today.isoformat()] = sorted(log_for_today)
+        if items or trimmed.keys() != log.keys():
+            AppConfig.save_remind_log(trimmed)
+        if not items:
+            return
 
         parts = [f"「{t}」{k}" for t, k in items[:2]]
         if len(items) > 2:

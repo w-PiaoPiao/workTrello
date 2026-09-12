@@ -239,10 +239,22 @@ class ControllerFeatureTest(unittest.TestCase):
         notify.assert_called_once()
 
     def test_flush_with_cards_clears_empty_ack(self):
-        """保存含卡数据后清除"已确认空板"标记（下次真空重新询问）"""
+        """保存含卡数据后清除"已确认空板"标记（下次真空重新询问）
+
+        清除带存在性守卫：ack 缺席（绝大多数时间）不触发 remove。
+        """
         self._reset()
         self.c._on_card_add(self._list().id, "有卡")
-        with patch.object(AppConfig, "clear_empty_board_ack") as clear:
+        # ack 缺席 → 不做无谓的 remove
+        with patch.object(AppConfig, "get_empty_board_ack",
+                          return_value=False), \
+             patch.object(AppConfig, "clear_empty_board_ack") as clear:
+            self.c._flush_store()
+        clear.assert_not_called()
+        # ack 存在 → 清除
+        with patch.object(AppConfig, "get_empty_board_ack",
+                          return_value=True), \
+             patch.object(AppConfig, "clear_empty_board_ack") as clear:
             self.c._flush_store()
         clear.assert_called_once()
 
