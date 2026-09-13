@@ -94,7 +94,9 @@ class MainWindow(QWidget):
 
     zoom_state_changed = Signal(bool)
     undo_shortcut = Signal()      # Windows/Linux：Ctrl+Z 触发撤销
+    redo_shortcut = Signal()      # Windows/Linux：Ctrl+Y 触发重做
     new_card_shortcut = Signal()  # Windows/Linux：Ctrl+N 触发快速新建卡片
+    shortcuts_requested = Signal()  # ? 呼出快捷键速查（全平台）
     signal_about_to_expand = Signal()  # 展开动画启动前（控制器延迟构建看板）
 
     def __init__(self, parent=None):
@@ -170,16 +172,24 @@ class MainWindow(QWidget):
         self._find_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
         self._find_shortcut.activated.connect(self._focus_board_search)
 
-        # Windows/Linux 键盘入口：撤销 / 新建卡片（macOS 由全局菜单栏 QAction
-        # 承担同键，注册会与菜单快捷键双重触发）
+        # Windows/Linux 键盘入口：撤销 / 重做 / 新建卡片（macOS 由全局菜单栏
+        # QAction 承担同键，注册会与菜单快捷键双重触发）
         if not AppConfig.IS_MACOS:
             self._undo_shortcut = QShortcut(QKeySequence.Undo, self)
             self._undo_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
             self._undo_shortcut.activated.connect(self.undo_shortcut.emit)
+            self._redo_shortcut = QShortcut(QKeySequence("Ctrl+Y"), self)
+            self._redo_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+            self._redo_shortcut.activated.connect(self.redo_shortcut.emit)
             self._new_card_shortcut = QShortcut(QKeySequence.New, self)
             self._new_card_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
             self._new_card_shortcut.activated.connect(
                 self.new_card_shortcut.emit)
+
+        # ? 呼出快捷键速查（全平台；文本输入中不触发——handler 侧再校验）
+        self._help_shortcut = QShortcut(QKeySequence("?"), self)
+        self._help_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+        self._help_shortcut.activated.connect(self.shortcuts_requested.emit)
 
         # macOS 无系统级边缘缩放：右下角自绘把手（仅展开态、非最大化时可见）
         self._resize_grip = _ResizeGrip(self) if AppConfig.IS_MACOS else None
@@ -287,6 +297,11 @@ class MainWindow(QWidget):
             return
         if self._finish_board_rename(cancel=True):
             return    # Esc 先取消重命名，再按一次才折叠
+        # 有多选卡片时 Esc 先清空多选（再按才走搜索/折叠）
+        clearer = getattr(self._expanded_view, "clear_selection_if_active",
+                          None)
+        if clearer is not None and clearer():
+            return
         # 仅在焦点位于搜索框时用 Esc 清空搜索（正在输入的用户预期先清空）；
         # 搜索有字但焦点在别处时，Esc 的意图是收起看板，直接折叠
         if (self._expanded_view is not None

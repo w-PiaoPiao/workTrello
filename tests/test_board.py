@@ -131,9 +131,54 @@ class CardTest(unittest.TestCase):
         card = Card(title="周报", due_date="2026-09-13", repeat="weekly")
         card2 = Card.from_dict(card.to_dict())
         self.assertEqual(card2.repeat, "weekly")
+        # 扩展周期：月/年/工作日/自定义均为合法值
+        for kind in ("monthly", "yearly", "weekdays", "custom"):
+            self.assertEqual(Card.from_dict(
+                {"title": "x", "repeat": kind}).repeat, kind)
+        # 非法值回退 never
         self.assertEqual(Card.from_dict(
-            {"title": "x", "repeat": "monthly"}).repeat, "never")
+            {"title": "x", "repeat": "hourly"}).repeat, "never")
         self.assertEqual(Card.from_dict({"title": "y"}).repeat, "never")
+
+    def test_next_repeat_date_monthly_yearly_weekdays_custom(self):
+        # 每月：1/31 → 2/28（尾日钳制）；再推进 3/28（钳制不回跳 31）
+        card = Card(title="月末", repeat="monthly")
+        d = card._next_repeat_date(date(2026, 1, 31))
+        self.assertEqual(d, date(2026, 2, 28))
+        self.assertEqual(card._next_repeat_date(d), date(2026, 3, 28))
+        # 每年：2024-02-29 → 2025-02-28（闰日钳制）
+        card = Card(title="闰日", repeat="yearly")
+        self.assertEqual(card._next_repeat_date(date(2024, 2, 29)),
+                         date(2025, 2, 28))
+        # 自定义间隔：3 天
+        card = Card(title="每三天", repeat="custom", repeat_interval=3)
+        self.assertEqual(card._next_repeat_date(date(2026, 9, 10)),
+                         date(2026, 9, 13))
+        # 工作日：周五 → 下周一；周日 → 周一
+        card = Card(title="工作日", repeat="weekdays")
+        self.assertEqual(card._next_repeat_date(date(2026, 9, 11)),   # 周五
+                         date(2026, 9, 14))
+        self.assertEqual(card._next_repeat_date(date(2026, 9, 13)),   # 周日
+                         date(2026, 9, 14))
+
+    def test_roll_repeat_custom_catches_up_to_today(self):
+        """逾期补完推进到不早于今天（追赶语义对所有周期一致）"""
+        card = Card(title="逾期补完", due_date="2026-01-31",
+                    repeat="monthly", repeat_interval=1)
+        self.assertTrue(card.roll_repeat())
+        delta = (date.fromisoformat(card.due_date) - date.today()).days
+        self.assertGreaterEqual(delta, 0)
+        self.assertLessEqual(delta, 31)
+
+    def test_repeat_interval_roundtrip(self):
+        card = Card(title="每五天", repeat="custom", repeat_interval=5)
+        card2 = Card.from_dict(card.to_dict())
+        self.assertEqual(card2.repeat_interval, 5)
+        # 非法/越界：回退 1 并夹到 1..365
+        self.assertEqual(Card.from_dict(
+            {"title": "x", "repeat_interval": "abc"}).repeat_interval, 1)
+        self.assertEqual(Card.from_dict(
+            {"title": "x", "repeat_interval": 9999}).repeat_interval, 365)
 
     # ── 优先级 ────────────────────────────────────────────
 

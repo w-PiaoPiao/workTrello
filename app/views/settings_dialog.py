@@ -14,6 +14,7 @@ from __future__ import annotations
 from PySide6.QtCore import QRectF, QUrl, Qt, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QIcon, QLinearGradient, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QFrame,
     QHBoxLayout,
@@ -97,6 +98,7 @@ class SettingsDialog(QDialog):
     signal_skin_selected = Signal(str)        # 皮肤 key
     signal_animation_toggled = Signal(bool)   # 动画启用
     signal_always_top_toggled = Signal(bool)
+    signal_remind_advance_changed = Signal(int)  # 截止提前提醒天数 0~3
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -179,6 +181,22 @@ class SettingsDialog(QDialog):
             self._top_toggle)
         page.addWidget(self._sec_window)
 
+        # 提醒
+        self._sec_remind = _Section(tr("提醒"))
+        self._remind_combo = QComboBox()
+        self._remind_combo.setCursor(Qt.PointingHandCursor)
+        for value, label in ((0, tr("不提前（仅当天与逾期）")),
+                             (1, tr("提前 1 天")), (2, tr("提前 2 天")),
+                             (3, tr("提前 3 天"))):
+            self._remind_combo.addItem(label, value)
+        self._remind_combo.currentIndexChanged.connect(
+            lambda idx: self.signal_remind_advance_changed.emit(
+                int(self._remind_combo.itemData(idx) or 0)))
+        self._t_remind, self._h_remind = self._sec_remind.add_row(
+            tr("截止提前提醒"), tr("距离截止日还剩 N 天时也开始提醒"),
+            self._remind_combo)
+        page.addWidget(self._sec_remind)
+
         # 数据
         self._sec_data = _Section(tr("数据"))
         self._dir_open_btn = QPushButton(tr("打开目录"))
@@ -224,7 +242,8 @@ class SettingsDialog(QDialog):
     # ── 对外 ──────────────────────────────────────────────
 
     def sync_from_prefs(self, theme_mode: str, lang: str, skin: str,
-                        animation: bool, always_top: bool) -> None:
+                        animation: bool, always_top: bool,
+                        remind_advance: int = 0) -> None:
         """打开时把当前偏好刷进控件（偏好可能被桌宠菜单等其他入口改过）"""
         self._theme_seg.set_value(theme_mode)
         self._lang_seg.set_value(lang)
@@ -232,6 +251,9 @@ class SettingsDialog(QDialog):
             btn.setChecked(key == skin)
         self._anim_toggle.setChecked(animation)
         self._top_toggle.setChecked(always_top)
+        idx = self._remind_combo.findData(int(remind_advance))
+        if idx >= 0:
+            self._remind_combo.setCurrentIndex(idx)
 
     def reapply_theme(self) -> None:
         self.setStyleSheet(self._build_qss())
@@ -258,6 +280,13 @@ class SettingsDialog(QDialog):
         self._sec_window.retexts(tr("窗口"))
         self._t_top.setText(tr("窗口置顶"))
         self._h_top.setText(tr("桌宠与看板始终悬浮在其他窗口之上"))
+        self._sec_remind.retexts(tr("提醒"))
+        self._t_remind.setText(tr("截止提前提醒"))
+        self._h_remind.setText(tr("距离截止日还剩 N 天时也开始提醒"))
+        for idx, (_v, label) in enumerate(
+                ((0, tr("不提前（仅当天与逾期）")), (1, tr("提前 1 天")),
+                 (2, tr("提前 2 天")), (3, tr("提前 3 天")))):
+            self._remind_combo.setItemText(idx, label)
         self._sec_data.retexts(tr("数据"))
         self._t_data.setText(tr("数据目录"))
         self._h_data.setText(tr("看板数据与自动备份保存在"))
@@ -356,6 +385,20 @@ class SettingsDialog(QDialog):
                 font-size: 12px;
             }}
             QPushButton#ghostBtn:hover {{ background: {c['bg_hover']}; }}
+            QComboBox {{
+                background: {c['bg_card']};
+                color: {c['text_primary']};
+                border: 1px solid {c['border']};
+                border-radius: 8px;
+                padding: 5px 10px;
+                font-size: 12px;
+            }}
+            QComboBox QAbstractItemView {{
+                background: {c['bg_card']};
+                color: {c['text_primary']};
+                selection-background-color: {c['accent_soft']};
+                selection-color: {c['accent']};
+            }}
             QPushButton#primaryBtn {{
                 background: {c['accent']};
                 color: white;

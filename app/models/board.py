@@ -11,6 +11,7 @@ Board 是看板聚合（lists 列表与跨列表查找/统计），不依赖存�
 
 from __future__ import annotations
 
+import calendar
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -25,6 +26,48 @@ def _now_iso() -> str:
 
 def _new_id() -> str:
     return uuid.uuid4().hex
+
+
+# 重复周期全集（完成时自动滚动截止日期到下一周期）
+REPEAT_KINDS = ("never", "daily", "weekly", "weekdays",
+                "monthly", "yearly", "custom")
+
+
+def normalize_checklist(raw) -> list[dict]:
+    """清单字段容错解析：只保留 [{"text": str, "done": bool}] 形态"""
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for entry in raw:
+        if isinstance(entry, dict):
+            text = str(entry.get("text", "")).strip()
+            if text:
+                out.append({"text": text,
+                            "done": bool(entry.get("done", False))})
+        elif isinstance(entry, str) and entry.strip():
+            out.append({"text": entry.strip(), "done": False})
+    return out
+
+
+def normalize_attachments(raw) -> list[dict]:
+    """附件字段容错解析：只保留 [{"id","name","path","is_image"}] 形态"""
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name", "")).strip()
+        path = str(entry.get("path", "")).strip()
+        if not name or not path:
+            continue
+        out.append({
+            "id": str(entry.get("id") or _new_id()),
+            "name": name,
+            "path": path,
+            "is_image": bool(entry.get("is_image", False)),
+        })
+    return out
 
 
 @dataclass
@@ -42,9 +85,12 @@ class Card:
     pomodoros: int = 0                  # 完成的番茄钟数
     done_at: str | None = None          # 勾选完成的时刻（周统计用）
     archived: bool = False              # 归档（不出现在看板）
-    repeat: str = "never"               # never | daily | weekly（完成时自动滚到下一周期）
+    repeat: str = "never"               # never/daily/weekly/weekdays/monthly/yearly/custom
     priority: int = 0                   # 0=无 1=高 2=中 3=低（今日聚焦内排序用）
     workdir: str = ""                   # 工作目录（可选；常在外接盘上，可能暂时不可用）
+    checklist: list[dict] = field(default_factory=list)  # 清单项 [{"text","done"}]
+    attachments: list[dict] = field(default_factory=list)  # 附件 [{"id","name","path","is_image"}]
+    repeat_interval: int = 1            # 自定义重复的间隔天数（repeat="custom" 时生效）
     # due_delta 解析缓存：(due_date, today_ordinal, delta|None)。
     # 自校验：due_date 一变即失配重算，无需写路径显式失效。
     # 一次数据变更管线里同一张卡会被 due_delta 问 3~4 次，缓存后只解析一次
@@ -67,6 +113,10 @@ class Card:
             "repeat": self.repeat,
             "priority": self.priority,
             "workdir": self.workdir,
+            "checklist": [{"text": it["text"], "done": it["done"]}
+                          for it in self.checklist],
+            "attachments": [dict(a) for a in self.attachments],
+            "repeat_interval": self.repeat_interval,
         }
 
     @classmethod
@@ -86,12 +136,16 @@ class Card:
             pomodoros = 0
         done_at = data.get("done_at")
         repeat = data.get("repeat", "never")
-        if repeat not in ("never", "daily", "weekly"):
+        if repeat not in REPEAT_KINDS:
             repeat = "never"
         try:
             priority = int(data.get("priority", 0) or 0)
         except (TypeError, ValueError):
             priority = 0
+        try:
+            interval = int(data.get("repeat_interval", 1) or 1)
+        except (TypeError, ValueError):
+            interval = 1
         return cls(
             title=title,
             id=str(data.get("id") or _new_id()),
@@ -107,6 +161,9 @@ class Card:
             repeat=repeat,
             priority=max(0, min(3, priority)),
             workdir=str(data.get("workdir", "") or ""),
+            checklist=normalize_checklist(data.get("checklist")),
+            attachments=normalize_attachments(data.get("attachments")),
+            repeat_interval=max(1, min(365, interval)),
         )
 
     def set_done(self, done: bool) -> None:
@@ -126,14 +183,30 @@ class Card:
         self.workdir = str(data.get("workdir", self.workdir) or "").strip()
         self.starred = bool(data.get("starred", self.starred))
         repeat = data.get("repeat", self.repeat)
-        self.repeat = repeat if repeat in ("never", "daily", "weekly") \
-            else "never"
+        self.repeat = repeat if repeat in REPEAT_KINDS else "never"
+        if "checklist" in data:
+            self.checklist = normalize_checklist(data["checklist"])
+        if "attachments" in data:
+            self.attachments = normalize_attachments(data["attachments"])
         try:
             priority = int(data.get("priority", self.priority) or 0)
         except (TypeError, ValueError):
             priority = self.priority
         self.priority = max(0, min(3, priority))
+        try:
+            interval = int(data.get("repeat_interval", self.repeat_interval)
+                           or 1)
+        except (TypeError, ValueError):
+            interval = self.repeat_interval
+        self.repeat_interval = max(1, min(365, interval))
         self.set_done(bool(data.get("done", self.done)))
+
+    def checklist_progress(self) -> tuple[int, int]:
+        """清单进度：(已完成项数, 总项数)；无清单返回 (0, 0)"""
+        if not self.checklist:
+            return (0, 0)
+        return (sum(1 for it in self.checklist if it.get("done")),
+                len(self.checklist))
 
     # ── 统一谓词（今日聚焦 / 截止统计 / 视图展示共用，避免多处各自解析）──
 
@@ -162,20 +235,42 @@ class Card:
         delta = self.due_delta(today)
         return delta is not None and delta <= 0
 
+    def _next_repeat_date(self, d: date) -> date:
+        """按重复类型推进一个周期（月/年尾日自动钳制到月末）"""
+        if self.repeat == "daily":
+            return d + timedelta(days=1)
+        if self.repeat == "weekly":
+            return d + timedelta(days=7)
+        if self.repeat == "custom":
+            return d + timedelta(days=max(1, self.repeat_interval))
+        if self.repeat == "weekdays":
+            nxt = d + timedelta(days=1)
+            while nxt.weekday() >= 5:      # 5=周六 6=周日
+                nxt += timedelta(days=1)
+            return nxt
+        if self.repeat == "monthly":
+            y, m = ((d.year + 1, 1) if d.month == 12 else (d.year, d.month + 1))
+            return date(y, m, min(d.day, calendar.monthrange(y, m)[1]))
+        if self.repeat == "yearly":
+            try:
+                return date(d.year + 1, d.month, d.day)
+            except ValueError:             # 2/29 → 平年钳到 2/28
+                return date(d.year + 1, d.month, 28)
+        return d
+
     def roll_repeat(self) -> bool:
         """重复任务完成时滚动：截止日推进到下一周期（逾期补完则推进到
         不早于今天），并复位 done/done_at。返回是否发生了滚动。"""
-        if self.repeat not in ("daily", "weekly") or not self.due_date:
+        if self.repeat == "never" or not self.due_date:
             return False
         try:
             due = date.fromisoformat(self.due_date)
         except ValueError:
             return False
-        step = 1 if self.repeat == "daily" else 7
-        due += timedelta(days=step)
+        due = self._next_repeat_date(due)
         today = date.today()
         while due < today:
-            due += timedelta(days=step)
+            due = self._next_repeat_date(due)
         self.due_date = due.isoformat()
         self.done = False
         self.done_at = None
@@ -218,10 +313,17 @@ class BoardList:
 
 
 class Board:
-    """看板聚合：列表集合 + 跨列表查找/统计"""
+    """看板聚合：列表集合 + 跨列表查找/统计
 
-    def __init__(self, lists: list[BoardList] | None = None):
+    多看板工作区下的看板身份：id 与工作区索引对应，name 为看板名
+    （空名时界面显示本地化的默认名"我的看板"）。
+    """
+
+    def __init__(self, lists: list[BoardList] | None = None,
+                 name: str = "", id: str | None = None):
         self.lists: list[BoardList] = lists if lists is not None else []
+        self.name = name
+        self.id = id or _new_id()
         # card_id → (所在列表, 卡片) 懒建索引：卡片操作（番茄 tick、
         # 编辑/删除/归档/拖拽）原本每次 O(列表×卡) 全板扫描。
         # 失效约束：任何绕过 find_card/remove_card 的 cards 结构变更
@@ -230,7 +332,8 @@ class Board:
         self._card_index: dict[str, tuple[BoardList, Card]] | None = None
 
     def to_dict(self) -> dict:
-        return {"lists": [lst.to_dict() for lst in self.lists]}
+        return {"id": self.id, "name": self.name,
+                "lists": [lst.to_dict() for lst in self.lists]}
 
     @classmethod
     def from_dict(cls, data: dict) -> "Board":
@@ -247,7 +350,9 @@ class Board:
                 BoardList(title="进行中"),
                 BoardList(title="已完成"),
             ]
-        return cls(lists=lists)
+        return cls(lists=lists,
+                   name=str(data.get("name", "") or ""),
+                   id=str(data.get("id") or "") or None)
 
     def invalidate_index(self) -> None:
         """卡片结构变更后丢弃索引（下次 find_card 懒重建）"""
@@ -459,7 +564,9 @@ class BoardStore:
             return None
         return {
             "app": "桌宠看板",
-            "version": 1,
+            "version": 2,
+            "id": self._board.id,
+            "name": self._board.name,
             "saved_at": _now_iso(),
             "lists": [lst.to_dict() for lst in self._board.lists],
         }

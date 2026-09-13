@@ -33,7 +33,8 @@ def tr(text: str) -> str:
 
 _LABEL_EN = {"blue": "Blue", "green": "Green", "orange": "Orange",
              "red": "Red", "purple": "Purple", "teal": "Teal"}
-_REPEAT_EN = {"daily": "Daily", "weekly": "Weekly"}
+_REPEAT_EN = {"daily": "Daily", "weekly": "Weekly", "weekdays": "Weekdays",
+              "monthly": "Monthly", "yearly": "Yearly", "custom": "Custom"}
 _PRIORITY_EN = {1: "High", 2: "Medium", 3: "Low"}
 _SKIN_EN = {"milk": "Milk", "snow": "Snow", "choco": "Cocoa",
             "midnight": "Midnight"}
@@ -339,6 +340,116 @@ _zh_en: dict[str, str] = {
         "Board data file error ({detail}). Starting with the default board.",
     "看板数据保存失败，请检查磁盘空间或文件权限":
         "Failed to save board data — check disk space or file permissions",
+    # ── 多看板 ──
+    "切换 / 管理看板": "Switch / manage boards",
+    "＋ 新建看板": "＋ New Board",
+    "新建看板": "New Board",
+    "✏ 重命名看板": "✏ Rename Board",
+    "重命名看板": "Rename Board",
+    "🗑 删除看板": "🗑 Delete Board",
+    "看板名称：": "Board name:",
+    "例如：工作项目": "e.g. Work Project",
+    "看板已重命名": "Board renamed",
+    "至少保留一个看板": "At least one board is required",
+    "删除看板": "Delete Board",
+    "看板「{name}」{cards}及其备份将一并删除，不可恢复。\n继续？":
+        "Board \"{name}\" {cards}and its backups will be deleted. This "
+        "cannot be undone.\nContinue?",
+    "（{n} 张卡片）": " ({n} cards)",
+    "已删除看板": "Board deleted",
+    "已新建看板「{name}」": "Board \"{name}\" created",
+    "已导入看板「{name}」（{report}）":
+        "Imported board \"{name}\" ({report})",
+    "已导入为新看板「{name}」": "Imported as new board \"{name}\"",
+    "导入失败：{err}": "Import failed: {err}",
+    # ── 导入（工具栏菜单）──
+    "导入 Trello 看板（.json）…": "Import Trello board (.json)…",
+    "导入 Markdown（.md）…": "Import Markdown (.md)…",
+    "导入 Trello 看板…": "Import Trello Board…",
+    "导入 Markdown…": "Import Markdown…",
+    "导入 Trello 看板": "Import Trello Board",
+    "导入 Markdown": "Import Markdown",
+    # ── 卡片对话框：清单 / 附件 / 预览 / 重复 ──
+    "清单": "Checklist",
+    "＋ 添加清单项": "＋ Add item",
+    "清单项内容": "Checklist item",
+    "删除该清单项": "Remove item",
+    "{done}/{total} 已完成": "{done}/{total} done",
+    "附件": "Attachments",
+    "📎 添加附件…": "📎 Add file…",
+    "添加附件": "Add Attachment",
+    "📋 粘贴图片": "📋 Paste image",
+    "把剪贴板中的图片存为卡片附件": "Attach the clipboard image to this card",
+    "打开": "Open",
+    "移除附件": "Remove attachment",
+    "粘贴图片 {time}.png": "Pasted image {time}.png",
+    "剪贴板中没有图片": "No image in the clipboard",
+    "👁 预览": "👁 Preview",
+    "按 Markdown 渲染备注预览": "Render notes as Markdown preview",
+    "（无内容）": "(empty)",
+    "补充说明、链接、清单…\n支持 Markdown：# 标题 **加粗** - [ ] 待办\n（记进度时点右上角「⏱ 插入当前时间」）":
+        "Details, links, checklists…\nMarkdown supported: # heading "
+        "**bold** - [ ] todo\nUse \"⏱ Insert time\" to log progress",
+    "每 N 天重复一次": "Repeat every N days",
+    " 天": " days",
+    # ── 卡片右键 ──
+    "复制卡片": "Duplicate Card",
+    "📎 打开附件": "📎 Open attachment",
+    "附件文件不存在（可能已被移动或删除）":
+        "Attachment file is missing (moved or deleted?)",
+    "附件复制失败：{err}": "Failed to copy attachment: {err}",
+    # ── 批量操作 ──
+    "已选 {n} 张": "{n} selected",
+    "✓ 切换完成": "✓ Toggle done",
+    "🏷 标签": "🏷 Label",
+    "→ 移动": "→ Move",
+    "📥 归档": "📥 Archive",
+    "🗑 删除": "🗑 Delete",
+    "取消多选（Esc）": "Clear selection (Esc)",
+    "已更新 {n} 张卡片": "Updated {n} cards",
+    "已移动 {n} 张卡片": "Moved {n} cards",
+    "已为 {n} 张卡片添加标签": "Label added to {n} cards",
+    "已删除 {n} 张卡片 · {hint}": "Deleted {n} cards · {hint}",
+    "已归档 {n} 张卡片": "Archived {n} cards",
+    # ── 日历 ──
+    "📅 日历": "📅 Calendar",
+    "日历视图": "Calendar View",
+    "按截止日期在月历中查看与拖动卡片":
+        "View cards by due date and drag them between days",
+    "{year} 年 {month} 月": "{month}/{year}",
+    "回到今天": "Today",
+    "还有 {n} 项…": "+{n} more…",
+    "已改为 {date} 截止": "Due date set to {date}",
+    # ── 快捷键速查 ──
+    "快捷键": "Keyboard Shortcuts",
+    "快捷键…": "Keyboard Shortcuts…",
+    "快捷键速查": "Shortcuts cheat sheet",
+    "重做": "Redo",
+    "没有可重做的操作": "Nothing to redo",
+    "已重做": "Redone",
+    "快速添加卡片": "Quick add card",
+    "搜索卡片": "Search cards",
+    "打开 / 编辑卡片": "Open / edit card",
+    "回车": "Return",
+    "切换完成状态": "Toggle done",
+    "空格": "Space",
+    "卡片间移动焦点": "Move focus between cards",
+    "保存卡片对话框": "Save card dialog",
+    "清空搜索 / 取消多选 / 收起看板":
+        "Clear search / clear selection / collapse board",
+    "多选卡片": "Multi-select cards",
+    "⌘+单击 / Shift+单击": "⌘+click / Shift+click",
+    # ── 提醒提前量 ──
+    "提醒": "Reminders",
+    "截止提前提醒": "Advance reminder",
+    "距离截止日还剩 N 天时也开始提醒":
+        "Start reminding N days before the due date too",
+    "不提前（仅当天与逾期）": "No advance (due day & overdue only)",
+    "提前 1 天": "1 day ahead",
+    "提前 2 天": "2 days ahead",
+    "提前 3 天": "3 days ahead",
+    "{n} 天后截止": "Due in {n} days",
+    "已切换看板": "Board switched",
 }
 
 

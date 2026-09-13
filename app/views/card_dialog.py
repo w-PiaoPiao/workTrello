@@ -1,17 +1,26 @@
 """
-卡片编辑对话框：标题 / 备注 / 标签色 / 截止日期 / 工作目录 / 完成勾选
+卡片编辑对话框：标题 / 备注（Markdown 预览）/ 清单 / 标签色 / 截止日期 /
+重复 / 优先级 / 工作目录 / 附件 / 完成勾选
 """
 
 from __future__ import annotations
 
+import tempfile
+import uuid
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QDate, QSize, Qt
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtCore import QDate, QSize, Qt, QUrl
+from PySide6.QtGui import (
+    QDesktopServices,
+    QImage,
+    QKeySequence,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QDateEdit,
     QDialog,
     QFileDialog,
@@ -21,12 +30,16 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
+    QSpinBox,
     QVBoxLayout,
+    QWidget,
 )
 
 from app.config import AppConfig
-from app.i18n import label_display, tr
+from app.i18n import label_display, repeat_display, tr
 from app.models.board import Card
+from app.models.markdown_lite import render_markdown
 from app.views.theme import AppTheme
 
 
@@ -131,18 +144,8 @@ class CardDialog(QDialog):
             self._title_edit.setText(card.title)
         root.addWidget(self._title_edit)
 
-        # 备注（标题行右侧：快速插入当前时间，便于在备注里记进度）
-        notes_header = QHBoxLayout()
-        cap2 = QLabel(tr("备注"))
-        cap2.setProperty("cap", True)
-        notes_header.addWidget(cap2)
-        notes_header.addStretch(1)
-        self._insert_time_btn = QPushButton(tr("⏱ 插入当前时间"))
-        self._insert_time_btn.setFlat(True)
-        self._insert_time_btn.setCursor(Qt.PointingHandCursor)
-        self._insert_time_btn.setToolTip(
-            tr("在备注光标处插入当前时间（如 09-08 14:30）"))
-        self._insert_time_btn.setStyleSheet(f"""
+        # 备注（标题行右侧：插入当前时间 + Markdown 预览切换）
+        self._flat_btn_qss = f"""
             QPushButton {{
                 color: {c['accent']};
                 font-size: 11px;
@@ -154,17 +157,80 @@ class CardDialog(QDialog):
                 background: {c['accent_soft']};
                 border-radius: 6px;
             }}
-        """)
+        """
+        notes_header = QHBoxLayout()
+        cap2 = QLabel(tr("备注"))
+        cap2.setProperty("cap", True)
+        notes_header.addWidget(cap2)
+        notes_header.addStretch(1)
+        self._insert_time_btn = QPushButton(tr("⏱ 插入当前时间"))
+        self._insert_time_btn.setFlat(True)
+        self._insert_time_btn.setCursor(Qt.PointingHandCursor)
+        self._insert_time_btn.setToolTip(
+            tr("在备注光标处插入当前时间（如 09-08 14:30）"))
+        self._insert_time_btn.setStyleSheet(self._flat_btn_qss)
         self._insert_time_btn.clicked.connect(self._on_insert_time)
         notes_header.addWidget(self._insert_time_btn)
+        self._preview_btn = QPushButton(tr("👁 预览"))
+        self._preview_btn.setFlat(True)
+        self._preview_btn.setCursor(Qt.PointingHandCursor)
+        self._preview_btn.setToolTip(tr("按 Markdown 渲染备注预览"))
+        self._preview_btn.setStyleSheet(self._flat_btn_qss)
+        self._preview_btn.setCheckable(True)
+        self._preview_btn.toggled.connect(self._on_toggle_preview)
+        notes_header.addWidget(self._preview_btn)
         root.addLayout(notes_header)
         self._notes_edit = QPlainTextEdit()
         self._notes_edit.setFixedHeight(90)
         self._notes_edit.setPlaceholderText(
-            tr("补充说明、链接、清单…\n（记进度时点右上角「⏱ 插入当前时间」）"))
+            tr("补充说明、链接、清单…\n支持 Markdown：# 标题 **加粗** - [ ] 待办\n（记进度时点右上角「⏱ 插入当前时间」）"))
         if card:
             self._notes_edit.setPlainText(card.notes)
         root.addWidget(self._notes_edit)
+        # 预览（滚动区包裹，长文不出界；高度与编辑框一致）
+        self._notes_preview_scroll = QScrollArea()
+        self._notes_preview_scroll.setWidgetResizable(True)
+        self._notes_preview_scroll.setFrameShape(QScrollArea.NoFrame)
+        self._notes_preview_scroll.setFixedHeight(90)
+        self._notes_preview_scroll.hide()
+        self._notes_preview = QLabel()
+        self._notes_preview.setWordWrap(True)
+        self._notes_preview.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self._notes_preview.setTextInteractionFlags(
+            Qt.TextBrowserInteraction)
+        self._notes_preview_scroll.setWidget(self._notes_preview)
+        root.addWidget(self._notes_preview_scroll)
+
+        # 清单：可勾选子任务（带进度统计，全部完成才算卡面全绿）
+        cap_cl = QLabel(tr("清单"))
+        cap_cl.setProperty("cap", True)
+        root.addWidget(cap_cl)
+        self._check_rows: list[tuple[QCheckBox, QLineEdit]] = []
+        self._checklist_host = QWidget()
+        self._checklist_layout = QVBoxLayout(self._checklist_host)
+        self._checklist_layout.setContentsMargins(0, 0, 0, 0)
+        self._checklist_layout.setSpacing(4)
+        root.addWidget(self._checklist_host)
+        cl_btn_row = QHBoxLayout()
+        self._add_check_btn = QPushButton(tr("＋ 添加清单项"))
+        self._add_check_btn.setFlat(True)
+        self._add_check_btn.setCursor(Qt.PointingHandCursor)
+        self._add_check_btn.setStyleSheet(self._flat_btn_qss)
+        self._add_check_btn.clicked.connect(
+            lambda: self._add_check_row("", False, focus=True))
+        cl_btn_row.addWidget(self._add_check_btn)
+        self._check_progress_label = QLabel()
+        self._check_progress_label.setStyleSheet(
+            f"color: {c['text_secondary']}; font-size: 11px;"
+            " background: transparent;")
+        cl_btn_row.addStretch(1)
+        cl_btn_row.addWidget(self._check_progress_label)
+        root.addLayout(cl_btn_row)
+        if card:
+            for item in card.checklist:
+                self._add_check_row(item.get("text", ""),
+                                    bool(item.get("done")))
+        self._update_check_progress()
 
         # 标签色
         cap3 = QLabel(tr("标签"))
@@ -245,21 +311,33 @@ class CardDialog(QDialog):
         root.addWidget(cap5)
         repeat_row = QHBoxLayout()
         repeat_row.setSpacing(6)
-        self._repeat_choices: dict[str, QPushButton] = {}
-        for key, name in (("never", tr("不重复")), ("daily", tr("每天")),
-                          ("weekly", tr("每周"))):
-            btn = QPushButton(name)
-            btn.setCheckable(True)
-            btn.setCursor(Qt.PointingHandCursor)
-            btn.setStyleSheet(_selector_button_style(c))
-            btn.clicked.connect(self._on_repeat_clicked)
-            self._repeat_choices[key] = btn
-            repeat_row.addWidget(btn)
-        selected = (card.repeat if card is not None
-                    and card.repeat in self._repeat_choices else "never")
-        self._repeat_choices[selected].setChecked(True)
+        self._repeat_combo = QComboBox()
+        self._repeat_combo.setCursor(Qt.PointingHandCursor)
+        for key in AppConfig.REPEAT_ORDER:
+            self._repeat_combo.addItem(repeat_display(key) or tr("不重复"), key)
+        self._repeat_combo.currentIndexChanged.connect(
+            self._on_repeat_changed)
+        repeat_row.addWidget(self._repeat_combo)
+        # 自定义间隔天数（仅 repeat=custom 时可见）
+        self._repeat_interval_spin = QSpinBox()
+        self._repeat_interval_spin.setRange(1, 365)
+        self._repeat_interval_spin.setSuffix(tr(" 天"))
+        self._repeat_interval_spin.setToolTip(tr("每 N 天重复一次"))
+        self._repeat_interval_spin.setVisible(False)
+        repeat_row.addWidget(self._repeat_interval_spin)
         repeat_row.addStretch(1)
         root.addLayout(repeat_row)
+        selected = (card.repeat if card is not None
+                    and card.repeat in AppConfig.REPEAT_ORDER else "never")
+        idx = self._repeat_combo.findData(selected)
+        self._repeat_combo.setCurrentIndex(max(0, idx))
+        if card is not None:
+            try:
+                self._repeat_interval_spin.setValue(
+                    max(1, int(card.repeat_interval)))
+            except (TypeError, ValueError):
+                pass
+        self._on_repeat_changed(self._repeat_combo.currentIndex())
 
         # 优先级：今日聚焦内按 高 > 中 > 低 排序展示
         cap6 = QLabel(tr("优先级"))
@@ -297,21 +375,8 @@ class CardDialog(QDialog):
         self._workdir_clear_btn = QPushButton(tr("清除"))
         self._workdir_clear_btn.setFlat(True)
         self._workdir_clear_btn.setCursor(Qt.PointingHandCursor)
-        flat_btn_qss = f"""
-            QPushButton {{
-                color: {c['accent']};
-                font-size: 11px;
-                background: transparent;
-                border: none;
-                padding: 2px 6px;
-            }}
-            QPushButton:hover {{
-                background: {c['accent_soft']};
-                border-radius: 6px;
-            }}
-        """
-        self._workdir_browse_btn.setStyleSheet(flat_btn_qss)
-        self._workdir_clear_btn.setStyleSheet(flat_btn_qss)
+        self._workdir_browse_btn.setStyleSheet(self._flat_btn_qss)
+        self._workdir_clear_btn.setStyleSheet(self._flat_btn_qss)
         self._workdir_browse_btn.clicked.connect(self._on_browse_workdir)
         self._workdir_clear_btn.clicked.connect(self._on_clear_workdir)
         workdir_row.addWidget(self._workdir_label, 1)
@@ -319,6 +384,37 @@ class CardDialog(QDialog):
         workdir_row.addWidget(self._workdir_clear_btn)
         root.addLayout(workdir_row)
         self._apply_workdir_state()
+
+        # 附件（可选）：文件或粘贴图片；新附件仅记录来源路径，落库复制
+        # 由控制器在保存时完成（对话框取消则不留任何文件）
+        cap8 = QLabel(tr("附件"))
+        cap8.setProperty("cap", True)
+        root.addWidget(cap8)
+        self._attachments: list[dict] = []
+        if card:
+            self._attachments = [dict(a) for a in card.attachments]
+        self._attach_rows_host = QWidget()
+        self._attach_rows_layout = QVBoxLayout(self._attach_rows_host)
+        self._attach_rows_layout.setContentsMargins(0, 0, 0, 0)
+        self._attach_rows_layout.setSpacing(4)
+        root.addWidget(self._attach_rows_host)
+        attach_btn_row = QHBoxLayout()
+        self._attach_add_btn = QPushButton(tr("📎 添加附件…"))
+        self._attach_add_btn.setFlat(True)
+        self._attach_add_btn.setCursor(Qt.PointingHandCursor)
+        self._attach_add_btn.setStyleSheet(self._flat_btn_qss)
+        self._attach_add_btn.clicked.connect(self._on_add_attachment)
+        attach_btn_row.addWidget(self._attach_add_btn)
+        self._attach_paste_btn = QPushButton(tr("📋 粘贴图片"))
+        self._attach_paste_btn.setFlat(True)
+        self._attach_paste_btn.setCursor(Qt.PointingHandCursor)
+        self._attach_paste_btn.setToolTip(tr("把剪贴板中的图片存为卡片附件"))
+        self._attach_paste_btn.setStyleSheet(self._flat_btn_qss)
+        self._attach_paste_btn.clicked.connect(self._on_paste_image)
+        attach_btn_row.addWidget(self._attach_paste_btn)
+        attach_btn_row.addStretch(1)
+        root.addLayout(attach_btn_row)
+        self._rebuild_attach_rows()
 
         # 按钮
         btns = QHBoxLayout()
@@ -392,10 +488,195 @@ class CardDialog(QDialog):
         AppConfig.save_card_dialog_size(self.size())
         super().done(result)
 
-    def _on_repeat_clicked(self) -> None:
-        """重复周期单选：被点击的成为唯一选中项"""
-        for key, btn in self._repeat_choices.items():
-            btn.setChecked(btn is self.sender())
+    def _on_repeat_changed(self, index: int) -> None:
+        """重复周期切换：自定义时展开间隔天数输入"""
+        key = self._repeat_combo.itemData(index)
+        self._repeat_interval_spin.setVisible(key == "custom")
+
+    # ── 清单（可勾选子任务）───────────────────────────────
+
+    def _add_check_row(self, text: str, done: bool, focus: bool = False) -> None:
+        """追加一行清单项（勾选框 + 文本框 + 删除钮）"""
+        row = QWidget()
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+        check = QCheckBox()
+        check.setChecked(done)
+        check.toggled.connect(self._update_check_progress)
+        edit = QLineEdit(text)
+        edit.setPlaceholderText(tr("清单项内容"))
+        edit.returnPressed.connect(
+            lambda: self._add_check_row("", False, focus=True))
+        remove = QPushButton("✕")
+        remove.setFixedSize(22, 22)
+        remove.setFlat(True)
+        remove.setCursor(Qt.PointingHandCursor)
+        remove.setToolTip(tr("删除该清单项"))
+        remove.setStyleSheet(f"""
+            QPushButton {{
+                color: {AppTheme.colors()['text_secondary']};
+                background: transparent;
+                border: none;
+                font-size: 10px;
+            }}
+            QPushButton:hover {{ color: {AppTheme.colors()['danger']}; }}
+        """)
+        remove.clicked.connect(lambda: self._remove_check_row(row))
+        lay.addWidget(check)
+        lay.addWidget(edit, 1)
+        lay.addWidget(remove)
+        self._checklist_layout.addWidget(row)
+        self._check_rows.append((check, edit))
+        row._pair_index = len(self._check_rows) - 1   # type: ignore[attr-defined]
+        self._update_check_progress()
+        if focus:
+            edit.setFocus()
+
+    def _remove_check_row(self, row: QWidget) -> None:
+        pair = getattr(row, "_pair_index", None)
+        if pair is None or not (0 <= pair < len(self._check_rows)):
+            return
+        check, edit = self._check_rows.pop(pair)
+        # 摘除行内控件后销毁行壳，避免空 QWidget 壳残留
+        row.setParent(None)
+        row.deleteLater()
+        check.setParent(None)
+        check.deleteLater()
+        edit.setParent(None)
+        edit.deleteLater()
+        # 序号重排（简单重挂索引）
+        for i, (_c, e) in enumerate(self._check_rows):
+            shell = e.parentWidget()
+            if shell is not None:
+                shell._pair_index = i   # type: ignore[attr-defined]
+        self._update_check_progress()
+
+    def _update_check_progress(self, *_args) -> None:
+        done = sum(1 for c, _e in self._check_rows if c.isChecked())
+        total = len(self._check_rows)
+        self._check_progress_label.setText(
+            tr("{done}/{total} 已完成").format(done=done, total=total)
+            if total else "")
+
+    def _collect_checklist(self) -> list[dict]:
+        out: list[dict] = []
+        for check, edit in self._check_rows:
+            text = edit.text().strip()
+            if text:
+                out.append({"text": text, "done": check.isChecked()})
+        return out
+
+    # ── 附件 ──────────────────────────────────────────────
+
+    def _rebuild_attach_rows(self) -> None:
+        """按 _attachments 重建附件行（图标 + 名称 + 打开 + 移除）"""
+        while self._attach_rows_layout.count():
+            item = self._attach_rows_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        for idx, att in enumerate(self._attachments):
+            row = QWidget()
+            lay = QHBoxLayout(row)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.setSpacing(6)
+            icon = "🖼" if att.get("is_image") else "📄"
+            name = QLabel(f"{icon} {att.get('name', '')}")
+            name.setStyleSheet(
+                f"color: {AppTheme.colors()['text_primary']};"
+                " font-size: 12px; background: transparent;")
+            open_btn = QPushButton(tr("打开"))
+            open_btn.setFlat(True)
+            open_btn.setCursor(Qt.PointingHandCursor)
+            open_btn.setStyleSheet(self._flat_btn_qss)
+            open_btn.clicked.connect(
+                lambda _=False, p=att.get("path", ""):
+                QDesktopServices.openUrl(QUrl.fromLocalFile(p)))
+            remove = QPushButton("✕")
+            remove.setFixedSize(22, 22)
+            remove.setFlat(True)
+            remove.setCursor(Qt.PointingHandCursor)
+            remove.setToolTip(tr("移除附件"))
+            remove.setStyleSheet(f"""
+                QPushButton {{
+                    color: {AppTheme.colors()['text_secondary']};
+                    background: transparent;
+                    border: none;
+                    font-size: 10px;
+                }}
+                QPushButton:hover {{ color: {AppTheme.colors()['danger']}; }}
+            """)
+            remove.clicked.connect(
+                lambda _=False, i=idx: self._remove_attachment(i))
+            lay.addWidget(name, 1)
+            lay.addWidget(open_btn)
+            lay.addWidget(remove)
+            self._attach_rows_layout.addWidget(row)
+
+    def _remove_attachment(self, index: int) -> None:
+        if not (0 <= index < len(self._attachments)):
+            return
+        self._attachments.pop(index)
+        self._rebuild_attach_rows()
+
+    def _on_add_attachment(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, tr("添加附件"), str(Path.home()))
+        if not path:
+            return
+        p = Path(path)
+        self._attachments.append({
+            "id": uuid.uuid4().hex,
+            "name": p.name,
+            "path": str(p),
+            "is_image": p.suffix.lower() in
+            (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"),
+            "pending": True,
+        })
+        self._rebuild_attach_rows()
+
+    def _on_paste_image(self) -> None:
+        """剪贴板图片 → 临时 PNG，保存时由控制器复制入库"""
+        clipboard = QApplication.clipboard()
+        image = clipboard.image() if clipboard is not None else QImage()
+        if image.isNull():
+            self._notify_empty_clipboard()
+            return
+        fd, tmp = tempfile.mkstemp(suffix=".png", prefix="petboard_paste_")
+        import os
+        os.close(fd)
+        if not image.save(tmp, "PNG"):
+            return
+        self._attachments.append({
+            "id": uuid.uuid4().hex,
+            "name": tr("粘贴图片 {time}.png").format(
+                time=datetime.now().strftime("%m%d-%H%M")),
+            "path": tmp,
+            "is_image": True,
+            "pending": True,
+        })
+        self._rebuild_attach_rows()
+
+    def _notify_empty_clipboard(self) -> None:
+        from PySide6.QtWidgets import QToolTip
+        QToolTip.showText(self.cursor().pos(), tr("剪贴板中没有图片"))
+
+    # ── 备注 Markdown 预览 ────────────────────────────────
+
+    def _on_toggle_preview(self, on: bool) -> None:
+        if on:
+            html = render_markdown(
+                self._notes_edit.toPlainText(),
+                AppTheme.colors()["text_secondary"])
+            self._notes_preview.setText(html or
+                                        tr("（无内容）"))
+            self._notes_edit.hide()
+            self._notes_preview_scroll.show()
+        else:
+            self._notes_preview_scroll.hide()
+            self._notes_edit.show()
 
     def _on_priority_clicked(self) -> None:
         """优先级单选：被点击的成为唯一选中项"""
@@ -504,9 +785,11 @@ class CardDialog(QDialog):
             else self._due_edit.date().toString("yyyy-MM-dd"),
             "done": self._done_check.isChecked(),
             "starred": self._star_check.isChecked(),
-            "repeat": next((k for k, b in self._repeat_choices.items()
-                            if b.isChecked()), "never"),
+            "repeat": self._repeat_combo.currentData() or "never",
+            "repeat_interval": self._repeat_interval_spin.value(),
             "priority": next((k for k, b in self._priority_choices.items()
                               if b.isChecked()), 0),
             "workdir": self._workdir.strip(),
+            "checklist": self._collect_checklist(),
+            "attachments": [dict(a) for a in self._attachments],
         }

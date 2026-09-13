@@ -192,10 +192,16 @@ class ControllerFeatureTest(unittest.TestCase):
     # ── 空板恢复引导 / 落盘可靠性 ─────────────────────────
 
     def _seed_snapshot(self, title="快照里的卡"):
-        """在数据目录预置一份含卡的启动快照（模拟历史数据）"""
+        """在数据目录预置一份含卡的启动快照（模拟历史数据）
+
+        同时清掉 .prev：测试意图是"唯一历史数据 = 这份快照"，若落盘链
+        恰好留有带卡的 .prev，恢复引导会优先选它（更新的候选），断言
+        就会被套件里其他测试的落盘残留干扰。
+        """
         import json
         path = self.c._store.path
         path.parent.mkdir(parents=True, exist_ok=True)
+        path.with_name(path.name + ".prev").unlink(missing_ok=True)
         snap = path.with_name(path.name + ".snap.20260909_100000_000000.bak")
         doc = {"app": "桌宠看板", "lists": [
             {"id": "l1", "title": "待办",
@@ -365,7 +371,7 @@ class ControllerFeatureTest(unittest.TestCase):
         self.c._on_undo_requested(False)
         self.assertEqual(self._list().cards[0].workdir, "")
         self._flush_sync()
-        doc = json.loads(AppConfig.board_path().read_text(encoding="utf-8"))
+        doc = json.loads(self.c._store.path.read_text(encoding="utf-8"))
         card_doc = [c for lst in doc["lists"] for c in lst["cards"]
                     if c["title"] == "要设目录的任务"][0]
         self.assertEqual(card_doc["workdir"], "")
@@ -393,7 +399,7 @@ class ControllerFeatureTest(unittest.TestCase):
         self._flush_sync()                       # 先落下空板，模拟"数据文件已存在"
         self.c._on_card_add(self._list().id, "必须落盘的卡")
         self._flush_sync()                       # 防抖计时器到点 / 退出冲刷
-        doc = json.loads(AppConfig.board_path().read_text(encoding="utf-8"))
+        doc = json.loads(self.c._store.path.read_text(encoding="utf-8"))
         titles = [c["title"] for lst in doc["lists"] for c in lst["cards"]]
         self.assertEqual(titles, ["必须落盘的卡"])
 
@@ -407,7 +413,7 @@ class ControllerFeatureTest(unittest.TestCase):
         # 完成第一张（列表序为 [乙, 甲]）
         self.c._on_card_done(lst.id, lst.cards[0].id, True)
         self._flush_sync()
-        doc = json.loads(AppConfig.board_path().read_text(encoding="utf-8"))
+        doc = json.loads(self.c._store.path.read_text(encoding="utf-8"))
         done = {c["title"]: c["done"] for l in doc["lists"] for c in l["cards"]}
         self.assertTrue(done["乙"])
         self.assertFalse(done["甲"])
@@ -419,7 +425,7 @@ class ControllerFeatureTest(unittest.TestCase):
         self.c._store.flush_async(self.c._save_pool)
         self.assertFalse(self.c._store._dirty)   # 快照取走即清脏
         self.assertTrue(self.c._save_pool.waitForDone(3000))
-        doc = json.loads(AppConfig.board_path().read_text(encoding="utf-8"))
+        doc = json.loads(self.c._store.path.read_text(encoding="utf-8"))
         titles = [c["title"] for lst in doc["lists"] for c in lst["cards"]]
         self.assertEqual(titles, ["异步落盘"])
 
@@ -429,7 +435,7 @@ class ControllerFeatureTest(unittest.TestCase):
         self.c._on_card_add(self._list().id, "退出兜底")
         self.c._store.mark_dirty()   # 模拟后台写提交后又发生编辑
         self.c._on_about_to_quit()
-        doc = json.loads(AppConfig.board_path().read_text(encoding="utf-8"))
+        doc = json.loads(self.c._store.path.read_text(encoding="utf-8"))
         titles = [c["title"] for lst in doc["lists"] for c in lst["cards"]]
         self.assertEqual(titles, ["退出兜底"])
         self.assertFalse(self.c._store._dirty)
@@ -532,13 +538,14 @@ class ControllerFeatureTest(unittest.TestCase):
         self._reset()
         self.c._on_card_add(self._list().id, "备份卡")
         card_id = self._list().cards[0].id
+        old_board_id = self.c._store_board_id
         tmp = Path(tempfile.mkdtemp()) / "backup.json"
         with patch.object(QFileDialog, "getSaveFileName",
                           return_value=(str(tmp), "JSON (*.json)")):
             self.c._on_export_backup()
         self.assertTrue(tmp.exists())
 
-        # 改掉内容后再导入：应恢复备份里的标题
+        # 改掉内容后再导入：导入为一块新看板并自动切换过去
         for lst in self.c._store.load().lists:
             for x in lst.cards:
                 x.title = "被改"
@@ -548,10 +555,28 @@ class ControllerFeatureTest(unittest.TestCase):
                 patch.object(QMessageBox, "question",
                              return_value=QMessageBox.Yes):
             self.c._on_import_backup()
+        # 已切到新看板：备份里的卡片按原 id 完整恢复；
+        # 旧看板保留在多看板列表中，内容停留在"被改"
+        self.assertNotEqual(self.c._store_board_id, old_board_id)
         titles = [c.title for lst in self.c._store.load().lists
                   for c in lst.cards if c.id == card_id]
         self.assertEqual(titles, ["备份卡"])
-        self.assertEqual(self.c._undo_stack, [])   # 导入清空撤销栈
+        self.assertEqual(self.c._undo_stack, [])   # 切换看板清空撤销栈
+
+        # 还原现场（套件共享一个控制器）：切回原看板并删除导入的看板。
+        # 绕过 _activate_board——它的落盘/快照副作用会污染后续
+        # "空板恢复引导"测试的快照候选链
+        imported_id = self.c._store_board_id
+        from app.models.board import BoardStore
+        self.c._store = BoardStore(
+            self.c._workspace.board_path(old_board_id))
+        self.c._store_board_id = old_board_id
+        self.c._workspace.set_current(old_board_id)
+        self.c._undo_stack.clear()
+        self.c._redo_stack.clear()
+        self.assertTrue(self.c._workspace.delete_board(imported_id))
+        self.c._apply_board_to_ui()
+        self._reset()
 
     def test_backup_import_bad_file_shows_error(self):
         from PySide6.QtWidgets import QFileDialog, QMessageBox

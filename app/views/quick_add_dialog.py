@@ -53,7 +53,8 @@ class QuickAddDialog(QDialog):
     """
 
     def __init__(self, title: str, label: str, placeholder: str = "",
-                 syntax_preview: bool = False, parent=None):
+                 syntax_preview: bool = False, parent=None,
+                 initial_text: str = ""):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setModal(True)
@@ -99,6 +100,8 @@ class QuickAddDialog(QDialog):
 
         self._edit = QLineEdit()
         self._edit.setPlaceholderText(placeholder)
+        if initial_text:
+            self._edit.setText(initial_text)
         self._edit.returnPressed.connect(self._on_confirm)
         self._edit.textChanged.connect(self._update_preview)
         root.addWidget(self._edit)

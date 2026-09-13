@@ -52,7 +52,7 @@ class AppConfig:
 
     # 应用信息
     APP_NAME = "桌宠看板"
-    APP_VERSION = "0.1.3"
+    APP_VERSION = "0.2.0"
     APP_ORG = "Personal"
 
     @classmethod
@@ -159,6 +159,8 @@ class AppConfig:
 
     # ── 截止提醒日志（逐卡每天一次，防重启/防轰炸）─────────────
 
+    KEY_REMIND_ADVANCE = "remind/advance_days"
+
     @classmethod
     def get_remind_log(cls) -> dict[str, list[str]]:
         """{日期 ISO: [card_id:due:kind, ...]}，损坏时回退空表"""
@@ -176,6 +178,20 @@ class AppConfig:
     def save_remind_log(cls, log: dict[str, list[str]]) -> None:
         _settings().setValue(cls.KEY_REMIND_LOG,
                              json.dumps(log, ensure_ascii=False))
+
+    @classmethod
+    def get_remind_advance(cls) -> int:
+        """截止日提前提醒天数（0=仅当天/逾期；1~3=提前 N 天也开始提醒）"""
+        try:
+            return max(0, min(3, int(_settings().value(
+                cls.KEY_REMIND_ADVANCE, 0) or 0)))
+        except (TypeError, ValueError):
+            return 0
+
+    @classmethod
+    def save_remind_advance(cls, days: int) -> None:
+        _settings().setValue(cls.KEY_REMIND_ADVANCE,
+                             max(0, min(3, int(days))))
 
     # ── 折叠列表（会话之间保持列折叠状态） ──────────────────
 
@@ -268,9 +284,9 @@ class AppConfig:
     # 宽高均可调并记住上次值；此前宽度被 setFixedWidth 锁死、高度可拉伸，
     # 只能纵向拉、不能横向拉。最小宽需容纳一行标签色块（6 个 chip）
     CARD_DIALOG_WIDTH = 460
-    CARD_DIALOG_HEIGHT = 520
+    CARD_DIALOG_HEIGHT = 620
     CARD_DIALOG_MIN_WIDTH = 380
-    CARD_DIALOG_MIN_HEIGHT = 320
+    CARD_DIALOG_MIN_HEIGHT = 360
 
     # ── 过渡动画（毫秒）──────────────────────────────────────────
     # 全部经 app/views/motion.py 下发："暂停动画"开关一关即整体退化为瞬时切换
@@ -403,7 +419,12 @@ class AppConfig:
     }
 
     # ── 重复周期（卡片完成时自动滚动截止日期）─────────────────
-    REPEAT_NAMES = {"never": "", "daily": "每日", "weekly": "每周"}
+    REPEAT_NAMES = {"never": "", "daily": "每日", "weekly": "每周",
+                    "weekdays": "工作日", "monthly": "每月", "yearly": "每年",
+                    "custom": "自定义"}
+    # 对话框/菜单展示顺序（never 首位）
+    REPEAT_ORDER = ("never", "daily", "weekly", "weekdays",
+                    "monthly", "yearly", "custom")
 
     # ── 优先级（0=无 1=高 2=中 3=低）──────────────────────
     PRIORITY_NAMES = {0: "", 1: "高", 2: "中", 3: "低"}

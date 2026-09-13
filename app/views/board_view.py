@@ -158,6 +158,29 @@ def _board_qss(mode: str) -> str:
             color: {c['text_primary']};
             background: transparent;
         }}
+        QPushButton#boardTitleBtn {{
+            font-size: 17px;
+            font-weight: bold;
+            color: {c['text_primary']};
+            background: transparent;
+            border: none;
+            border-radius: 8px;
+            padding: 3px 8px;
+        }}
+        QPushButton#boardTitleBtn:hover {{
+            background: {c['glass']};
+        }}
+        QFrame#selectionBar {{
+            background: {c['glass']};
+            border: 1px solid {c['border']};
+            border-radius: 12px;
+        }}
+        QLabel#selCount {{
+            color: {c['text_primary']};
+            font-size: 12px;
+            font-weight: bold;
+            background: transparent;
+        }}
         QLabel#boardStats {{
             font-size: 12px;
             color: {c['text_primary']};
@@ -307,6 +330,10 @@ def _board_qss(mode: str) -> str:
         }}
         QFrame#cardFrame:hover {{
             border: 1px solid {c['accent']};
+        }}
+        QFrame#cardFrame[selected="true"] {{
+            border: 2px solid {c['accent']};
+            background: {c['bg_hover']};
         }}
         QLabel#cardTitle {{
             font-size: 13px;
@@ -468,7 +495,11 @@ class CardWidget(QFrame):
     signal_card_star = Signal(str)              # card_id（星标 toggle）
     signal_card_workdir_open = Signal(str)      # card_id（打开工作目录）
     signal_card_workdir_set = Signal(str)       # card_id（右键快捷设置目录）
+    signal_card_duplicate = Signal(str)         # card_id（复制卡片）
+    signal_card_attachment_open = Signal(str)   # card_id（打开首个附件）
     signal_label_clicked = Signal(str)          # label key（点色条过滤）
+    signal_card_ctrl_clicked = Signal(str)      # card_id（Ctrl/Cmd+单击 多选）
+    signal_card_shift_clicked = Signal(str)     # card_id（Shift+单击 范围多选）
     signal_drag_blocked = Signal()              # 过滤态下拖拽被拒（提示入口）
 
     def __init__(self, card: Card, parent=None):
@@ -477,6 +508,7 @@ class CardWidget(QFrame):
         self._drag_start = QPoint()
         self._pressing = False
         self._hovered = False
+        self._selected = False
         self._tooltip_backup: str | None = None   # 悬停备注徽章期间暂存卡片 tooltip
         self._meta_items_cache: list = []          # (文本, 色键, 是否备注) 供 tooltip 汇总
         self._delete_btn: QPushButton | None = None
@@ -486,6 +518,7 @@ class CardWidget(QFrame):
         self._notes_badge: QLabel | None = None    # "≡ 有备注"徽章（悬停弹备注预览）
         self._more_badge: QLabel | None = None     # 装不下的徽章用 "…" 提示
         self._workdir_badge: QLabel | None = None  # "📂"徽章（点击打开工作目录）
+        self._attach_badge: QLabel | None = None   # "📎"徽章（点击打开首个附件）
         self._fit_state: tuple = ()                # 徽章显示组合缓存（避免重复重排）
         self._fit_width: int | None = None         # 上次徽章取舍时的卡片宽度
         self._fingerprint: tuple = ()
@@ -502,6 +535,13 @@ class CardWidget(QFrame):
     def set_focusing(self, card_id: str | None) -> None:
         self._focusing_id = card_id
 
+    def set_selected(self, selected: bool) -> None:
+        """批量多选高亮（动态属性驱动 QSS 边框，不重建子树）"""
+        if self._selected == selected:
+            return
+        self._selected = selected
+        _set_prop(self, "selected", bool(selected))
+
     def _show_card_menu(self, pos) -> None:
         menu = QMenu(self)
         # 今日聚焦开关放首位：星标是"加入今日"的唯一入口，此前必须打开
@@ -514,12 +554,15 @@ class CardWidget(QFrame):
         act_workdir_open = (menu.addAction(tr("📂 打开工作目录"))
                             if self._card.workdir else None)
         act_workdir_set = menu.addAction(tr("📁 设置工作目录…"))
+        act_attach_open = (menu.addAction(tr("📎 打开附件"))
+                           if self._card.attachments else None)
         menu.addSeparator()
         if self._card.id == self._focusing_id:
             act_pomo = menu.addAction(tr("⏹ 停止专注"))
         else:
             act_pomo = menu.addAction(tr("▶ 开始专注 25 分钟"))
         menu.addSeparator()
+        act_duplicate = menu.addAction(tr("复制卡片"))
         act_archive = menu.addAction(tr("归档"))
         chosen = menu.exec(self.mapToGlobal(pos))
         menu.deleteLater()   # exec 返回即弃用：挂在卡片控件上会随卡片累积
@@ -529,8 +572,12 @@ class CardWidget(QFrame):
             self.signal_card_workdir_open.emit(self._card.id)
         elif chosen is act_workdir_set:
             self.signal_card_workdir_set.emit(self._card.id)
+        elif act_attach_open is not None and chosen is act_attach_open:
+            self.signal_card_attachment_open.emit(self._card.id)
         elif chosen is act_pomo:
             self.signal_card_pomo.emit(self._card.id)
+        elif chosen is act_duplicate:
+            self.signal_card_duplicate.emit(self._card.id)
         elif chosen is act_archive:
             self.signal_card_archive.emit(self._card.id)
 
@@ -565,7 +612,10 @@ class CardWidget(QFrame):
         """
         c = self._card
         return (c.title, c.done, c.due_date, bool(c.notes), bool(c.workdir),
-                tuple(c.labels), c.priority, c.repeat, c.pomodoros)
+                tuple(c.labels), c.priority, c.repeat, c.pomodoros,
+                tuple((it.get("text"), bool(it.get("done")))
+                      for it in c.checklist),
+                len(c.attachments))
 
     def reapply_style(self) -> None:
         """主题切换后同步卡片内部状态，不重建子控件（保留悬停状态）
@@ -615,6 +665,7 @@ class CardWidget(QFrame):
         self._meta_badges = []
         self._notes_badge = None
         self._workdir_badge = None
+        self._attach_badge = None
         self._more_badge = None
         self._fit_state = ()
         self._fit_width = None   # 徽章重建后宽度取舍必须重算
@@ -676,6 +727,16 @@ class CardWidget(QFrame):
         if card.repeat != "never":
             meta_items.append((f"🔁 {repeat_display(card.repeat)}",
                                "text_secondary", False))
+        if card.checklist:
+            done, total = card.checklist_progress()
+            # 全部勾完转 success 色：一眼可辨"只差归档/收尾"
+            meta_items.append((f"☑ {done}/{total}",
+                               "success" if done == total else "accent",
+                               False))
+        if card.attachments:
+            n = len(card.attachments)
+            meta_items.append(("📎" if n == 1 else f"📎 ×{n}",
+                               "text_secondary", False))
         if card.notes:
             meta_items.append((tr("≡ 有备注"), "text_secondary", True))
         if card.pomodoros:
@@ -714,6 +775,13 @@ class CardWidget(QFrame):
                     self._workdir_badge = badge
                     badge.setCursor(Qt.PointingHandCursor)
                     badge.setToolTip(card.workdir)
+                    badge.installEventFilter(self)
+                elif text.startswith("📎"):
+                    # 附件徽章：点击打开首个附件；全部附件名走 tooltip
+                    self._attach_badge = badge
+                    badge.setCursor(Qt.PointingHandCursor)
+                    badge.setToolTip(
+                        "\n".join(a.get("name", "") for a in card.attachments))
                     badge.installEventFilter(self)
                 meta_row.addWidget(badge)
             # 折叠指示：装不下的徽章数用 "…" 提示。不进 _meta_badges
@@ -844,6 +912,12 @@ class CardWidget(QFrame):
                 self.signal_card_workdir_open.emit(self._card.id)
                 return True   # 拦截冒泡，避免误开卡片编辑框
             return False
+        if obj is self._attach_badge:
+            if (event.type() == QEvent.MouseButtonPress
+                    and event.button() == Qt.LeftButton):
+                self.signal_card_attachment_open.emit(self._card.id)
+                return True   # 拦截冒泡，避免误开卡片编辑框
+            return False
         if obj is self._notes_badge:
             if event.type() == QEvent.Enter:
                 pop = notes_popover()
@@ -934,13 +1008,20 @@ class CardWidget(QFrame):
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.LeftButton and self._pressing:
             self._pressing = False
-            # 单击（无明显位移）→ 打开编辑对话框
+            # 单击（无明显位移）→ 打开编辑对话框 / 多选
             if ((event.position().toPoint() - self._drag_start)
                     .manhattanLength() <= AppConfig.CARD_DRAG_THRESHOLD):
                 key = self._label_key_at(event.position().toPoint())
                 if key is not None:
                     # 点左缘色条 = 按该标签过滤看板（而非打开编辑）
                     self.signal_label_clicked.emit(key)
+                elif event.modifiers() & (Qt.ControlModifier
+                                          | Qt.MetaModifier):
+                    # Ctrl/Cmd+单击：加入/移出多选
+                    self.signal_card_ctrl_clicked.emit(self._card.id)
+                elif event.modifiers() & Qt.ShiftModifier:
+                    # Shift+单击：锚点到本卡的范围多选
+                    self.signal_card_shift_clicked.emit(self._card.id)
                 else:
                     self.signal_edit_requested.emit(self._card)
         super().mouseReleaseEvent(event)
@@ -1445,6 +1526,10 @@ class ListColumn(QFrame):
     signal_card_star = Signal(str)             # card_id（星标 toggle）
     signal_card_workdir_open = Signal(str)     # card_id（打开工作目录）
     signal_card_workdir_set = Signal(str)      # card_id（右键快捷设置目录）
+    signal_card_duplicate = Signal(str)        # card_id（复制卡片）
+    signal_card_attachment_open = Signal(str)  # card_id（打开首个附件）
+    signal_card_ctrl_clicked = Signal(str)     # card_id（Ctrl/Cmd+单击 多选）
+    signal_card_shift_clicked = Signal(str)    # card_id（Shift+单击 范围多选）
     signal_label_clicked = Signal(str)         # label key（点色条过滤）
     signal_drag_blocked = Signal()             # 过滤态下拖拽被拒（→ 看板 toast）
     signal_list_move = Signal(str, str, bool)  # moved_list_id, target_list_id, insert_before
@@ -1554,6 +1639,10 @@ class ListColumn(QFrame):
         cw.signal_card_star.connect(self.signal_card_star)
         cw.signal_card_workdir_open.connect(self.signal_card_workdir_open)
         cw.signal_card_workdir_set.connect(self.signal_card_workdir_set)
+        cw.signal_card_duplicate.connect(self.signal_card_duplicate)
+        cw.signal_card_attachment_open.connect(self.signal_card_attachment_open)
+        cw.signal_card_ctrl_clicked.connect(self.signal_card_ctrl_clicked)
+        cw.signal_card_shift_clicked.connect(self.signal_card_shift_clicked)
         cw.signal_label_clicked.connect(self.signal_label_clicked)
         cw.signal_drag_blocked.connect(self.signal_drag_blocked)
         return cw
@@ -2167,8 +2256,25 @@ class BoardView(QWidget):
     signal_settings_clicked = Signal()          # 打开设置界面
     signal_export = Signal(str)                 # "md" | "csv"
     signal_export_backup = Signal()             # 导出完整备份 .json
-    signal_import_backup = Signal()             # 从备份导入
+    signal_import_backup = Signal()             # 从备份导入（生成新看板）
+    signal_import_trello = Signal()             # 导入 Trello 看板 JSON
+    signal_import_markdown = Signal()           # 导入 Markdown 任务清单
     signal_today_toggled = Signal(bool)         # 今日聚焦开关变化（菜单栏同步）
+    signal_calendar_open = Signal()             # 打开日历视图
+    signal_shortcuts_open = Signal()            # 打开快捷键速查
+    signal_card_duplicate = Signal(str)         # card_id（复制卡片）
+    signal_card_attachment_open = Signal(str)   # card_id（打开首个附件）
+    # 多看板
+    signal_board_switch = Signal(str)           # board_id
+    signal_board_create = Signal()
+    signal_board_rename = Signal()              # 当前看板
+    signal_board_delete = Signal(str)           # board_id
+    # 批量操作（多选）
+    signal_batch_done = Signal(list, bool)      # card_ids, done
+    signal_batch_move = Signal(list, str)       # card_ids, target_list_id
+    signal_batch_label = Signal(list, str)      # card_ids, label_key
+    signal_batch_delete = Signal(list)          # card_ids
+    signal_batch_archive = Signal(list)         # card_ids
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2188,9 +2294,17 @@ class BoardView(QWidget):
         self._toolbar_layout.setContentsMargins(18, 8, right_margin, 8)
         self._toolbar_layout.setSpacing(10)
 
-        self._title_label = QLabel(tr("我的看板"))
-        self._title_label.setObjectName("boardTitle")
-        self._toolbar_layout.addWidget(self._title_label)
+        # 看板切换器：标题即按钮（点开多看板菜单），名字空串显示默认名
+        self._board_name = ""
+        self._board_meta: list[tuple[str, str]] = []   # (id, name) 有序
+        self._current_board_id = ""
+        self._title_btn = QPushButton()
+        self._title_btn.setObjectName("boardTitleBtn")
+        self._title_btn.setCursor(Qt.PointingHandCursor)
+        self._title_btn.setToolTip(tr("切换 / 管理看板"))
+        self._title_btn.clicked.connect(self._show_board_menu)
+        self._toolbar_layout.addWidget(self._title_btn)
+        self._set_board_name("")
 
         self._stats_label = QLabel()
         self._stats_label.setObjectName("boardStats")
@@ -2251,6 +2365,13 @@ class BoardView(QWidget):
         self._archive_btn.setToolTip(tr("查看已归档卡片并恢复"))
         self._archive_btn.clicked.connect(self.signal_archive_open.emit)
         self._toolbar_layout.addWidget(self._archive_btn)
+
+        self._calendar_btn = QPushButton("📅")
+        self._calendar_btn.setObjectName("boardToolBtn")
+        self._calendar_btn.setCursor(Qt.PointingHandCursor)
+        self._calendar_btn.setToolTip(tr("按截止日期在月历中查看与拖动卡片"))
+        self._calendar_btn.clicked.connect(self.signal_calendar_open.emit)
+        self._toolbar_layout.addWidget(self._calendar_btn)
 
         self._export_btn = QPushButton(tr("导出"))
         self._export_btn.setObjectName("boardToolBtn")
@@ -2349,6 +2470,52 @@ class BoardView(QWidget):
         # 看板内轻提示（删除/撤销等操作反馈，见 toast.py）
         self._toast = Toast(self)
 
+        # ── 多选批量操作栏（有选中卡片时浮在看板底部居中） ──
+        self._selected_ids: set[str] = set()
+        self._sel_anchor: str | None = None
+        self._selection_bar = QFrame(self)
+        self._selection_bar.setObjectName("selectionBar")
+        sel_lay = QHBoxLayout(self._selection_bar)
+        sel_lay.setContentsMargins(12, 6, 12, 6)
+        sel_lay.setSpacing(8)
+        self._sel_count_label = QLabel()
+        self._sel_count_label.setObjectName("selCount")
+        sel_lay.addWidget(self._sel_count_label)
+        self._sel_done_btn = QPushButton(tr("✓ 切换完成"))
+        self._sel_done_btn.setObjectName("boardToolBtn")
+        self._sel_done_btn.setCursor(Qt.PointingHandCursor)
+        self._sel_done_btn.clicked.connect(self._on_batch_done)
+        sel_lay.addWidget(self._sel_done_btn)
+        self._sel_label_btn = QPushButton(tr("🏷 标签"))
+        self._sel_label_btn.setObjectName("boardToolBtn")
+        self._sel_label_btn.setCursor(Qt.PointingHandCursor)
+        self._sel_label_btn.clicked.connect(self._show_batch_label_menu)
+        sel_lay.addWidget(self._sel_label_btn)
+        self._sel_move_btn = QPushButton(tr("→ 移动"))
+        self._sel_move_btn.setObjectName("boardToolBtn")
+        self._sel_move_btn.setCursor(Qt.PointingHandCursor)
+        self._sel_move_btn.clicked.connect(self._show_batch_move_menu)
+        sel_lay.addWidget(self._sel_move_btn)
+        self._sel_archive_btn = QPushButton(tr("📥 归档"))
+        self._sel_archive_btn.setObjectName("boardToolBtn")
+        self._sel_archive_btn.setCursor(Qt.PointingHandCursor)
+        self._sel_archive_btn.clicked.connect(
+            lambda: self._emit_batch(self.signal_batch_archive))
+        sel_lay.addWidget(self._sel_archive_btn)
+        self._sel_delete_btn = QPushButton(tr("🗑 删除"))
+        self._sel_delete_btn.setObjectName("boardToolBtn")
+        self._sel_delete_btn.setCursor(Qt.PointingHandCursor)
+        self._sel_delete_btn.clicked.connect(
+            lambda: self._emit_batch(self.signal_batch_delete))
+        sel_lay.addWidget(self._sel_delete_btn)
+        self._sel_clear_btn = QPushButton("✕")
+        self._sel_clear_btn.setObjectName("boardToolBtn")
+        self._sel_clear_btn.setCursor(Qt.PointingHandCursor)
+        self._sel_clear_btn.setToolTip(tr("取消多选（Esc）"))
+        self._sel_clear_btn.clicked.connect(self.clear_selection)
+        sel_lay.addWidget(self._sel_clear_btn)
+        self._selection_bar.hide()
+
         # 全局过滤器只在重命名编辑器存在期间安装（见 _attach_rename_filter）：
         # 常态挂载会让全应用每个事件都过一遍 Python，实测 +23µs/事件
         self._rename_filter_installed = False
@@ -2420,7 +2587,8 @@ class BoardView(QWidget):
 
     def reapply_texts(self) -> None:
         """语言切换：刷新静态文案；卡片指纹清空，待 refresh 重建徽章/tooltip"""
-        self._title_label.setText(tr("我的看板"))
+        self._set_board_name(self._board_name)
+        self._title_btn.setToolTip(tr("切换 / 管理看板"))
         self._search_edit.setPlaceholderText(tr("搜索卡片…"))
         self._search_edit.setAccessibleName(tr("搜索卡片"))
         self._today_btn.setToolTip(
@@ -2431,6 +2599,15 @@ class BoardView(QWidget):
         self._add_list_btn.setText(tr("+ 添加列表"))
         self._archive_btn.setText(tr("归档"))
         self._archive_btn.setToolTip(tr("查看已归档卡片并恢复"))
+        self._calendar_btn.setText("📅")
+        self._calendar_btn.setToolTip(tr("按截止日期在月历中查看与拖动卡片"))
+        self._sel_done_btn.setText(tr("✓ 切换完成"))
+        self._sel_label_btn.setText(tr("🏷 标签"))
+        self._sel_move_btn.setText(tr("→ 移动"))
+        self._sel_archive_btn.setText(tr("📥 归档"))
+        self._sel_delete_btn.setText(tr("🗑 删除"))
+        self._sel_clear_btn.setToolTip(tr("取消多选（Esc）"))
+        self._update_selection_bar()
         self._export_btn.setText(tr("导出"))
         self._export_btn.setToolTip(tr("导出为 Markdown / CSV"))
         self._theme_btn.setToolTip(tr("切换浅色 / 深色主题"))
@@ -2617,7 +2794,169 @@ class BoardView(QWidget):
         self.update_stats(lists, visibles=visibles, stats=stats)
         self._set_today_count(sum(len(v or []) for v in visibles.values()))
         self._update_empty_hint(lists)
+        # 列/卡控件按 id 复用，选中态属性随控件保留；重建出的新卡默认
+        # 未选中，这里统一重刷一次（集合没变时设置是幂等短路）
+        self._apply_selection_props()
         sb.setValue(scroll_pos)
+
+    # ── 看板切换器 ────────────────────────────────────────
+
+    def set_boards(self, metas: list[tuple[str, str]],
+                   current_id: str) -> None:
+        """注入看板元信息列表（id, name 有序）与当前看板 id"""
+        self._board_meta = list(metas)
+        self._current_board_id = current_id
+        name = next((n for bid, n in metas if bid == current_id), "")
+        self._set_board_name(name)
+
+    def _set_board_name(self, name: str) -> None:
+        self._board_name = name
+        self._title_btn.setText(
+            f"{name or tr('我的看板')}  ▾")
+
+    def _show_board_menu(self) -> None:
+        menu = QMenu(self)
+        for bid, name in self._board_meta:
+            act = menu.addAction(name or tr("我的看板"))
+            act.setCheckable(True)
+            act.setChecked(bid == self._current_board_id)
+            act.triggered.connect(
+                lambda _=False, i=bid: self.signal_board_switch.emit(i))
+        menu.addSeparator()
+        act_new = menu.addAction(tr("＋ 新建看板"))
+        act_new.triggered.connect(self.signal_board_create.emit)
+        act_rename = menu.addAction(tr("✏ 重命名看板"))
+        act_rename.triggered.connect(self.signal_board_rename.emit)
+        act_delete = menu.addAction(tr("🗑 删除看板"))
+        act_delete.setEnabled(len(self._board_meta) > 1)
+        act_delete.triggered.connect(
+            lambda: self.signal_board_delete.emit(self._current_board_id))
+        menu.exec(self._title_btn.mapToGlobal(
+            QPoint(0, self._title_btn.height() + 2)))
+        menu.deleteLater()
+
+    # ── 多选批量操作 ──────────────────────────────────────
+
+    def _iter_card_widgets(self):
+        for col in self._columns:
+            for cw in col._card_widgets:
+                yield cw
+
+    def _find_card_widget(self, card_id: str) -> "CardWidget | None":
+        for cw in self._iter_card_widgets():
+            if cw.card().id == card_id:
+                return cw
+        return None
+
+    def _apply_selection_props(self) -> None:
+        selected = self._selected_ids
+        for cw in self._iter_card_widgets():
+            cw.set_selected(cw.card().id in selected)
+
+    def _update_selection_bar(self) -> None:
+        if self._selected_ids:
+            self._sel_count_label.setText(
+                tr("已选 {n} 张").format(n=len(self._selected_ids)))
+            self._selection_bar.adjustSize()
+            self._selection_bar.move(
+                (self.width() - self._selection_bar.width()) // 2,
+                self.height() - self._selection_bar.height() - 14)
+            self._selection_bar.show()
+            self._selection_bar.raise_()
+        else:
+            self._selection_bar.hide()
+
+    def _on_card_ctrl_clicked(self, card_id: str) -> None:
+        if card_id in self._selected_ids:
+            self._selected_ids.discard(card_id)
+        else:
+            self._selected_ids.add(card_id)
+        self._sel_anchor = card_id
+        self._apply_selection_props()
+        self._update_selection_bar()
+
+    def _on_card_shift_clicked(self, card_id: str) -> None:
+        anchor = self._sel_anchor
+        if anchor is None or anchor not in self._selected_ids:
+            self._on_card_ctrl_clicked(card_id)
+            return
+        # 范围限定在同一列内（跨列 Shift 退化为单选该卡）
+        for col in self._columns:
+            ids = [cw.card().id for cw in col._card_widgets]
+            if card_id in ids and anchor in ids:
+                lo, hi = sorted((ids.index(anchor), ids.index(card_id)))
+                self._selected_ids.update(ids[lo:hi + 1])
+                break
+        else:
+            self._selected_ids.add(card_id)
+        self._apply_selection_props()
+        self._update_selection_bar()
+
+    def clear_selection(self) -> None:
+        if not self._selected_ids:
+            return
+        self._selected_ids.clear()
+        self._sel_anchor = None
+        self._apply_selection_props()
+        self._update_selection_bar()
+
+    def clear_selection_if_active(self) -> bool:
+        """有选中卡片时清空并吞掉本次 Esc（Esc 折叠链第一环）"""
+        if not self._selected_ids:
+            return False
+        self.clear_selection()
+        return True
+
+    def selection_ids(self) -> list[str]:
+        return list(self._selected_ids)
+
+    def _emit_batch(self, signal) -> None:
+        ids = self.selection_ids()
+        if not ids:
+            return
+        signal.emit(ids)
+        self.clear_selection()
+
+    def _on_batch_done(self) -> None:
+        ids = self.selection_ids()
+        board_lists = self._lists
+        by_id = {c.id: c for lst in board_lists for c in lst.cards}
+        # 存在任一未完成 → 全部置完成；否则全部取消完成（切换语义）
+        target = not all(by_id.get(i).done
+                         for i in ids if by_id.get(i) is not None)
+        if not ids:
+            return
+        self.signal_batch_done.emit(ids, target)
+        self.clear_selection()
+
+    def _show_batch_label_menu(self) -> None:
+        ids = self.selection_ids()
+        if not ids:
+            return
+        menu = QMenu(self)
+        for key in AppConfig.LABEL_COLORS:
+            act = menu.addAction(label_display(key))
+            act.triggered.connect(
+                lambda _=False, k=key: (self.signal_batch_label.emit(ids, k),
+                                        self.clear_selection()))
+        menu.exec(self._sel_label_btn.mapToGlobal(
+            QPoint(0, self._sel_label_btn.height() + 2)))
+        menu.deleteLater()
+
+    def _show_batch_move_menu(self) -> None:
+        ids = self.selection_ids()
+        if not ids:
+            return
+        menu = QMenu(self)
+        for lst in self._lists:
+            act = menu.addAction(lst.title)
+            act.triggered.connect(
+                lambda _=False, lid=lst.id:
+                (self.signal_batch_move.emit(ids, lid),
+                 self.clear_selection()))
+        menu.exec(self._sel_move_btn.mapToGlobal(
+            QPoint(0, self._sel_move_btn.height() + 2)))
+        menu.deleteLater()
 
     def _search_query(self) -> str:
         return self._search_edit.text().strip().lower()
@@ -2743,6 +3082,9 @@ class BoardView(QWidget):
         menu.addSeparator()
         act_backup = menu.addAction(tr("导出备份（.json）"))
         act_import = menu.addAction(tr("从备份导入…"))
+        menu.addSeparator()
+        act_trello = menu.addAction(tr("导入 Trello 看板（.json）…"))
+        act_md_import = menu.addAction(tr("导入 Markdown（.md）…"))
         chosen = menu.exec(self.mapToGlobal(
             QPoint(self._export_btn.x(), self._export_btn.height())))
         menu.deleteLater()   # 常驻 BoardView 上的菜单不销毁会每次导出累积一个
@@ -2754,6 +3096,10 @@ class BoardView(QWidget):
             self.signal_export_backup.emit()
         elif chosen is act_import:
             self.signal_import_backup.emit()
+        elif chosen is act_trello:
+            self.signal_import_trello.emit()
+        elif chosen is act_md_import:
+            self.signal_import_markdown.emit()
 
     def clear_search_if_active(self) -> bool:
         """清空搜索框（有内容时）；返回是否清空了搜索"""
@@ -2787,6 +3133,10 @@ class BoardView(QWidget):
         col.signal_card_star.connect(self.signal_card_star)
         col.signal_card_workdir_open.connect(self.signal_card_workdir_open)
         col.signal_card_workdir_set.connect(self.signal_card_workdir_set)
+        col.signal_card_duplicate.connect(self.signal_card_duplicate)
+        col.signal_card_attachment_open.connect(self.signal_card_attachment_open)
+        col.signal_card_ctrl_clicked.connect(self._on_card_ctrl_clicked)
+        col.signal_card_shift_clicked.connect(self._on_card_shift_clicked)
         # 标签过滤是纯视图态：内部消化，不冒泡控制器
         col.signal_label_clicked.connect(self._on_label_clicked)
         # 过滤态起拖被拒：解释原因（列已禁 drop，用户只会看到禁止光标）
@@ -2851,6 +3201,8 @@ class BoardView(QWidget):
         if self._toast.isVisible():
             self._toast.move((self.width() - self._toast.width()) // 2,
                              self.height() - self._toast.height() - 20)
+        if self._selection_bar.isVisible():
+            self._update_selection_bar()
 
     def show_toast(self, text: str) -> None:
         """显示看板内轻提示（折叠态由控制器改走托盘通知）"""
