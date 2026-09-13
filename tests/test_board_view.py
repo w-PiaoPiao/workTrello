@@ -1049,5 +1049,116 @@ class BoardViewRefreshTest(unittest.TestCase):
         self.view.hide()
 
 
+class SelectionTest(unittest.TestCase):
+    """多选交互：Ctrl/Cmd toggle + 锚点、Shift 列内范围与跨列退化、
+    选区栏显隐与批量信号接线、Esc 链清空入口"""
+
+    def setUp(self):
+        self.view = BoardView()
+        self.lists = make_lists([("待办", ["A", "B", "C"]),
+                                 ("进行中", ["D"])])
+        self.view.refresh(self.lists)
+        self.view.resize(1080, 640)
+        self.view.show()
+        QApplication.processEvents()
+
+    def tearDown(self):
+        self.view.hide()
+        self.view.deleteLater()
+
+    def _ids(self, col_i=0):
+        return [cw.card().id
+                for cw in self.view._columns[col_i]._card_widgets]
+
+    def _selected_widgets(self):
+        return [cw for col in self.view._columns
+                for cw in col._card_widgets if cw._selected]
+
+    def test_ctrl_click_toggles_and_shows_bar(self):
+        a = self._ids()[0]
+        self.view._on_card_ctrl_clicked(a)
+        self.assertEqual(self.view._selected_ids, {a})
+        self.assertEqual(len(self._selected_widgets()), 1)   # 卡片高亮
+        self.assertFalse(self.view._selection_bar.isHidden())
+        self.assertIn("1", self.view._sel_count_label.text())
+
+    def test_ctrl_click_same_card_deselects_and_hides_bar(self):
+        a = self._ids()[0]
+        self.view._on_card_ctrl_clicked(a)
+        self.view._on_card_ctrl_clicked(a)
+        self.assertEqual(self.view._selected_ids, set())
+        self.assertTrue(self.view._selection_bar.isHidden())
+
+    def test_shift_click_selects_range_from_anchor(self):
+        ids = self._ids()
+        self.view._on_card_ctrl_clicked(ids[0])      # 锚点 = A
+        self.view._on_card_shift_clicked(ids[2])     # Shift+C → A,B,C
+        self.assertEqual(self.view._selected_ids, set(ids[:3]))
+        self.assertEqual(len(self._selected_widgets()), 3)
+
+    def test_shift_click_without_anchor_selects_single(self):
+        ids = self._ids()
+        self.view._on_card_shift_clicked(ids[1])     # 无锚点：退化为单选
+        self.assertEqual(self.view._selected_ids, {ids[1]})
+
+    def test_shift_click_across_columns_degrades_to_single(self):
+        """跨列 Shift：范围只在同列内生效，否则只加该卡"""
+        col0_ids, col1_ids = self._ids(0), self._ids(1)
+        self.view._on_card_ctrl_clicked(col0_ids[0])
+        self.view._on_card_shift_clicked(col1_ids[0])    # D 在另一列
+        self.assertEqual(self.view._selected_ids,
+                         {col0_ids[0], col1_ids[0]})
+
+    def test_clear_selection_if_active_eats_esc(self):
+        a = self._ids()[0]
+        self.view._on_card_ctrl_clicked(a)
+        self.assertTrue(self.view.clear_selection_if_active())   # 吞掉本次 Esc
+        self.assertEqual(self.view._selected_ids, set())
+        self.assertFalse(self.view.clear_selection_if_active())  # 无选中：放行
+        # 显式按钮同样可清
+        self.view._on_card_ctrl_clicked(a)
+        self.view._sel_clear_btn.click()
+        self.assertEqual(self.view._selected_ids, set())
+
+    def test_batch_delete_button_emits_and_clears(self):
+        ids = self._ids()
+        got = []
+        self.view.signal_batch_delete.connect(got.append)
+        for cid in ids[:2]:
+            self.view._on_card_ctrl_clicked(cid)
+        self.view._sel_delete_btn.click()
+        # selection_ids 出自集合：顺序不保证与点选序一致，按集合比较
+        self.assertEqual(len(got), 1)
+        self.assertEqual(set(got[0]), set(ids[:2]))
+        self.assertEqual(self.view._selected_ids, set())     # 发出后清选区
+        self.assertTrue(self.view._selection_bar.isHidden())
+
+    def test_batch_done_button_emits_toggle_done(self):
+        ids = self._ids()
+        got = []
+        self.view.signal_batch_done.connect(
+            lambda card_ids, done: got.append((card_ids, done)))
+        self.view._on_card_ctrl_clicked(ids[0])
+        self.view._sel_done_btn.click()
+        self.assertEqual(got, [(ids[:1], True)])
+
+    def test_batch_archive_button_emits(self):
+        ids = self._ids()
+        got = []
+        self.view.signal_batch_archive.connect(got.append)
+        self.view._on_card_ctrl_clicked(ids[0])
+        self.view._sel_archive_btn.click()
+        self.assertEqual([set(x) for x in got], [{ids[0]}])
+
+    def test_selection_survives_data_refresh(self):
+        """数据刷新（widget 按 id 复用）后选中高亮不丢"""
+        a = self._ids()[0]
+        self.view._on_card_ctrl_clicked(a)
+        self.lists[0].cards.append(Card(title="新卡"))
+        self.view.refresh(self.lists)
+        self.assertEqual(self.view._selected_ids, {a})
+        self.assertEqual(len(self._selected_widgets()), 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

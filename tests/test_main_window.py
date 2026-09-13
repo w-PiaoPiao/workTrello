@@ -292,12 +292,13 @@ class WindowsZoomSignalTest(unittest.TestCase):
 
 
 class _FakeExpandedView:
-    """主窗口展开视图桩：记录重命名/搜索状态，供 Esc 链分支测试"""
+    """主窗口展开视图桩：记录重命名/搜索/多选状态，供 Esc 链分支测试"""
 
     def __init__(self):
         self.rename_open = False
         self.search_text = ""
         self.search_focus = False
+        self.selection_active = False
 
     def finish_rename(self, cancel=False):
         if self.rename_open:
@@ -311,6 +312,12 @@ class _FakeExpandedView:
     def clear_search_if_active(self):
         if self.search_text:
             self.search_text = ""
+            return True
+        return False
+
+    def clear_selection_if_active(self):
+        if self.selection_active:
+            self.selection_active = False
             return True
         return False
 
@@ -339,6 +346,21 @@ class EscCollapseChainTest(unittest.TestCase):
         self.assertEqual(self.w.mode, "expanded")
         self._press_esc()
         self.assertEqual(self.w.mode, "collapsed")   # 第二下：折叠
+
+    def test_esc_clears_selection_before_search_and_collapse(self):
+        """Esc 链新环节：有多选时先清多选（再按才轮到搜索/折叠）"""
+        self.view.selection_active = True
+        self.view.search_text = "待办"
+        self.view.search_focus = True
+        self._press_esc()
+        self.assertFalse(self.view.selection_active)  # 第一下：清多选
+        self.assertEqual(self.view.search_text, "待办")   # 搜索未动
+        self.assertEqual(self.w.mode, "expanded")
+        self._press_esc()
+        self.assertEqual(self.view.search_text, "")   # 第二下：清搜索
+        self.assertEqual(self.w.mode, "expanded")
+        self._press_esc()
+        self.assertEqual(self.w.mode, "collapsed")    # 第三下：折叠
 
     def test_esc_clears_focused_search_before_collapse(self):
         self.view.search_text = "待办"

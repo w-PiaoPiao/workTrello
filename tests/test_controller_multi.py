@@ -145,6 +145,83 @@ class ControllerMultiBoardTest(unittest.TestCase):
         self.assertEqual(cards[1].labels, ["blue"])
         self._reset()
 
+    # ── 附件落库（对话框结果 → 数据目录） ─────────────────
+
+    def test_materialize_copies_pending_and_keeps_user_file(self):
+        """pending 附件复制入库、路径改写、用户原文件绝不动
+
+        materialize 只做文件层操作；模型更新由随后的 card.apply 完成
+        （与控制器真实调用流一致），测试同序模拟。
+        """
+        self._reset()
+        self.c._on_card_add(self._list().id, "附件卡")
+        card = self._list().cards[0]
+        user_file = Path(tempfile.mkdtemp()) / "原始.png"
+        user_file.write_bytes(b"raw-bytes")
+        result = {"attachments": [
+            {"id": "n1", "name": "原始.png", "path": str(user_file),
+             "is_image": True, "pending": True},
+        ]}
+        self.c._materialize_attachments(card, result)
+        card.apply(result)
+        att = result["attachments"][0]
+        self.assertNotIn("pending", att)          # 入库成功摘除 pending
+        new_path = Path(att["path"])
+        self.assertTrue(new_path.exists())
+        self.assertEqual(new_path.read_bytes(), b"raw-bytes")
+        # 库内路径：<DATA_DIR>/attachments/<card_id>/（attach_root 经
+        # resolve 比较，macOS /var 是 /private/var 的 symlink，按同口径断言）
+        self.assertEqual(new_path.parent,
+                         (AppConfig.DATA_DIR / "attachments" / card.id)
+                         .resolve())
+        self.assertTrue(user_file.exists())       # 用户原文件保留
+        self.assertEqual(card.attachments, result["attachments"])
+
+    def test_materialize_removes_only_library_files(self):
+        """移除附件：库内文件清理；用户原文件与既有库文件不受牵连"""
+        self._reset()
+        self.c._on_card_add(self._list().id, "附件卡")
+        card = self._list().cards[0]
+        lib_dir = AppConfig.DATA_DIR / "attachments" / card.id
+        lib_dir.mkdir(parents=True, exist_ok=True)
+        lib_file = lib_dir / "old.png"
+        lib_file.write_bytes(b"old")
+        user_file = Path(tempfile.mkdtemp()) / "外链.png"
+        user_file.write_bytes(b"user")
+        card.attachments = [
+            {"id": "keep", "name": "old.png", "path": str(lib_file),
+             "is_image": True},
+            {"id": "ext", "name": "外链.png", "path": str(user_file),
+             "is_image": True},
+        ]
+        # 只保留 keep：ext 的路径在库外（模拟旧数据/复制失败的外链）→ 不删
+        result = {"attachments": [card.attachments[0]]}
+        self.c._materialize_attachments(card, result)
+        card.apply(result)
+        self.assertTrue(user_file.exists())       # 库外文件绝不动
+        self.assertTrue(lib_file.exists())        # keep 的库内文件保留
+        # 再把 keep 也移除：这次才清理库内文件
+        self.c._materialize_attachments(card, {"attachments": []})
+        card.apply({"attachments": []})
+        self.assertFalse(lib_file.exists())
+        self.assertTrue(user_file.exists())
+        self.assertEqual(card.attachments, [])
+
+    def test_materialize_failed_copy_keeps_pending(self):
+        """复制失败（源文件不存在）：保留 pending 并报错，不中断保存"""
+        self._reset()
+        self.c._on_card_add(self._list().id, "附件卡")
+        card = self._list().cards[0]
+        result = {"attachments": [
+            {"id": "bad", "name": "丢失.png", "path": "/nonexistent/x.png",
+             "is_image": True, "pending": True},
+        ]}
+        with patch.object(self.c, "_show_error") as err:
+            self.c._materialize_attachments(card, result)
+        err.assert_called_once()
+        self.assertTrue(result["attachments"][0].get("pending"))
+        self.assertEqual(result["attachments"][0]["path"], "/nonexistent/x.png")
+
     # ── 多看板切换 / 删除 ─────────────────────────────────
 
     def test_board_switch_isolates_data_and_undo(self):

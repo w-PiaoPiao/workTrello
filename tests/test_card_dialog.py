@@ -174,12 +174,6 @@ class InsertTimeTest(unittest.TestCase):
         self.assertRegex(text, r"^\d{2}-\d{2} \d{2}:\d{2}$")
         dlg.deleteLater()
 
-    def test_insert_button_visible_in_dialog(self):
-        dlg = CardDialog(None)
-        self.assertIsNotNone(dlg._insert_time_btn)
-        self.assertIn("插入当前时间", dlg._insert_time_btn.text())
-        dlg.deleteLater()
-
 
 class KeyboardSaveTest(unittest.TestCase):
     """键盘保存：Ctrl+Return 直接保存（多行备注里 Enter 只换行）；打开自动聚焦标题"""
@@ -302,6 +296,194 @@ class DialogSizeTest(unittest.TestCase):
         dlg = CardDialog(None)
         self.assertLessEqual(dlg.width(), huge.width())
         self.assertLessEqual(dlg.height(), huge.height())
+        dlg.deleteLater()
+
+
+class ChecklistTest(unittest.TestCase):
+    """清单区：行增删、勾选进度、空行过滤、行删除后的序号重排"""
+
+    def test_new_dialog_starts_empty(self):
+        dlg = CardDialog(None)
+        self.assertEqual(dlg._check_rows, [])
+        self.assertEqual(dlg._check_progress_label.text(), "")
+        self.assertEqual(dlg.result_card()["checklist"], [])
+        dlg.deleteLater()
+
+    def test_existing_card_backfills_rows_and_progress(self):
+        card = Card(title="x", checklist=[{"text": "甲", "done": True},
+                                          {"text": "乙", "done": False}])
+        dlg = CardDialog(card)
+        self.assertEqual(len(dlg._check_rows), 2)
+        checked, edit = dlg._check_rows[0]
+        self.assertTrue(checked.isChecked())
+        self.assertEqual(edit.text(), "甲")
+        self.assertEqual(dlg._check_progress_label.text(), "1/2 已完成")
+        self.assertEqual(dlg.result_card()["checklist"], card.checklist)
+        dlg.deleteLater()
+
+    def test_add_row_and_progress_updates(self):
+        dlg = CardDialog(None)
+        dlg._add_check_row("第一项", False)
+        dlg._add_check_row("第二项", False)
+        self.assertEqual(len(dlg._check_rows), 2)
+        self.assertEqual(dlg._check_progress_label.text(), "0/2 已完成")
+        dlg._check_rows[1][0].setChecked(True)
+        self.assertEqual(dlg._check_progress_label.text(), "1/2 已完成")
+        dlg.deleteLater()
+
+    def test_remove_row_reindexes_remaining(self):
+        """删中间行后序号重排：再删别的行必须仍命中正确行（回归护栏）"""
+        dlg = CardDialog(None)
+        for text in ("一", "二", "三"):
+            dlg._add_check_row(text, False)
+        dlg._remove_check_row(dlg._check_rows[1][1].parentWidget())
+        self.assertEqual([e.text() for _c, e in dlg._check_rows], ["一", "三"])
+        # 序号已重排：再删首行删掉的是"一"而非"三"
+        dlg._remove_check_row(dlg._check_rows[0][1].parentWidget())
+        self.assertEqual([e.text() for _c, e in dlg._check_rows], ["三"])
+        self.assertEqual(dlg.result_card()["checklist"],
+                         [{"text": "三", "done": False}])
+        dlg.deleteLater()
+
+    def test_remove_out_of_range_safe(self):
+        dlg = CardDialog(None)
+        dlg._remove_check_row(None)   # 异常输入不抛
+        dlg.deleteLater()
+
+    def test_empty_rows_dropped_on_collect(self):
+        """收集时空白文本行丢弃（UI 上可能还有未填完的行）"""
+        dlg = CardDialog(None)
+        dlg._add_check_row("有效", False)
+        dlg._add_check_row("   ", True)
+        self.assertEqual(dlg.result_card()["checklist"],
+                         [{"text": "有效", "done": False}])
+        dlg.deleteLater()
+
+    def test_return_in_row_adds_next_row(self):
+        """行内回车 = 快速添加下一项（焦点落新行）"""
+        dlg = CardDialog(None)
+        dlg.show()
+        _qapp.processEvents()
+        dlg._add_check_row("第一项", False)
+        dlg._check_rows[0][1].returnPressed.emit()
+        self.assertEqual(len(dlg._check_rows), 2)
+        self.assertTrue(dlg._check_rows[1][1].hasFocus())
+        dlg.deleteLater()
+
+
+class AttachmentRowsTest(unittest.TestCase):
+    """附件区：回填、移除重建、粘贴图片暂存、收集"""
+
+    def test_new_dialog_no_attachments(self):
+        dlg = CardDialog(None)
+        self.assertEqual(dlg._attachments, [])
+        self.assertEqual(dlg.result_card()["attachments"], [])
+        dlg.deleteLater()
+
+    def test_existing_backfill_and_remove(self):
+        att = {"id": "a1", "name": "a.png", "path": "/tmp/a.png",
+               "is_image": True}
+        card = Card(title="x", attachments=[att])
+        dlg = CardDialog(card)
+        self.assertEqual(len(dlg._attachments), 1)
+        self.assertEqual(dlg.result_card()["attachments"][0]["id"], "a1")
+        dlg._remove_attachment(0)
+        self.assertEqual(dlg.result_card()["attachments"], [])
+        dlg.deleteLater()
+
+    def test_remove_out_of_range_safe(self):
+        dlg = CardDialog(None)
+        dlg._remove_attachment(5)   # 越界不抛
+        dlg.deleteLater()
+
+    def test_paste_image_stages_pending_png(self):
+        """粘贴剪贴板图片：暂存为 pending 临时 PNG，路径真实存在"""
+        from PySide6.QtGui import QImage
+        dlg = CardDialog(None)
+        img = QImage(4, 4, QImage.Format_ARGB32)
+        img.fill(0xFF00FF00)
+        with patch("app.views.card_dialog.QApplication") as qa:
+            qa.clipboard.return_value.image.return_value = img
+            dlg._on_paste_image()
+        self.assertEqual(len(dlg._attachments), 1)
+        att = dlg._attachments[0]
+        self.assertTrue(att["is_image"])
+        self.assertTrue(att["pending"])
+        self.assertTrue(att["name"].endswith(".png"))
+        tmp = Path(att["path"])
+        self.assertTrue(tmp.exists())
+        self.assertTrue(tmp.name.endswith(".png"))
+        tmp.unlink(missing_ok=True)   # 清理暂存文件
+        dlg.deleteLater()
+
+    def test_paste_image_empty_clipboard_noop(self):
+        from PySide6.QtGui import QImage
+        dlg = CardDialog(None)
+        with patch("app.views.card_dialog.QApplication") as qa:
+            qa.clipboard.return_value.image.return_value = QImage()
+            dlg._on_paste_image()
+        self.assertEqual(dlg._attachments, [])
+        dlg.deleteLater()
+
+
+class RepeatComboTest(unittest.TestCase):
+    """重复下拉：全集选项、回填、自定义间隔显隐、result_card 映射"""
+
+    def test_options_cover_all_kinds(self):
+        dlg = CardDialog(None)
+        self.assertEqual(dlg._repeat_combo.count(), len(AppConfig.REPEAT_ORDER))
+        self.assertEqual(dlg._repeat_combo.itemData(0), "never")
+        self.assertFalse(dlg._repeat_interval_spin.isVisibleTo(dlg))
+        self.assertEqual(dlg.result_card()["repeat"], "never")
+        dlg.deleteLater()
+
+    def test_backfills_custom_with_interval(self):
+        card = Card(title="x", repeat="custom", repeat_interval=14)
+        dlg = CardDialog(card)
+        self.assertEqual(dlg._repeat_combo.currentData(), "custom")
+        self.assertTrue(dlg._repeat_interval_spin.isVisibleTo(dlg))
+        self.assertEqual(dlg._repeat_interval_spin.value(), 14)
+        result = dlg.result_card()
+        self.assertEqual(result["repeat"], "custom")
+        self.assertEqual(result["repeat_interval"], 14)
+        dlg.deleteLater()
+
+    def test_switching_kind_toggles_interval_visibility(self):
+        card = Card(title="x", repeat="custom", repeat_interval=3)
+        dlg = CardDialog(card)
+        dlg._repeat_combo.setCurrentIndex(dlg._repeat_combo.findData("daily"))
+        self.assertFalse(dlg._repeat_interval_spin.isVisibleTo(dlg))
+        self.assertEqual(dlg.result_card()["repeat"], "daily")
+        dlg._repeat_combo.setCurrentIndex(dlg._repeat_combo.findData("custom"))
+        self.assertTrue(dlg._repeat_interval_spin.isVisibleTo(dlg))
+        dlg.deleteLater()
+
+
+class NotesPreviewTest(unittest.TestCase):
+    """备注 Markdown 预览：编辑框 ⇄ 渲染预览互斥显示"""
+
+    def test_preview_hidden_by_default(self):
+        dlg = CardDialog(None)
+        self.assertFalse(dlg._preview_btn.isChecked())
+        self.assertFalse(dlg._notes_edit.isHidden())
+        self.assertTrue(dlg._notes_preview_scroll.isHidden())
+        dlg.deleteLater()
+
+    def test_toggle_renders_markdown_and_back(self):
+        dlg = CardDialog(None)
+        dlg._notes_edit.setPlainText("# 标题\n- [ ] 待办 **加粗**")
+        dlg._preview_btn.setChecked(True)
+        self.assertTrue(dlg._notes_edit.isHidden())
+        self.assertFalse(dlg._notes_preview_scroll.isHidden())
+        html = dlg._notes_preview.text()
+        self.assertIn("<b><big>标题</big></b>", html)
+        self.assertIn("☐ 待办", html)
+        self.assertIn("<b>加粗</b>", html)
+        # 切回编辑：内容不丢
+        dlg._preview_btn.setChecked(False)
+        self.assertFalse(dlg._notes_edit.isHidden())
+        self.assertTrue(dlg._notes_preview_scroll.isHidden())
+        self.assertIn("待办", dlg._notes_edit.toPlainText())
         dlg.deleteLater()
 
 

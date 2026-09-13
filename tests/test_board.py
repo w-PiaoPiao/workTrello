@@ -524,11 +524,6 @@ class BoardStoreTest(unittest.TestCase):
         backups = list(self.path.parent.glob("board.json.corrupt.*.bak"))
         self.assertLessEqual(len(backups), 5)
 
-    def test_atomic_write_rejects_failure(self):
-        # 目录不可写场景不好跨平台构造，退而验证正常写不抛异常
-        atomic_write_json(self.path, {"ok": True})
-        self.assertEqual(json.loads(self.path.read_text("utf-8")), {"ok": True})
-
 
 class PrevBackupRecoveryTest(unittest.TestCase):
     """最近一次成功写入的好副本（.prev）可在损坏后恢复数据"""

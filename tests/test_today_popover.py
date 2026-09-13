@@ -65,10 +65,22 @@ class TodayPopoverTest(unittest.TestCase):
         self.assertEqual(_row_ids(self.pop), [])
         self.assertIn("0", self.pop._title_label.text())
 
-    def test_done_count_label(self):
-        """回顾行：done_count>0 时显示"今日已完成 N 张\""""
-        self.pop.set_items([], done_count=3)
-        self.assertEqual(self.pop._done_label.text(), "今日已完成 3 张 🎉")
+    def test_done_count_row(self):
+        """今日完成回顾行：N>0 显示、N=0 隐藏（含空态分支）
+
+        空态（全部勾完）时完成行同样显示——庆祝时刻正是回顾入口。
+        """
+        card = Card(title="任务")
+        self.pop.set_items([(self.lst, card)], done_count=3)
+        self.assertFalse(self.pop._done_label.isHidden())
+        self.assertIn("3", self.pop._done_label.text())
+        self.pop.set_items([(self.lst, card)], done_count=0)
+        self.assertTrue(self.pop._done_label.isHidden())
+        self.pop.set_items([], done_count=5)
+        self.assertFalse(self.pop._done_label.isHidden())
+        self.assertIn("5", self.pop._done_label.text())
+        self.pop.set_items([], done_count=0)
+        self.assertTrue(self.pop._done_label.isHidden())
 
 
 if __name__ == "__main__":
