@@ -623,9 +623,7 @@ class CardWidget(QFrame):
         配色由看板级样式表统一下发（见 _board_qss），这里只处理与配色无关
         的状态：删除按钮显隐、勾选框与标题完成态。
         """
-        btn = self._delete_btn
-        if btn is not None and not self._hovered and not btn.underMouse():
-            btn.hide()
+        self._revalidate_hover()   # 按光标实际位置复核，顺带清掉残留悬停态
         self._style_check()
         self._style_title()
 
@@ -710,6 +708,10 @@ class CardWidget(QFrame):
         self._delete_btn.setToolTip("删除卡片")
         self._delete_btn.clicked.connect(
             lambda: self.signal_delete_requested.emit(self._card.id))
+        # ✕ 是子控件：光标停在它上面时父卡的 Leave 会故意留住按钮（见
+        # leaveEvent），之后若没有父卡 Leave 再来收尾，按钮就永久留在卡上；
+        # 让 ✕ 自己的 Leave 兜底复核（事件过滤器）
+        self._delete_btn.installEventFilter(self)
         self._delete_btn.hide()
 
         # 底部信息行（截止日期 / 备注图标）
@@ -801,10 +803,17 @@ class CardWidget(QFrame):
         root.addStretch(1)
 
         self._fingerprint = self._content_fingerprint()
-        # 重建后删除按钮默认隐藏；悬停中则恢复显示
-        if self._hovered and self._delete_btn is not None:
+        # 重建后删除按钮默认隐藏；光标确实还压在本卡上才恢复显示。
+        # 这里刻意不信 _hovered：漏投递的 Leave 会让它长期为 True，而每次
+        # 重建（数据变更/过滤/语言切换）都把它当权威重新 show() 一次——
+        # 一次漏投递就会被放大成"永远不消失"。underMouse() 是当下事实，
+        # 且光标在 ✕ 上时祖先链同样标记为在鼠标下，按钮不会闪。
+        if self._delete_btn is not None and self.underMouse():
+            self._hovered = True
             self._delete_btn.show()
             self._delete_btn.raise_()
+        else:
+            self._clear_hover()   # 一并解除看板跟踪，保持"✕ 可见 ⟹ 被跟踪"
 
     def paintEvent(self, event) -> None:
         """左缘标签色条：贴卡片左边缘的竖向色条，明显且不占布局行"""
@@ -906,6 +915,12 @@ class CardWidget(QFrame):
 
     def eventFilter(self, obj, event):
         """备注徽章：Enter 弹预览浮层；Leave 延迟关闭；左键点击固定/收起"""
+        if obj is self._delete_btn:
+            # 光标离开 ✕ 本身：父卡的 Leave 可能早已走完（当时光标还在 ✕
+            # 上而被留下），这里补一次复核，避免按钮悬在卡上不消失
+            if event.type() == QEvent.Leave:
+                self._revalidate_hover()
+            return False
         if obj is self._workdir_badge:
             if (event.type() == QEvent.MouseButtonPress
                     and event.button() == Qt.LeftButton):
@@ -956,24 +971,37 @@ class CardWidget(QFrame):
             pop.show_pinned(self._card.id, self._card.notes, rect)
 
     def hideEvent(self, event) -> None:
-        """卡片隐藏时收起备注浮层：悬停预览/本卡固定预览关闭，
-        固定于其他卡的预览不受牵连"""
+        """卡片隐藏时收起备注浮层并复位悬停态
+
+        悬停预览/本卡固定预览关闭，固定于其他卡的预览不受牵连。
+        隐藏路径（列折叠、收起为桌宠、隐藏到托盘、最小化）只派发 Hide、
+        不派发 Leave，不复位的话删除按钮会在重新展开时原样回来。
+        """
         if notes_pinned_for(self._card.id):
             notes_popover().hide_now()
         elif notes_popover_hovering():
             hide_notes_popover()
+        self._clear_hover()
         super().hideEvent(event)
 
     def enterEvent(self, event) -> None:
         self._hovered = True
         if self._delete_btn is not None:
             self._show_delete_btn()
+        # 告诉看板"现在悬停的是我"：它会清掉上一张卡的残留悬停态
+        # （同列内从 A 划到 B 不触发列级 Enter，靠这里兜住漏投递的 Leave）
+        bv = self._board_view()
+        if bv is not None:
+            bv._on_card_hover(self)
         super().enterEvent(event)
 
     def leaveEvent(self, event) -> None:
-        self._hovered = False
-        if self._delete_btn is not None and not self._delete_btn.underMouse():
-            self._delete_btn.hide()
+        # 光标可能只是移到了 ✕ 上（✕ 是子控件，父卡同样收到 Leave）：
+        # 此时留住按钮，等 ✕ 自己的 Leave（eventFilter）复核收尾
+        if self._delete_btn is not None and self._delete_btn.underMouse():
+            self._hovered = False
+        else:
+            self._clear_hover()
         super().leaveEvent(event)
 
     def _show_delete_btn(self) -> None:
@@ -987,6 +1015,36 @@ class CardWidget(QFrame):
             btn.show()
             motion.fade_in(btn, AppConfig.HOVER_ANIM_MS)
         btn.raise_()
+
+    # ── 悬停态收口（删除按钮显隐只经这两个方法）──────────
+
+    def _clear_hover(self) -> None:
+        """复位悬停态并收起删除按钮
+
+        悬停态原先只在 leaveEvent 复位，而拖拽（原生模态循环）、隐藏/收起、
+        滚动等路径可能压根收不到 Leave；残留的 _hovered 又会被 rebuild()
+        当成权威重新 show()，于是一次漏投递就变成"永久不消失"（会话久了
+        会累积成多张卡同时残留）。确定已不在本卡上的路径统一走这里，
+        失败方向固定为"藏起来"——下次真实悬停自会再显示。
+        """
+        self._hovered = False
+        if self._delete_btn is not None:
+            self._delete_btn.hide()
+        bv = self._board_view()
+        if bv is not None:
+            bv._forget_card_hover(self)
+
+    def _revalidate_hover(self) -> None:
+        """按光标实际位置复核：既不在本卡也不在 ✕ 上就复位
+
+        用于"可能漏掉 Leave、但不能确定"的复核点（✕ 自身 Leave、主题
+        切换、拖拽结束后）。注意 Qt 在原生拖拽循环期间不保证 underMouse()
+        已更新，起拖前请用 _clear_hover() 而非这里。
+        """
+        btn = self._delete_btn
+        if self.underMouse() or (btn is not None and btn.underMouse()):
+            return
+        self._clear_hover()
 
     # ── 拖拽 ──────────────────────────────────────────────
 
@@ -1090,6 +1148,11 @@ class CardWidget(QFrame):
             return
         mime = QMimeData()
         mime.setData(MIME_CARD, self._card.id.encode("utf-8"))
+        # 起拖前先复位悬停态：drag.exec() 是原生模态循环，期间与之后都不
+        # 保证派发 Enter/Leave；同列重排还会复用同一控件（refresh_cards），
+        # 残留的 _hovered 会让 ✕ 赖在卡上不走。顺带让拖拽预览截图不再带着
+        # 红色 ✕（此前 grab() 会把正显示的删除按钮一起截进去）
+        self._clear_hover()
         drag = QDrag(self)
         drag.setMimeData(mime)
         # 拖拽预览：卡片自身截图
@@ -1098,6 +1161,9 @@ class CardWidget(QFrame):
         drag.setHotSpot(QPoint(pixmap.width() // 2, 14))
         drag.exec(Qt.MoveAction)
         self._pressing = False
+        # 原生循环结束后保守复核一次（此时 underMouse 可信，光标若仍在
+        # 本卡上则保持隐藏也无妨——下一次真实 Enter 会重新显示）
+        self._revalidate_hover()
 
 
 class _TitleLabel(QLabel):
@@ -1943,6 +2009,31 @@ class ListColumn(QFrame):
             self._stop_collapse_anim(finalize=True)
         super().hideEvent(event)
 
+    # ── 悬停态清扫（列级兜底）─────────────────────────────
+
+    def _clear_cards_hover(self) -> None:
+        """清掉本列全部卡片的悬停态（删除按钮显隐的兜底收口）
+
+        Qt 先派发列的 Enter、再派发卡的 Enter（实测），所以这里即使清掉
+        光标正压着的那张卡，紧接着它自己的 Enter 会把按钮显示回来。
+        "同列从 A 划到 B"不触发列级 Enter，那一段由看板的悬停跟踪兜住
+        （CardWidget.enterEvent → BoardView._on_card_hover）。
+        """
+        for cw in self._card_widgets:
+            cw._clear_hover()
+
+    def enterEvent(self, event) -> None:
+        self._clear_cards_hover()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        """光标离开整列：本列不可能再有悬停卡，一律复位
+
+        "鼠标移开后 ✕ 不消失"最直接的兜底路径（列间移动是最频繁的动作）
+        """
+        self._clear_cards_hover()
+        super().leaveEvent(event)
+
     def _apply_collapsed_ui(self) -> None:
         """把 _collapsed 对应的全部 UI 状态一次性刷齐（幂等）
 
@@ -2280,6 +2371,9 @@ class BoardView(QWidget):
         super().__init__(parent)
         self._lists: list[BoardList] = []
         self._columns: list[ListColumn] = []
+        # 当前被悬停的卡片（单光标 → 全局最多一张）。用于零成本自愈：
+        # 任一次新的卡片悬停都顺手清掉上一张的残留悬停态（见 _on_card_hover）
+        self._hovered_card: "CardWidget | None" = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -2559,6 +2653,33 @@ class BoardView(QWidget):
         """同步最大化/还原图标状态（macOS 无此控件，空操作）"""
         if self._window_controls is not None:
             self._window_controls.set_zoomed(zoomed)
+
+    # ── 悬停态跟踪（零成本自愈，见 CardWidget._clear_hover）──
+
+    def _on_card_hover(self, cw: "CardWidget") -> None:
+        """记录当前悬停卡，并顺手清掉上一张的悬停态
+
+        同一时刻只可能有一张卡被悬停（单光标），所以"上一次悬停的不是
+        本卡"就等于它已经过期——无论它的 Leave 有没有被投递。任一次真实
+        悬停都会收拾掉残留：漏投递不再是"永久残留"，最多活到鼠标落到
+        下一张卡（或下一次列切换）。
+        """
+        prev = self._hovered_card
+        if prev is not None and prev is not cw:
+            prev._clear_hover()
+        self._hovered_card = cw
+
+    def _forget_card_hover(self, cw: "CardWidget") -> None:
+        """卡片自行复位悬停态时同步解除跟踪"""
+        if self._hovered_card is cw:
+            self._hovered_card = None
+
+    def leaveEvent(self, event) -> None:
+        """光标离开整块看板：连列级 Leave 都可能没派发，直接复位跟踪卡"""
+        cw = self._hovered_card
+        if cw is not None:
+            cw._clear_hover()
+        super().leaveEvent(event)
 
     # ── 主题 ──────────────────────────────────────────────
 

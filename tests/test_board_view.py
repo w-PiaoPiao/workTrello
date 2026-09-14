@@ -20,7 +20,10 @@ os.environ["PET_BOARD_DATA_DIR"] = tempfile.mkdtemp()
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from unittest.mock import patch
+
 from PySide6.QtCore import QPoint
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QPushButton
 
 _qapp = QApplication.instance() or QApplication([])
@@ -1158,6 +1161,197 @@ class SelectionTest(unittest.TestCase):
         self.view.refresh(self.lists)
         self.assertEqual(self.view._selected_ids, {a})
         self.assertEqual(len(self._selected_widgets()), 1)
+
+
+class CardHoverResetTest(unittest.TestCase):
+    """删除按钮悬停态复位：漏投递的 Leave 必须在下一个动作自愈
+
+    回归背景：✕ 的显隐只由 CardWidget._hovered 驱动，而 _hovered 仅在
+    leaveEvent 复位。拖拽（原生模态循环）、隐藏/收起（只派发 Hide）、
+    光标停在 ✕ 上的守卫分支都拿不到 Leave，rebuild() 又会把过期的
+    _hovered 当权威重新 show() —— 一次漏投递就变成"✕ 永远留在卡上"，
+    会话久了累积成多张卡同时残留。
+
+    手法：Enter/Leave 用合成事件直接驱动（离屏下 QTest.mouseMove 的
+    虚拟光标会跨用例残留、Enter/Leave 合成不稳定，不能作为断言依据），
+    underMouse() 用 patch 显式给定——这样每条用例都只回答一个问题。
+    """
+
+    def setUp(self):
+        self.view = BoardView()
+        self.lists = make_lists([("待办", ["A", "B"]), ("进行中", ["C"])])
+        self.view.refresh(self.lists)
+        self.view.show()
+        _qapp.processEvents()
+
+    def tearDown(self):
+        self.view.hide()
+        self.view.deleteLater()
+
+    def _card(self, col: int = 0, idx: int = 0) -> CardWidget:
+        return self.view._columns[col]._card_widgets[idx]
+
+    @staticmethod
+    def _enter(cw) -> None:
+        """合成 Enter（等价于光标移入卡片；Qt 会依次派发列→卡）"""
+        from PySide6.QtCore import QPointF
+        from PySide6.QtGui import QEnterEvent
+        cw.enterEvent(QEnterEvent(QPointF(5, 5), QPointF(5, 5),
+                                  QPointF(5, 5)))
+
+    @staticmethod
+    def _leave(cw) -> None:
+        from PySide6.QtCore import QEvent
+        cw.leaveEvent(QEvent(QEvent.Leave))
+
+    def _stale(self, cw) -> None:
+        """制造"漏投递 Leave"现场：先真实悬停（✕ 显示 + 看板记录跟踪），
+        随后光标移走但不派发 Leave —— 这正是线上出问题的那个状态"""
+        self._enter(cw)
+
+    # ── 基本复位 ─────────────────────────────────────────
+
+    def test_leave_hides_button(self):
+        cw = self._card()
+        self._enter(cw)
+        self.assertTrue(cw._delete_btn.isVisible())
+        self._leave(cw)
+        self.assertFalse(cw._delete_btn.isVisible())
+        self.assertFalse(cw._hovered)
+
+    def test_sequence_hover_hide_show_rehover(self):
+        """串行场景：悬停 → 隐藏（收起/最小化）→ 再显示 → 重新悬停"""
+        cw = self._card()
+        self._enter(cw)
+        self.assertTrue(cw._delete_btn.isVisible())
+        self.view.hide()                       # 收起为桌宠 / 隐藏到托盘
+        _qapp.processEvents()
+        self.assertFalse(cw._hovered)
+        self.view.show()                       # 重新展开
+        _qapp.processEvents()
+        self.assertFalse(cw._delete_btn.isVisible(),
+                         "重新展开后 ✕ 不该带着旧悬停态回来")
+        self._enter(cw)                        # 再次悬停：正常出现
+        self.assertTrue(cw._delete_btn.isVisible())
+
+    def test_cursor_on_delete_btn_keeps_button(self):
+        """光标停在 ✕ 上：父卡 Leave 不该收起它（否则按钮一点就没了）"""
+        cw = self._card()
+        self._enter(cw)
+        cw._delete_btn.underMouse = lambda: True
+        self._leave(cw)
+        self.assertFalse(cw._hovered)
+        self.assertTrue(cw._delete_btn.isVisible())
+
+    # ── 悬停中重建：不闪，也不复活过期态 ──────────────────
+
+    def test_rebuild_keeps_hover_when_cursor_on_card(self):
+        cw = self._card()
+        self._enter(cw)
+        with patch.object(CardWidget, "underMouse", return_value=True):
+            cw.card().title = "A（改过标题）"
+            cw.update_from_model(cw.card())    # 指纹变化 → rebuild
+            self.assertTrue(cw._delete_btn.isVisible(),
+                            "光标还在卡上，重建后按钮不该消失")
+
+    def test_rebuild_does_not_revive_stale_hover(self):
+        """过期 _hovered（漏投递）再撞上一次重建 = 修复前会永久显示"""
+        cw = self._card()
+        self._stale(cw)
+        with patch.object(CardWidget, "underMouse", return_value=False):
+            cw.card().title = "A（改过标题）"
+            cw.update_from_model(cw.card())
+            self.assertFalse(cw._delete_btn.isVisible())
+            self.assertFalse(cw._hovered)
+
+    def test_reapply_style_clears_stale_hover(self):
+        """主题切换路径同样不留残影（此前条件式 hide 会跳过）"""
+        cw = self._card()
+        self._stale(cw)
+        with patch.object(CardWidget, "underMouse", return_value=False):
+            cw.reapply_style()
+            self.assertFalse(cw._delete_btn.isVisible())
+
+    # ── 拖拽：起拖复位 + 预览不带 ✕ ───────────────────────
+
+    def test_drag_start_resets_hover_before_grab(self):
+        """起拖前复位悬停态：同列重排复用控件时不留 ✕，预览图也不带 ✕"""
+        from PySide6.QtGui import QDrag, QPixmap
+        cw = self._card()
+        self._enter(cw)
+        self.assertTrue(cw._delete_btn.isVisible())
+        seen = {}
+
+        def fake_grab():
+            seen["btn_visible"] = cw._delete_btn.isVisible()
+            return QPixmap(10, 10)
+
+        cw.grab = fake_grab
+        with patch.object(QDrag, "exec", return_value=None):
+            cw._start_drag()
+        self.assertFalse(seen.get("btn_visible"), "grab() 时 ✕ 应已复位")
+        self.assertFalse(cw._delete_btn.isVisible())
+        self.assertFalse(cw._hovered)
+
+    # ── ✕ 自身 Leave 兜底 ────────────────────────────────
+
+    def test_delete_btn_leave_revalidates(self):
+        """✕ 的 Leave 触发复核：光标离开 ✕ 且不在卡上就收起"""
+        from PySide6.QtCore import QEvent
+        cw = self._card()
+        self._enter(cw)
+        # 光标已离开 ✕，且父卡也不在鼠标下 → 收起
+        cw._delete_btn.underMouse = lambda: False
+        with patch.object(CardWidget, "underMouse", return_value=False):
+            cw.eventFilter(cw._delete_btn, QEvent(QEvent.Leave))
+            self.assertFalse(cw._delete_btn.isVisible())
+        # 光标仍在 ✕ 上 → 保持显示
+        cw._delete_btn.show()
+        cw._delete_btn.underMouse = lambda: True
+        with patch.object(CardWidget, "underMouse", return_value=False):
+            cw.eventFilter(cw._delete_btn, QEvent(QEvent.Leave))
+            self.assertTrue(cw._delete_btn.isVisible())
+
+    # ── 事件驱动自愈清扫 ─────────────────────────────────
+
+    def test_enter_clears_previous_stale_hover_same_column(self):
+        """同列从 A 划到 B：A 的残留悬停态被顺手清掉"""
+        a, b = self._card(0, 0), self._card(0, 1)
+        self._stale(a)
+        self._enter(b)
+        self.assertFalse(a._hovered)
+        self.assertFalse(a._delete_btn.isVisible())
+        self.assertTrue(b._delete_btn.isVisible())
+
+    def test_enter_clears_previous_stale_hover_across_columns(self):
+        """跨列同理：单光标下全局最多一张卡悬停，任一次悬停都自愈"""
+        a, c = self._card(0, 0), self._card(1, 0)
+        self._stale(a)
+        self._enter(c)
+        self.assertFalse(a._hovered)
+        self.assertFalse(a._delete_btn.isVisible())
+
+    def test_leave_clears_tracked_stale_hover(self):
+        """光标离开整列：本列所有卡的残留悬停态一并复位"""
+        from PySide6.QtCore import QEvent
+        col = self.view._columns[0]
+        for cw in col._card_widgets:
+            self._stale(cw)
+        col.leaveEvent(QEvent(QEvent.Leave))
+        for cw in col._card_widgets:
+            self.assertFalse(cw._hovered)
+            self.assertFalse(cw._delete_btn.isVisible())
+
+    def test_view_leave_clears_tracked_card(self):
+        """光标离开整块看板：跟踪卡直接复位（列级 Leave 也没派发时的兜底）"""
+        from PySide6.QtCore import QEvent
+        cw = self._card()
+        self._enter(cw)
+        self.assertIs(self.view._hovered_card, cw)
+        self.view.leaveEvent(QEvent(QEvent.Leave))
+        self.assertFalse(cw._hovered)
+        self.assertFalse(cw._delete_btn.isVisible())
+        self.assertIsNone(self.view._hovered_card)
 
 
 if __name__ == "__main__":
