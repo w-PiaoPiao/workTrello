@@ -319,14 +319,49 @@ class AppController(QObject):
             self._board_view.refresh(board.lists, stats=stats)
         self._refresh_pet_state(stats)
 
-    def _ensure_board_ui(self) -> None:
-        """首次展开前构建看板控件（折叠态启动跳过了全量构建）"""
+    def _ensure_board_ui(self, animated: bool = False) -> None:
+        """首次展开前构建看板控件（折叠态启动时跳过了全量构建）
+
+        animated=True（真实展开路径）分帧构建：500 卡全量同步构建实测
+        400ms+，会把点击桌宠到展开动画起播之间变成整段卡死——先同步
+        建首列让动画立即起播，其余列逐帧补齐。refresh 按 id 增量复用、
+        幂等，已建列重复 diff 的成本可忽略；分帧期间的数据变更走
+        _after_data_change 全量 refresh 一次建完，后续帧经看板身份检查
+        与幂等 refresh 自然收敛。测试等非动画路径默认全量同步。
+        """
         if self._board_ui_built:
             return
         self._board_ui_built = True
         board = self._store.load()
         stats = board.today_stats(date.today())
-        self._board_view.refresh(board.lists, stats=stats)
+        if not animated or len(board.lists) <= 1:
+            self._board_view.refresh(board.lists, stats=stats)
+            return
+        self._board_view.refresh(board.lists[:1], stats=stats)
+        self._build_columns_over_frames(board, stats, built=1)
+
+    def _build_columns_over_frames(self, board: Board, stats: dict,
+                                   built: int) -> None:
+        """展开首帧后的逐列补齐（每帧 1 列 ≈40ms@50 卡，与动画 tick
+        16ms 交替执行，掉帧可控；动画结束后很快全部建完）
+
+        每帧传全量 lists + build_limit：refresh 只保证前 built 列存在、
+        不做列回收——期间的数据变更走全量 refresh 一次建齐后，后续帧
+        经幂等 diff 收敛；最终以一帧全量 refresh 收口（纠正顺序/清理）。
+        """
+        if self._store.load() is not board:
+            return   # 看板已切换/撤销替换：全量刷新路径已接管
+        total = len(board.lists)
+        if built >= total:
+            self._board_view.refresh(board.lists, stats=stats)   # 收口
+            return
+        built = min(built + 1, total)
+        self._board_view.refresh(board.lists, stats=stats,
+                                 build_limit=built)
+        if built < total:
+            QTimer.singleShot(
+                0, lambda: self._build_columns_over_frames(board, stats,
+                                                           built))
 
     def _schedule_save(self) -> None:
         self._save_timer.start()
@@ -508,8 +543,9 @@ class AppController(QObject):
     # ── 信号 ──────────────────────────────────────────────
 
     def _connect_signals(self) -> None:
-        # 首次展开：先同步构建看板控件（折叠态启动时跳过了全量构建）
-        self._window.signal_about_to_expand.connect(self._ensure_board_ui)
+        # 首次展开：分帧同步构建看板控件（首列先建，动画起播后逐帧补齐）
+        self._window.signal_about_to_expand.connect(
+            lambda: self._ensure_board_ui(animated=True))
         # 桌宠 → 展开
         self._pet_view.signal_expand_clicked.connect(self._window.expand)
         self._pet_view.signal_quick_add_clicked.connect(self._on_quick_add)

@@ -2861,10 +2861,16 @@ class BoardView(QWidget):
     # ── 数据刷新 ──────────────────────────────────────────
 
     def refresh(self, lists: list[BoardList],
-                stats: dict | None = None) -> None:
+                stats: dict | None = None,
+                build_limit: int = 0) -> None:
         """按看板数据增量同步列（按 list.id 复用列与卡片控件）
 
         stats 传入 board.today_stats() 结果时统计行直接取用，免重扫。
+
+        build_limit>0 为分帧补齐路径（展开首帧后的逐列补建）：始终传入
+        全量 lists 以保持过滤/统计口径，但只处理前 build_limit 列、不做
+        列回收（dispose）与布局重插——期间的数据变更走 build_limit=0
+        的全量 refresh 一次建齐，随后的分帧经幂等 diff 自然收敛。
         """
         # 记录看板横向滚动位置，增删列后恢复
         sb = self._scroll.horizontalScrollBar()
@@ -2886,31 +2892,52 @@ class BoardView(QWidget):
         prev_order = [col.list_id() for col in self._columns]
         ordered_cols: list[ListColumn] = []
         kept: set[str] = set()
-        for lst in lists:
+        collapsed_ids = AppConfig.get_collapsed_lists()   # 全列共享一次读取
+        targets = lists[:build_limit] if build_limit else lists
+        for lst in targets:
             col = by_id.get(lst.id)
             if col is None:
-                col = self._make_column(lst)
+                col = self._make_column(lst, collapsed_ids)
+                # 无过滤时短路（构造已完成全量显示），有过滤则增量同步
+                col.set_visible_cards(visibles[lst.id])
+                if build_limit:
+                    # _make_column 只建控件并记入 _columns，不负责挂进布局；
+                    # 分帧路径又跳过了下方全量重插，收口帧也补不上（_columns
+                    # 届时已含该列 → 顺序未变 → 重插分支不触发）。列控件没有
+                    # parent 就永不显示，故此处就地按序插入
+                    self._lists_layout.insertWidget(
+                        len(ordered_cols), col, 0, Qt.AlignTop)
             else:
-                col.set_list(lst, visibles[lst.id])
                 kept.add(lst.id)
+                col.set_list(lst, visibles[lst.id])
             ordered_cols.append(col)
         # 列顺序未变（单卡变更/编辑保存等）→ 布局无需重插；仅增删列或
-        # 拖拽重排造成顺序变化时才 remove+insert 保序（与卡片同一策略）
-        if prev_order != [col.list_id() for col in ordered_cols]:
+        # 拖拽重排造成顺序变化时才 remove+insert 保序（与卡片同一策略）。
+        # 分帧路径跳过本次重插：新列已在建列处就地入布局，重排交给收口帧
+        if (not build_limit
+                and prev_order != [col.list_id() for col in ordered_cols]):
             for i, col in enumerate(ordered_cols):
                 self._lists_layout.removeWidget(col)
                 # AlignTop 让布局项取 sizeHint（内容高度）而非拉伸填满整列区
                 self._lists_layout.insertWidget(i, col, 0, Qt.AlignTop)
-        for list_id, col in by_id.items():
-            if list_id not in kept:
-                self._columns.remove(col)
-                col.setParent(None)
-                col.deleteLater()
-
+        if not build_limit:
+            for list_id, col in by_id.items():
+                if list_id not in kept:
+                    self._columns.remove(col)
+                    col.setParent(None)
+                    col.deleteLater()
         # 列顺序与 lists 同步：列拖拽/撤销会改变 lists 顺序，布局已随上方
         # 循环重插，_columns 列表本身也必须跟随，否则 _apply_filter 的
-        # zip(_lists, _columns) 在过滤模式下会与列配对错位
-        self._columns = ordered_cols
+        # zip(_lists, _columns) 在过滤模式下会与列配对错位。
+        # 分帧路径只追加新建列：_columns 必须保持"lists 的前缀子序列"
+        # （数据变更的全量 refresh 可能已建齐全部列，不能被前 k 列裁掉；
+        # _apply_filter 的 zip 依赖此配对），顺序重排由收口帧全量接管
+        if build_limit:
+            known = {id(col) for col in self._columns}
+            self._columns.extend(col for col in ordered_cols
+                                 if id(col) not in known)
+        else:
+            self._columns = ordered_cols
 
         self.update_stats(lists, visibles=visibles, stats=stats)
         self._set_today_count(sum(len(v or []) for v in visibles.values()))
@@ -3238,8 +3265,13 @@ class BoardView(QWidget):
         self._search_edit.setFocus()
         self._search_edit.selectAll()
 
-    def _make_column(self, board_list: BoardList) -> ListColumn:
-        """创建列表列并连接信号（每个列生命周期内只连一次）"""
+    def _make_column(self, board_list: BoardList,
+                     collapsed_ids: set[str] | None = None) -> ListColumn:
+        """创建列表列并连接信号（每个列生命周期内只连一次）
+
+        collapsed_ids 由调用方一次读取传入（全量构建 10 列时省 10 次
+        QSettings 读取 + json 解析）；None 时回退自查（兼容散建单列）。
+        """
         col = ListColumn(board_list)
         col.signal_card_edit.connect(self._on_card_edit)
         col.signal_card_done.connect(self._on_card_done)
@@ -3267,7 +3299,9 @@ class BoardView(QWidget):
         col.signal_collapsed_changed.connect(self.signal_list_collapsed)
         self._columns.append(col)
         # 恢复上次折叠状态（save=False 不触发持久化回调；建列时不播动画）
-        if board_list.id in AppConfig.get_collapsed_lists():
+        if collapsed_ids is None:
+            collapsed_ids = AppConfig.get_collapsed_lists()
+        if board_list.id in collapsed_ids:
             col.set_collapsed(True, save=False, animate=False)
         return col
 
