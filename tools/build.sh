@@ -12,15 +12,28 @@ fi
 name="peTTrello-v$version"
 echo "打包: $name"
 
-# 锁定项目 venv 的 PyInstaller：PATH 上的 pyinstaller 可能属于另一个
-# Python 环境（没装 PySide6），打出的包缺全部 Qt 库但构建"成功"
-PYI=".venv/bin/pyinstaller"
-if [ ! -x "$PYI" ]; then
-    echo "未找到 $PYI，请先在项目根创建 .venv 并安装 requirements.txt" >&2
+# 锁定解释器：优先项目 venv（本地开发），CI 等环境退回当前 python3。
+# 注意不能用 PATH 上的 pyinstaller——它可能属于另一个没装 PySide6 的
+# 环境，那样打出的包缺全部 Qt 库、却在构建阶段"成功"。
+# 提示文案里的变量必须用 ${} 收边：bash 会把紧跟变量的全角字符并进
+# 变量名（"$PYI，" 曾被当成变量 "PYI，" 而在 set -u 下直接报错退出）
+if [ -x ".venv/bin/python" ]; then
+    PY=".venv/bin/python"
+elif [ -x ".venv/bin/python3" ]; then
+    PY=".venv/bin/python3"
+elif command -v python3 >/dev/null 2>&1; then
+    PY="python3"
+else
+    PY="python"
+fi
+
+if ! "$PY" -c "import PySide6, PyInstaller" >/dev/null 2>&1; then
+    echo "解释器 $PY 缺少 PySide6 / PyInstaller，请先安装依赖：" >&2
+    echo "  $PY -m pip install -r requirements.txt pyinstaller" >&2
     exit 1
 fi
 
-"$PYI" --windowed \
+"$PY" -m PyInstaller --windowed \
     --name "$name" \
     --icon "assets/app.icns" \
     --exclude-module PySide6.QtWebEngineCore \

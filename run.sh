@@ -12,6 +12,6 @@ fi
 "$PY" main.py "$@"
 code=$?
 if [ "$code" -ne 0 ]; then
-    echo "程序异常退出（退出码 $code），按回车键关闭窗口..."
+    echo "程序异常退出（退出码 ${code}），按回车键关闭窗口..."
     read -r
 fi
