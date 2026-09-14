@@ -15,11 +15,33 @@
 
 from __future__ import annotations
 
+import inspect
+import weakref
+
 from PySide6.QtCore import QLocale
 
 from app.config import AppConfig
 
 _zh_en: dict[str, str] = {}
+
+
+class _StrongRef:
+    """非绑定回调（函数/lambda）的强引用包装（它们没有宿主，弱引用会立刻失效）"""
+
+    def __init__(self, cb):
+        self._cb = cb
+
+    def __call__(self):
+        return self._cb
+
+
+def _qt_alive(obj) -> bool:
+    """QObject 包装对象是否仍然有效（C++ 侧未析构）"""
+    try:
+        import shiboken6
+        return shiboken6.isValid(obj)
+    except Exception:   # noqa: BLE001 — 判定失败时按"存活"处理
+        return True
 
 
 def tr(text: str) -> str:
@@ -71,6 +93,17 @@ def app_display_name() -> str:
     return tr("桌宠看板") if _lang == "en" else AppConfig.APP_NAME
 
 
+def weekday_short(idx: int) -> str:
+    """月历表头（0=周一）：中文单字 / 英文三字母缩写
+
+    此前是视图层的硬编码中文常量，英文界面下整排"一二三四五六日"
+    是全应用唯一显式显示错语言的控件。
+    """
+    if _lang == "en":
+        return ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")[idx]
+    return ("一", "二", "三", "四", "五", "六", "日")[idx]
+
+
 # ── 语言状态与广播 ────────────────────────────────────────
 
 _lang = "zh"
@@ -87,7 +120,14 @@ _zh_en: dict[str, str] = {
     "取消": "Cancel",
     "保存": "Save",
     "添加": "Add",
+    "创建": "Create",
+    "截止": "Due",
+    "标题不能为空": "Title cannot be empty",
+    "至少输入一行": "Enter at least one line",
+    "共 {n} 行，仅添加前 {m} 行":
+        "{n} lines, only the first {m} will be added",
     "关闭": "Close",
+    "单击": "click",
     "恢复": "Restore",
     "归档": "Archive",
     "重命名": "Rename",
@@ -419,6 +459,11 @@ _zh_en: dict[str, str] = {
     "{year} 年 {month} 月": "{month}/{year}",
     "回到今天": "Today",
     "还有 {n} 项…": "+{n} more…",
+    "点击查看当天全部卡片": "Click to see every card due that day",
+    "提示：点击左缘色条可按标签筛选":
+        "Tip: click the left color stripe to filter by label",
+    "已清除标签筛选": "Label filter cleared",
+    "已按标签「{name}」筛选": "Filtered by label “{name}”",
     "已改为 {date} 截止": "Due date set to {date}",
     # ── 快捷键速查 ──
     "快捷键": "Keyboard Shortcuts",
@@ -464,7 +509,7 @@ def set_lang(lang: str) -> None:
     if lang == _lang:
         return
     _lang = lang
-    for cb in list(_listeners):
+    for cb in _live_listeners():
         try:
             cb()
         except Exception:
@@ -474,7 +519,40 @@ def set_lang(lang: str) -> None:
 
 
 def register(callback) -> None:
-    _listeners.append(callback)
+    """注册语言回调（绑定方法按弱引用持有，与 AppTheme.register 同策略）"""
+    _listeners.append(weakref.WeakMethod(callback)
+                      if inspect.ismethod(callback)
+                      else _StrongRef(callback))
+
+
+def unregister(callback) -> None:
+    """摘除语言回调（按注册时的可调用对象比对）
+
+    弱引用已覆盖"宿主销毁即失效"，这里是给测试与显式退订用的对称接口。
+    """
+    for ref in list(_listeners):
+        try:
+            cb = ref()
+        except Exception:   # noqa: BLE001 — 已失效的引用直接丢弃
+            cb = None
+        if cb is None or cb is callback or cb == callback:
+            _listeners.remove(ref)
+
+
+def _live_listeners() -> list:
+    """仍然有效的回调；顺带剔除已销毁宿主留下的失效项"""
+    alive, live = [], []
+    for ref in _listeners:
+        cb = ref()
+        if cb is None:
+            continue
+        owner = getattr(cb, "__self__", None)
+        if owner is not None and not _qt_alive(owner):
+            continue
+        alive.append(ref)
+        live.append(cb)
+    _listeners[:] = alive
+    return live
 
 
 def detect_language() -> str:

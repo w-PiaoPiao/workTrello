@@ -25,6 +25,9 @@ class TrayService(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        # 显隐状态标志：切显隐不能靠菜单文案比对——英文界面下文案是
+        # "Hide"，与中文比对必然失败，托盘显隐切换会整体失效
+        self._window_visible = True
 
         self._tray = QSystemTrayIcon(parent)
         self._tray.setIcon(create_app_icon())
@@ -71,18 +74,25 @@ class TrayService(QObject):
     def reapply_texts(self) -> None:
         """语言切换后刷新菜单文案（显隐项按当前窗口状态取词）"""
         visible = self.parent().isVisible() if self.parent() else True
-        self._toggle_action.setText(tr("隐藏") if visible else tr("显示"))
+        self._window_visible = visible
+        self._sync_toggle_text()
         self._always_top_action.setText(tr("窗口置顶"))
         self._undo_action.setText(tr("撤销"))
         self._settings_action.setText(tr("设置…"))
         self._quit_action.setText(tr("退出"))
+        self._tray.setToolTip(app_display_name())
 
     def set_window_visible(self, visible: bool) -> None:
         """窗口显隐变化后同步菜单文案（显示 ↔ 隐藏）"""
-        self._toggle_action.setText("隐藏" if visible else "显示")
+        self._window_visible = visible
+        self._sync_toggle_text()
+
+    def _sync_toggle_text(self) -> None:
+        self._toggle_action.setText(
+            tr("隐藏") if self._window_visible else tr("显示"))
 
     def _on_toggle(self) -> None:
-        if self._toggle_action.text() == "隐藏":
+        if self._window_visible:
             self.signal_hide_requested.emit()
         else:
             self.signal_show_requested.emit()

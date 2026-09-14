@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QRect, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QCursor, QPainter
-from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout
+from PySide6.QtWidgets import QFrame, QLabel, QScrollArea, QVBoxLayout
 
 from app.views.theme import AppTheme
 from app.views import motion
@@ -30,6 +30,7 @@ from app.i18n import tr
 
 _HIDE_DELAY_MS = 160   # 徽章→浮层移动时的容忍延迟
 _SHADOW = 8            # 自绘软阴影的向外扩散边距（窗口命中区随之略大）
+_MAX_BODY_H = 320      # 正文区高度上限：超长备注改为在浮层内滚动
 
 
 class NotesPopover(QFrame):
@@ -64,6 +65,18 @@ class NotesPopover(QFrame):
         self._body.setWordWrap(True)
         self._body.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self._body.setMaximumWidth(self._MAX_WIDTH)
+        # 正文进滚动区：长备注此前会把浮层撑到比屏幕还高、两端内容够不到
+        # （今日浮窗有 330 上限＋滚动，两者标准本就该一致）
+        self._body_scroll = QScrollArea()
+        self._body_scroll.setFrameShape(QFrame.NoFrame)
+        self._body_scroll.setWidgetResizable(True)
+        self._body_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarAlwaysOff)
+        self._body_scroll.viewport().setAutoFillBackground(False)
+        self._body_scroll.setStyleSheet(
+            "QScrollArea, QScrollArea > QWidget > QWidget"
+            " { background: transparent; }")
+        self._body_scroll.setWidget(self._body)
         # 徽章上原有一个原生 tooltip「悬停预览 · 点击固定」，悬停约 700ms 后
         # 会再弹一个系统提示窗压在浮层上；提示语移到这里，避免双层弹窗
         self._hint = QLabel(tr("点击徽章固定"))
@@ -73,7 +86,7 @@ class NotesPopover(QFrame):
         panel_layout.setContentsMargins(12, 8, 12, 10)
         panel_layout.setSpacing(4)
         panel_layout.addWidget(self._title)
-        panel_layout.addWidget(self._body)
+        panel_layout.addWidget(self._body_scroll)
         panel_layout.addWidget(self._hint)
 
         layout = QVBoxLayout(self)
@@ -192,7 +205,11 @@ class NotesPopover(QFrame):
             fm = self._body.fontMetrics()
             natural = max((fm.horizontalAdvance(line)
                            for line in text.splitlines()), default=0) + 8
-            self._body.setFixedWidth(max(120, min(natural, self._MAX_WIDTH)))
+            width = max(120, min(natural, self._MAX_WIDTH))
+            self._body.setFixedWidth(width)
+            # 正文区高度：折行后的自然高，超过上限则内部滚动
+            self._body_scroll.setFixedHeight(
+                min(self._body_height_for(width), _MAX_BODY_H))
             self._recent_anchor = anchor_global
             self._recent_hint = hint
             # 全新窗口在 show() 前不跑布局，子控件 live 几何是无效值
@@ -210,6 +227,13 @@ class NotesPopover(QFrame):
         # 淡入只在"从无到有"时播放；锚点变化等重定位不重播，避免闪烁
         if not was_visible:
             motion.fade_in(self, AppConfig.POPOVER_ANIM_MS)
+
+    def _body_height_for(self, width: int) -> int:
+        """正文按给定宽度折行后的自然高度（heightForWidth 不可用时退回 sizeHint）"""
+        h = self._body.heightForWidth(width)
+        if h <= 0:
+            h = self._body.sizeHint().height()
+        return max(h + 2, 18)
 
     def schedule_hide(self) -> None:
         """徽章/浮层 leave：延迟关闭（固定展示中不自动关闭），

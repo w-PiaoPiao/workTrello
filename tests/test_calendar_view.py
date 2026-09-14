@@ -85,14 +85,24 @@ class DayCellTest(unittest.TestCase):
         self.cell.dragEnterEvent(event)
         self.assertTrue(event.isAccepted())
 
-    def test_set_cards_caps_and_more_label(self):
-        """单格最多展示 N 个条目，超出折叠为"还有 N 项…\""""
+    def test_set_cards_caps_and_more_button(self):
+        """单格最多展示 N 个条目，超出折叠为可点的「还有 N 项…」
+
+        折叠入口必须可点：此前是死 QLabel，被折叠的卡片既看不到也
+        点不开，用户只能逐张进编辑框去找。
+        """
         cards = [Card(title=f"卡{i}") for i in range(_MAX_CHIPS_PER_CELL + 2)]
         self.cell.set_cards(cards)
         self.assertEqual(len(self.cell._chip_widgets), _MAX_CHIPS_PER_CELL)
-        labels = [w.text() for w in self.cell.findChildren(type(self.cell._head))
-                  if w.objectName() == "dayMore"]
-        self.assertTrue(any("2" in t for t in labels))
+        more = self.cell._more_btn
+        self.assertIsNotNone(more)
+        self.assertIn("2", more.text())
+        self.assertTrue(more.toolTip())
+
+    def test_more_button_absent_when_cards_fit(self):
+        """未超上限时不出现折叠入口"""
+        self.cell.set_cards([Card(title="唯一")])
+        self.assertIsNone(self.cell._more_btn)
 
     def test_set_cards_clears_old_chips(self):
         self.cell.set_cards([Card(title="旧")])

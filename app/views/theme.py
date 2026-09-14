@@ -3,12 +3,14 @@
 
 - AppTheme.colors() / label_style()：取当前主题色
 - AppTheme.global_qss()：全局样式表
-- AppTheme.register(callback)：主题切换时回调刷新
+- AppTheme.register(callback)：主题切换时回调刷新（弱引用，见 register）
 """
 
 from __future__ import annotations
 
+import inspect
 import logging
+import weakref
 
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtCore import QObject, Signal
@@ -40,6 +42,29 @@ def _default_dark() -> bool:
         except Exception:
             return False
     return False
+
+
+class _StrongRef:
+    """非绑定回调（函数/lambda）的强引用包装
+
+    这类回调没有宿主，弱引用会立刻失效，只能强引用；绑定方法走
+    WeakMethod（见 register）。
+    """
+
+    def __init__(self, cb):
+        self._cb = cb
+
+    def __call__(self):
+        return self._cb
+
+
+def _qt_alive(obj) -> bool:
+    """QObject 包装对象是否仍然有效（C++ 侧未析构）"""
+    try:
+        import shiboken6
+        return shiboken6.isValid(obj)
+    except Exception:   # noqa: BLE001 — 判定失败时按"存活"处理，不影响回调
+        return True
 
 
 class _Theme(QObject):
@@ -91,7 +116,7 @@ class _Theme(QObject):
             app.setStyleSheet(self.global_qss())
         self._sync_native_appearance()
         self._applied = True
-        for cb in list(self._listeners):
+        for cb in self._live_listeners():
             try:
                 cb()
             except Exception:
@@ -132,7 +157,41 @@ class _Theme(QObject):
             logger.exception("同步原生外观失败")
 
     def register(self, callback) -> None:
-        self._listeners.append(callback)
+        """注册主题回调（绑定方法按弱引用持有）
+
+        常驻视图由各自宿主强引用；一次性对话框（日历/归档/浮窗）销毁后
+        会自动从监听列表消失。此前只增不减：语言切换会 deleteLater 掉
+        日历对话框，之后再切主题就对其已析构对象回调抛 RuntimeError，
+        且每次"切语言 + 重开日历"都留一个僵尸监听器。
+        """
+        self._listeners.append(
+            weakref.WeakMethod(callback) if inspect.ismethod(callback)
+            else _StrongRef(callback))
+
+    def unregister(self, callback) -> None:
+        """摘除主题回调（按注册时的可调用对象比对；弱引用已覆盖常见场景）"""
+        for ref in list(self._listeners):
+            try:
+                cb = ref()
+            except Exception:   # noqa: BLE001 — 已失效的引用直接丢弃
+                cb = None
+            if cb is None or cb is callback or cb == callback:
+                self._listeners.remove(ref)
+
+    def _live_listeners(self) -> list:
+        """仍然有效的回调；顺带剔除已失效项（宿主对象或 C++ 侧已销毁）"""
+        alive, live = [], []
+        for ref in self._listeners:
+            cb = ref()
+            if cb is None:
+                continue
+            owner = getattr(cb, "__self__", None)
+            if owner is not None and not _qt_alive(owner):
+                continue    # 对话框已销毁：静默剔除，不再每次切换报错
+            alive.append(ref)
+            live.append(cb)
+        self._listeners = alive
+        return live
 
     # ── 取色 ──────────────────────────────────────────────
 

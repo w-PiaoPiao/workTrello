@@ -7,10 +7,12 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QVariantAnimation, Signal
+from PySide6.QtCore import (QPointF, QEasingCurve, QRectF, Qt,
+                            QVariantAnimation, Signal)
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QAbstractButton, QButtonGroup, QFrame, QHBoxLayout, QPushButton
 
+from app.views import motion
 from app.views.theme import AppTheme
 
 
@@ -54,8 +56,13 @@ class ToggleSwitch(QAbstractButton):
     def _animate_to(self, target: float) -> None:
         if self._anim is not None:
             self._anim.stop()
+        if not motion.enabled():
+            # "暂停动画"总开关：开关滑块同样瞬时落位（此前只有本控件漏检）
+            self._set_pos(target)
+            return
         anim = QVariantAnimation(self)
         anim.setDuration(120)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
         start, end = self._pos, target
         anim.setStartValue(start)
         anim.setEndValue(end)

@@ -433,7 +433,8 @@ class AppController(QObject):
         from app.views.quick_add_dialog import QuickAddDialog
 
         dlg = QuickAddDialog(tr("新建看板"), tr("看板名称："),
-                             tr("例如：工作项目"), parent=self._window)
+                             tr("例如：工作项目"), parent=self._window,
+                             ok_text=tr("创建"))
         if dlg.exec() != QDialog.Accepted:
             return
         name = dlg.text().strip()
@@ -450,7 +451,8 @@ class AppController(QObject):
             return
         dlg = QuickAddDialog(tr("重命名看板"), tr("看板名称："),
                              tr("例如：工作项目"),
-                             initial_text=meta.name, parent=self._window)
+                             initial_text=meta.name, parent=self._window,
+                             ok_text=tr("保存"))
         if dlg.exec() != QDialog.Accepted:
             return
         name = dlg.text().strip()
@@ -1094,8 +1096,11 @@ class AppController(QObject):
     # ── 列表操作 ──────────────────────────────────────────
 
     def _on_list_add(self) -> None:
+        from app.views.quick_add_dialog import QuickAddDialog
+
         dlg = QuickAddDialog(tr("添加列表"), tr("列表名称："),
-                             tr("例如：进行中"), parent=self._window)
+                             tr("例如：进行中"), parent=self._window,
+                             ok_text=tr("添加"))
         if dlg.exec() != QDialog.Accepted:
             return
         title = dlg.text().strip()

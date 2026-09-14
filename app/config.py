@@ -302,6 +302,20 @@ class AppConfig:
     # 批量增删必须设上限，否则逐键输入会把多轮动画叠在一起。
     ANIM_BATCH_LIMIT = 8
 
+    # ── 界面尺寸 token（同语义控件跨界面统一）──────────────────
+    # 此前同一种"药丸选择器"在三个对话框里有三套圆角与内边距
+    # （6/7/9px 圆角 × 三种 padding），次按钮有四种 padding，
+    # 靠人工记忆维持一致不可持续。
+    UI_RADIUS_PANEL = 12         # 分区卡片 / 浮层外壳
+    UI_RADIUS_CONTROL = 8        # 输入框 / 按钮 / 列表行
+    UI_RADIUS_CHIP = 6           # 徽章 / 色块 / 键帽
+    UI_RADIUS_PILL = 8           # 药丸选择器（分段按钮 / 皮肤 / 优先级）
+    UI_PAD_PRIMARY = "7px 22px"      # 主按钮
+    UI_PAD_SECONDARY = "6px 14px"    # 次按钮
+    UI_PAD_PILL = "4px 12px"         # 药丸选择器
+    UI_DIALOG_MARGIN_H = 20      # 对话框内容左右边距
+    UI_DIALOG_MARGIN_V = 18      # 对话框内容上下边距
+
     # ── 交互 ──────────────────────────────────────────────────────
     CARD_DRAG_THRESHOLD = 10    # 卡片按下后超过该位移才判定为拖拽（像素）
     LIST_DRAG_THRESHOLD = 10    # 列表头按下后超过该位移才判定为整列拖拽（像素）

@@ -36,6 +36,7 @@ from PySide6.QtWidgets import QApplication, QStackedWidget, QVBoxLayout, QWidget
 
 from app.config import AppConfig
 from app.i18n import tr
+from app.views import motion
 from app.views.theme import AppTheme
 
 logger = logging.getLogger(__name__)
@@ -172,8 +173,8 @@ class MainWindow(QWidget):
         self._find_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
         self._find_shortcut.activated.connect(self._focus_board_search)
 
-        # Windows/Linux 键盘入口：撤销 / 重做 / 新建卡片（macOS 由全局菜单栏
-        # QAction 承担同键，注册会与菜单快捷键双重触发）
+        # Windows/Linux 键盘入口：撤销 / 重做 / 新建卡片 / 收起（macOS 由全局
+        # 菜单栏 QAction 承担同键，注册会与菜单快捷键双重触发）
         if not AppConfig.IS_MACOS:
             self._undo_shortcut = QShortcut(QKeySequence.Undo, self)
             self._undo_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
@@ -181,10 +182,21 @@ class MainWindow(QWidget):
             self._redo_shortcut = QShortcut(QKeySequence("Ctrl+Y"), self)
             self._redo_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
             self._redo_shortcut.activated.connect(self.redo_shortcut.emit)
+            # Ctrl+Shift+Z 与 Ctrl+Y 同为业界重做键，README 一直宣称支持，
+            # 此前只注册了前者（文档与实现不符）
+            self._redo_alt_shortcut = QShortcut(
+                QKeySequence("Ctrl+Shift+Z"), self)
+            self._redo_alt_shortcut.setContext(
+                Qt.WidgetWithChildrenShortcut)
+            self._redo_alt_shortcut.activated.connect(self.redo_shortcut.emit)
             self._new_card_shortcut = QShortcut(QKeySequence.New, self)
             self._new_card_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
             self._new_card_shortcut.activated.connect(
                 self.new_card_shortcut.emit)
+            # Ctrl+W 收起为桌宠：快捷键速查面板对 Windows 用户也列了这一条
+            self._collapse_shortcut = QShortcut(QKeySequence("Ctrl+W"), self)
+            self._collapse_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+            self._collapse_shortcut.activated.connect(self.collapse)
 
         # ? 呼出快捷键速查（全平台；文本输入中不触发——handler 侧再校验）
         self._help_shortcut = QShortcut(QKeySequence("?"), self)
@@ -473,16 +485,21 @@ class MainWindow(QWidget):
         if old is not None:
             old.stop()
             old.deleteLater()   # 带 parent 的旧动画不被 GC，逐次展开/折叠会累积
-        self.anim = QPropertyAnimation(self, b"geometry")
-        self.anim.setDuration(AppConfig.ANIMATION_MS)
-        self.anim.setEasingCurve(QEasingCurve.OutCubic)
-
         base = base_geo if base_geo is not None else self.geometry()
         dx = delta.x() if delta is not None else 0
         dy = delta.y() if delta is not None else 0
+        end = QRect(base.x() + dx, base.y() + dy, target_w, target_h)
+        if not motion.enabled():
+            # "暂停动画"是覆盖全部动效的总开关：窗口展开/折叠同样瞬时落位，
+            # 收尾逻辑（切视图/固定尺寸/把手可见性）与动画结束走同一条路
+            self.setGeometry(end)
+            self._on_animation_finished()
+            return
+        self.anim = QPropertyAnimation(self, b"geometry")
+        self.anim.setDuration(AppConfig.ANIMATION_MS)
+        self.anim.setEasingCurve(QEasingCurve.OutCubic)
         self.anim.setStartValue(self.geometry())
-        self.anim.setEndValue(QRect(base.x() + dx, base.y() + dy,
-                                    target_w, target_h))
+        self.anim.setEndValue(end)
         self.anim.finished.connect(self._on_animation_finished)
         self.anim.start()
 

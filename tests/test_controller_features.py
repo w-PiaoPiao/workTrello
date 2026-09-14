@@ -6,6 +6,8 @@
 需要 Qt 离屏环境；数据目录隔离到临时目录（在导入 app 模块前设置）。
 """
 
+from __future__ import annotations
+
 import json
 import os
 import sys
@@ -300,6 +302,39 @@ class ControllerFeatureTest(unittest.TestCase):
         # 撤销一次回滚整批（单个撤销快照）
         self.c._on_undo_requested(False)
         self.assertEqual([c.title for c in self._list().cards][:2], [])
+
+    def test_add_list_entry_creates_column(self):
+        """新增列表入口可用：曾因漏一行局部导入而 NameError 静默失效
+
+        _on_list_add 用了 QuickAddDialog 却没导入，异常被 Qt 槽吞掉——
+        工具栏「+ 添加列表」和 macOS 菜单栏「新建列表」两个入口同时
+        变成"点了没反应"，而当时没有任何用例覆盖这条路径。
+        """
+        self._reset()
+        before = [x.title for x in self.c._store.load().lists]
+        from app.views.quick_add_dialog import QuickAddDialog
+        with patch("app.views.quick_add_dialog.QuickAddDialog") as dlg_cls:
+            dlg = dlg_cls.return_value
+            dlg.exec.return_value = QuickAddDialog.Accepted
+            dlg.text.return_value = "审查中"
+            self.c._on_list_add()
+        titles = [x.title for x in self.c._store.load().lists]
+        self.assertEqual(titles, before + ["审查中"])
+        # 还原：后续用例普遍按 lists[0] 取列
+        self.c._store.load().lists.pop()
+        self.c._after_data_change(None)
+
+    def test_add_list_cancel_keeps_board(self):
+        """取消/空名字不建列"""
+        self._reset()
+        before = [x.title for x in self.c._store.load().lists]
+        from app.views.quick_add_dialog import QuickAddDialog
+        with patch("app.views.quick_add_dialog.QuickAddDialog") as dlg_cls:
+            dlg = dlg_cls.return_value
+            dlg.exec.return_value = QuickAddDialog.Rejected
+            dlg.text.return_value = "不该出现"
+            self.c._on_list_add()
+        self.assertEqual([x.title for x in self.c._store.load().lists], before)
 
     def test_edit_marks_store_dirty(self):
         """数据变更必须标脏——flush() 只在脏时落盘，漏标则编辑只留内存"""

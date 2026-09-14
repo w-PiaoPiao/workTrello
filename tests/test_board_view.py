@@ -28,6 +28,7 @@ from PySide6.QtWidgets import QApplication, QPushButton
 
 _qapp = QApplication.instance() or QApplication([])
 
+from app.config import AppConfig
 from app.models.board import BoardList, Card
 from app.views.board_view import WORKDIR_BADGE_TEXT, BoardView, CardWidget
 
@@ -568,7 +569,6 @@ class BoardViewRefreshTest(unittest.TestCase):
 
     def test_animation_toggle_disables_transitions(self):
         """"暂停动画"总开关关闭 → 折叠瞬时生效（无动画对象）"""
-        from app.config import AppConfig
         from app.views import motion
         original = motion.enabled()
         try:
@@ -601,7 +601,6 @@ class BoardViewRefreshTest(unittest.TestCase):
     def test_new_card_fades_in(self):
         """新增卡片淡入：透明度真的从低到高，且结束后摘掉 effect"""
         from PySide6.QtWidgets import QGraphicsOpacityEffect
-        from app.config import AppConfig
         from app.views import motion
         col = self.view._columns[0]
         self.view.show()
@@ -1090,6 +1089,8 @@ class SelectionTest(unittest.TestCase):
         self.view._on_card_ctrl_clicked(a)
         self.view._on_card_ctrl_clicked(a)
         self.assertEqual(self.view._selected_ids, set())
+        # 操作栏改为淡出（CARD_EXIT_ANIM_MS）后 hide，断言前等动画收尾
+        QTest.qWait(AppConfig.CARD_EXIT_ANIM_MS + 80)
         self.assertTrue(self.view._selection_bar.isHidden())
 
     def test_shift_click_selects_range_from_anchor(self):
@@ -1134,6 +1135,7 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(len(got), 1)
         self.assertEqual(set(got[0]), set(ids[:2]))
         self.assertEqual(self.view._selected_ids, set())     # 发出后清选区
+        QTest.qWait(AppConfig.CARD_EXIT_ANIM_MS + 80)        # 等操作栏淡出
         self.assertTrue(self.view._selection_bar.isHidden())
 
     def test_batch_done_button_emits_toggle_done(self):

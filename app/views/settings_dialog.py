@@ -314,7 +314,7 @@ class SettingsDialog(QDialog):
             QFrame#settingsCard {{
                 background: {c['bg_card']};
                 border: 1px solid {c['border']};
-                border-radius: 12px;
+                border-radius: {AppConfig.UI_RADIUS_PANEL}px;
             }}
             QLabel#sectionTitle {{
                 color: {c['text_secondary']};
@@ -350,8 +350,8 @@ class SettingsDialog(QDialog):
                 background: transparent;
                 color: {c['text_secondary']};
                 border: 1px solid transparent;
-                border-radius: 7px;
-                padding: 4px 12px;
+                border-radius: {AppConfig.UI_RADIUS_PILL}px;
+                padding: {AppConfig.UI_PAD_PILL};
                 font-size: 12px;
             }}
             QPushButton#segmentBtn:hover {{ color: {c['text_primary']}; }}
@@ -365,8 +365,8 @@ class SettingsDialog(QDialog):
                 background: {c['mask']};
                 color: {c['text_primary']};
                 border: 1.5px solid transparent;
-                border-radius: 9px;
-                padding: 5px 10px;
+                border-radius: {AppConfig.UI_RADIUS_PILL}px;
+                padding: {AppConfig.UI_PAD_PILL};
                 font-size: 12px;
             }}
             QPushButton#skinBtn:hover {{ border: 1.5px solid {c['accent']}; }}
@@ -380,8 +380,8 @@ class SettingsDialog(QDialog):
                 background: {c['bg_card']};
                 color: {c['text_primary']};
                 border: 1px solid {c['border']};
-                border-radius: 8px;
-                padding: 5px 12px;
+                border-radius: {AppConfig.UI_RADIUS_CONTROL}px;
+                padding: {AppConfig.UI_PAD_SECONDARY};
                 font-size: 12px;
             }}
             QPushButton#ghostBtn:hover {{ background: {c['bg_hover']}; }}
@@ -403,8 +403,8 @@ class SettingsDialog(QDialog):
                 background: {c['accent']};
                 color: white;
                 border: none;
-                border-radius: 8px;
-                padding: 7px 22px;
+                border-radius: {AppConfig.UI_RADIUS_CONTROL}px;
+                padding: {AppConfig.UI_PAD_PRIMARY};
                 font-weight: bold;
             }}
             QPushButton#primaryBtn:hover {{ background: {c['accent_hover']}; }}

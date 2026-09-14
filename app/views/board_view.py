@@ -236,6 +236,7 @@ def _board_qss(mode: str) -> str:
             background: {c['glass_hover']};
             border: 1.5px solid {c['accent']};
         }}
+        /* 列尾「+ 添加卡片」：虚线占位框（该位置本来就该"待填"） */
         QPushButton#addBoardBtn {{
             background: transparent;
             color: {c['text_secondary']};
@@ -249,8 +250,23 @@ def _board_qss(mode: str) -> str:
             color: {c['accent']};
             border: 1.5px dashed {c['accent']};
         }}
+        /* 工具栏「+ 添加列表」：同排全是实心玻璃按钮，虚线版在渐变背景上
+           会被读成"禁用"（它正下方的空看板引导又指着它） */
+        QPushButton#addBoardBtn[variant="toolbar"] {{
+            background: {c['glass']};
+            color: {c['text_primary']};
+            border: none;
+            border-radius: 9px;
+            padding: 5px 10px;
+        }}
+        QPushButton#addBoardBtn[variant="toolbar"]:hover {{
+            background: {c['glass_hover']};
+            color: {c['accent']};
+            border: none;
+        }}
+        /* 空看板引导叠在蓝紫渐变上：中性灰在渐变里几乎看不见 */
         QLabel#emptyBoardHint {{
-            color: {c['text_secondary']};
+            color: rgba(255, 255, 255, 0.92);
             font-size: 15px;
             background: transparent;
         }}
@@ -911,6 +927,10 @@ class CardWidget(QFrame):
             names = [label_display(k) for k in self._card.labels]
             parts.append(tr("标签：") + tr("、").join(names))
         parts.extend(text for text, _key, _is_notes in self._meta_items_cache)
+        if self._card.labels:
+            # 左缘色条是"按标签过滤"的命中区，此前零提示：点卡片最左端
+            # 会触发全板过滤，而用户并不知道刚才发生了什么
+            parts.append(tr("提示：点击左缘色条可按标签筛选"))
         self.setToolTip("\n".join(parts))
 
     def eventFilter(self, obj, event):
@@ -1574,6 +1594,77 @@ class _ThemeToggleButton(QPushButton):
                 painter.drawLine(
                     center + QPointF(cos_a * 6.2, sin_a * 6.2),
                     center + QPointF(cos_a * 8.4, sin_a * 8.4))
+        painter.end()
+
+
+class _ElidedButton(QPushButton):
+    """宽度不足时省略号截断的按钮（看板名用）
+
+    普通 QPushButton 的文字在宽度不足时会被硬裁（窄窗下看板名只剩
+    "的看板"这种半截文本），故按实际宽度自行 elide。
+    sizeHint 必须按**完整文本**算：若直接吃基类实现（基于已被 elide
+    的短文本），文本一缩、sizeHint 跟着缩，会自我收缩成 "…"。
+    """
+
+    def __init__(self, text: str = "", parent=None, suffix: str = "",
+                 max_width: int = 260):
+        super().__init__(parent)
+        self._full = text
+        self._suffix = suffix
+        self._max_width = max_width
+        self.setSizePolicy(QSizePolicy.Policy.Maximum,
+                           QSizePolicy.Policy.Fixed)
+        self.setMinimumWidth(88)
+
+    def sizeHint(self) -> QSize:
+        fm = self.fontMetrics()
+        natural = fm.horizontalAdvance(self._full + self._suffix) + 26
+        return QSize(min(natural, self._max_width),
+                     super().sizeHint().height())
+
+    def set_full_text(self, text: str) -> None:
+        self._full = text
+        self.updateGeometry()
+        self._apply_elide()
+
+    def full_text(self) -> str:
+        return self._full
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._apply_elide()
+
+    def _apply_elide(self) -> None:
+        avail = self.width() - 24      # 减去左右内边距
+        if avail <= 0:
+            self.setText(self._full + self._suffix)
+            return
+        fm = self.fontMetrics()
+        self.setText(fm.elidedText(self._full, Qt.ElideRight, avail)
+                     + self._suffix)
+
+
+class _CalendarIconButton(QPushButton):
+    """自绘日历图标按钮（📅 是彩色 emoji，与同排的线性图标/文字按钮不同调）"""
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        pen = QPen(QColor(AppTheme.colors()["text_primary"]), 1.4)
+        pen.setCapStyle(Qt.RoundCap)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        cx, cy = self.width() / 2, self.height() / 2
+        body = QRectF(cx - 6.0, cy - 4.8, 12.0, 10.6)
+        painter.drawRoundedRect(body, 2.0, 2.0)
+        # 头部分隔线 + 两个挂钩（一眼区别于齿轮/月亮）
+        painter.drawLine(QPointF(body.left(), cy - 1.6),
+                         QPointF(body.right(), cy - 1.6))
+        painter.drawLine(QPointF(cx - 3.4, cy - 7.0),
+                         QPointF(cx - 3.4, cy - 4.8))
+        painter.drawLine(QPointF(cx + 3.4, cy - 7.0),
+                         QPointF(cx + 3.4, cy - 4.8))
         painter.end()
 
 
@@ -2269,12 +2360,17 @@ class ListColumn(QFrame):
 
 
 class AddCardButton(QPushButton):
-    """添加卡片/列表按钮（样式由看板级样式表按 objectName 下发）"""
+    """添加卡片/列表按钮（样式由看板级样式表按 objectName 下发）
 
-    def __init__(self, text: str, parent=None):
+    variant="toolbar" 时用实心玻璃底（工具栏语境），默认是列尾的虚线占位框。
+    """
+
+    def __init__(self, text: str, parent=None, variant: str = ""):
         super().__init__(text, parent)
         self.setObjectName("addBoardBtn")
         self.setCursor(Qt.PointingHandCursor)
+        if variant:
+            self.setProperty("variant", variant)
 
     def reapply(self) -> None:
         """配色由看板级样式表统一下发，此处仅触发重绘"""
@@ -2392,7 +2488,7 @@ class BoardView(QWidget):
         self._board_name = ""
         self._board_meta: list[tuple[str, str]] = []   # (id, name) 有序
         self._current_board_id = ""
-        self._title_btn = QPushButton()
+        self._title_btn = _ElidedButton(suffix="  ▾")
         self._title_btn.setObjectName("boardTitleBtn")
         self._title_btn.setCursor(Qt.PointingHandCursor)
         self._title_btn.setToolTip(tr("切换 / 管理看板"))
@@ -2448,7 +2544,8 @@ class BoardView(QWidget):
         # 搜索框参与剩余空间分配（与 stats 之后的 stretch 平分）
         self._toolbar_layout.setStretchFactor(self._search_edit, 1)
 
-        self._add_list_btn = AddCardButton(tr("+ 添加列表"))
+        self._add_list_btn = AddCardButton(tr("+ 添加列表"),
+                                           variant="toolbar")
         self._add_list_btn.setFixedWidth(96)
         self._add_list_btn.clicked.connect(self.signal_list_add.emit)
         self._toolbar_layout.addWidget(self._add_list_btn)
@@ -2460,8 +2557,9 @@ class BoardView(QWidget):
         self._archive_btn.clicked.connect(self.signal_archive_open.emit)
         self._toolbar_layout.addWidget(self._archive_btn)
 
-        self._calendar_btn = QPushButton("📅")
-        self._calendar_btn.setObjectName("boardToolBtn")
+        self._calendar_btn = _CalendarIconButton()
+        self._calendar_btn.setObjectName("boardThemeBtn")   # 同款圆形玻璃底
+        self._calendar_btn.setFixedSize(34, 34)
         self._calendar_btn.setCursor(Qt.PointingHandCursor)
         self._calendar_btn.setToolTip(tr("按截止日期在月历中查看与拖动卡片"))
         self._calendar_btn.clicked.connect(self.signal_calendar_open.emit)
@@ -2524,6 +2622,36 @@ class BoardView(QWidget):
             self._toolbar_layout.addWidget(self._window_controls)
             self._collapse_btn.hide()   # 最小化键已承担折叠，避免重复控件
 
+        # 窄窗收纳：放不下的次要按钮折进「»」菜单（见 _apply_toolbar_overflow）
+        self._overflow_btn = QPushButton("»")
+        self._overflow_btn.setObjectName("boardToolBtn")
+        self._overflow_btn.setCursor(Qt.PointingHandCursor)
+        self._overflow_btn.setToolTip(tr("更多操作"))
+        self._overflow_menu = QMenu(self)
+        self._overflow_btn.setMenu(self._overflow_menu)
+        self._overflow_btn.hide()
+        self._toolbar_layout.addWidget(self._overflow_btn)
+
+        # 收纳优先级（低 → 高）：空间不足时从前往后收进「»」菜单。
+        # 顺序按"冗余度"排：统计数字在列头也有、日历在 macOS 菜单栏也有，
+        # 而「+ 添加列表」是空看板引导指向的唯一入口，放最后。
+        self._overflow_order = ("stats", "calendar", "export", "archive",
+                                "add_list")
+        self._toolbar_items: list[tuple[str, QWidget]] = [
+            ("title", self._title_btn),
+            ("stats", self._stats_label),
+            ("today", self._today_btn),
+            ("search", self._search_edit),
+            ("add_list", self._add_list_btn),
+            ("archive", self._archive_btn),
+            ("calendar", self._calendar_btn),
+            ("export", self._export_btn),
+            ("settings", self._settings_btn),
+            ("theme", self._theme_btn),
+            ("overflow", self._overflow_btn),
+        ]
+        self._overflow_hidden: list[str] = []
+
         root.addWidget(self._toolbar)
 
         # ── 列表区（横向滚动） ────────────────────────────
@@ -2580,7 +2708,7 @@ class BoardView(QWidget):
         self._sel_done_btn.setCursor(Qt.PointingHandCursor)
         self._sel_done_btn.clicked.connect(self._on_batch_done)
         sel_lay.addWidget(self._sel_done_btn)
-        self._sel_label_btn = QPushButton(tr("🏷 标签"))
+        self._sel_label_btn = QPushButton(tr("标签"))
         self._sel_label_btn.setObjectName("boardToolBtn")
         self._sel_label_btn.setCursor(Qt.PointingHandCursor)
         self._sel_label_btn.clicked.connect(self._show_batch_label_menu)
@@ -2590,13 +2718,13 @@ class BoardView(QWidget):
         self._sel_move_btn.setCursor(Qt.PointingHandCursor)
         self._sel_move_btn.clicked.connect(self._show_batch_move_menu)
         sel_lay.addWidget(self._sel_move_btn)
-        self._sel_archive_btn = QPushButton(tr("📥 归档"))
+        self._sel_archive_btn = QPushButton(tr("归档"))
         self._sel_archive_btn.setObjectName("boardToolBtn")
         self._sel_archive_btn.setCursor(Qt.PointingHandCursor)
         self._sel_archive_btn.clicked.connect(
             lambda: self._emit_batch(self.signal_batch_archive))
         sel_lay.addWidget(self._sel_archive_btn)
-        self._sel_delete_btn = QPushButton(tr("🗑 删除"))
+        self._sel_delete_btn = QPushButton(tr("删除"))
         self._sel_delete_btn.setObjectName("boardToolBtn")
         self._sel_delete_btn.setCursor(Qt.PointingHandCursor)
         self._sel_delete_btn.clicked.connect(
@@ -2709,7 +2837,6 @@ class BoardView(QWidget):
     def reapply_texts(self) -> None:
         """语言切换：刷新静态文案；卡片指纹清空，待 refresh 重建徽章/tooltip"""
         self._set_board_name(self._board_name)
-        self._title_btn.setToolTip(tr("切换 / 管理看板"))
         self._search_edit.setPlaceholderText(tr("搜索卡片…"))
         self._search_edit.setAccessibleName(tr("搜索卡片"))
         self._today_btn.setToolTip(
@@ -2720,13 +2847,13 @@ class BoardView(QWidget):
         self._add_list_btn.setText(tr("+ 添加列表"))
         self._archive_btn.setText(tr("归档"))
         self._archive_btn.setToolTip(tr("查看已归档卡片并恢复"))
-        self._calendar_btn.setText("📅")
         self._calendar_btn.setToolTip(tr("按截止日期在月历中查看与拖动卡片"))
+        self._overflow_btn.setToolTip(tr("更多操作"))
         self._sel_done_btn.setText(tr("✓ 切换完成"))
-        self._sel_label_btn.setText(tr("🏷 标签"))
+        self._sel_label_btn.setText(tr("标签"))
         self._sel_move_btn.setText(tr("→ 移动"))
-        self._sel_archive_btn.setText(tr("📥 归档"))
-        self._sel_delete_btn.setText(tr("🗑 删除"))
+        self._sel_archive_btn.setText(tr("归档"))
+        self._sel_delete_btn.setText(tr("删除"))
         self._sel_clear_btn.setToolTip(tr("取消多选（Esc）"))
         self._update_selection_bar()
         self._export_btn.setText(tr("导出"))
@@ -2739,6 +2866,7 @@ class BoardView(QWidget):
             lights.reapply_texts()
         self._empty_hint.setText(
             tr("看板还是空的\n点击右上角「+ 添加列表」创建第一列"))
+        self._sync_overflow_menu()      # 「»」菜单项文案随语言刷新
         for col in self._columns:
             col.retexts()
             for cw in col._card_widgets:
@@ -2959,8 +3087,9 @@ class BoardView(QWidget):
 
     def _set_board_name(self, name: str) -> None:
         self._board_name = name
-        self._title_btn.setText(
-            f"{name or tr('我的看板')}  ▾")
+        self._title_btn.set_full_text(name or tr("我的看板"))
+        self._title_btn.setToolTip(
+            tr("切换 / 管理看板") + f"（{name or tr('我的看板')}）")
 
     def _show_board_menu(self) -> None:
         menu = QMenu(self)
@@ -3002,17 +3131,25 @@ class BoardView(QWidget):
             cw.set_selected(cw.card().id in selected)
 
     def _update_selection_bar(self) -> None:
+        bar = self._selection_bar
         if self._selected_ids:
             self._sel_count_label.setText(
                 tr("已选 {n} 张").format(n=len(self._selected_ids)))
-            self._selection_bar.adjustSize()
-            self._selection_bar.move(
-                (self.width() - self._selection_bar.width()) // 2,
-                self.height() - self._selection_bar.height() - 14)
-            self._selection_bar.show()
-            self._selection_bar.raise_()
-        else:
-            self._selection_bar.hide()
+            bar.adjustSize()
+            bar.move((self.width() - bar.width()) // 2,
+                     self.height() - bar.height() - 14)
+            was_visible = bar.isVisible()
+            bar.show()
+            bar.raise_()
+            # 出现与卡片/列同一套淡入（此前是裸 show，浮层"啪"地跳出）
+            if not was_visible and motion.enabled():
+                motion.fade_in(bar, AppConfig.POPOVER_ANIM_MS)
+        elif bar.isVisible():
+            if motion.enabled():
+                motion.fade_out(bar, AppConfig.CARD_EXIT_ANIM_MS,
+                                on_finished=bar.hide)
+            else:
+                bar.hide()
 
     def _on_card_ctrl_clicked(self, card_id: str) -> None:
         if card_id in self._selected_ids:
@@ -3167,6 +3304,12 @@ class BoardView(QWidget):
         self._label_filter = None if self._label_filter == key else key
         self._update_label_chip()
         self._apply_filter()
+        # 明示反馈：命中区只有几像素宽，不说明的话用户不知道刚发生了什么
+        if self._label_filter is None:
+            self.show_toast(tr("已清除标签筛选"))
+        else:
+            self.show_toast(tr("已按标签「{name}」筛选").format(
+                name=label_display(key)))
 
     def _clear_label_filter(self) -> None:
         if self._label_filter is None:
@@ -3349,8 +3492,9 @@ class BoardView(QWidget):
             self._empty_hint.raise_()
 
     def resizeEvent(self, event) -> None:
-        """空状态引导与 toast 跟随窗口尺寸重定位"""
+        """空状态引导与 toast 跟随窗口尺寸重定位；工具栏按宽度收纳"""
         super().resizeEvent(event)
+        self._apply_toolbar_overflow()
         if self._empty_hint.isVisible():
             self._empty_hint.setGeometry(self.rect())
         if self._toast.isVisible():
@@ -3358,6 +3502,72 @@ class BoardView(QWidget):
                              self.height() - self._toast.height() - 20)
         if self._selection_bar.isVisible():
             self._update_selection_bar()
+
+    # ── 工具栏窄窗收纳 ────────────────────────────────────
+
+    def _aux_toolbar_widgets(self) -> list:
+        """不参与收纳的固定控件（交通灯 / Windows 窗口控制键 / 折叠键）"""
+        return [w for w in (getattr(self, "_traffic_lights", None),
+                            self._window_controls, self._collapse_btn)
+                if w is not None and not w.isHidden()]
+
+    def _apply_toolbar_overflow(self) -> None:
+        """窄窗收纳：放不下的次要按钮折进「»」菜单
+
+        BOARD_MIN_WIDTH 是"够放整个工具栏"的下限，但小屏上它会被屏幕
+        宽度钳低（见 MainWindow._effective_min_size），此时十来个控件的
+        线型排布必然重叠：此前搜索框与「+ 添加列表」叠字、看板名被裁成
+        半截。这里按优先级把次要项收进菜单，保证任何宽度下都不重叠。
+        """
+        if self.width() <= 0 or not hasattr(self, "_overflow_btn"):
+            return
+        lay = self._toolbar_layout
+        margins = lay.contentsMargins()
+        avail = self.width() - margins.left() - margins.right()
+        spacing = lay.spacing()
+        aux_w = sum(w.minimumSizeHint().width()
+                    for w in self._aux_toolbar_widgets())
+
+        def needed_width(hidden: set) -> int:
+            n = len(self._aux_toolbar_widgets())
+            total = aux_w
+            for key, widget in self._toolbar_items:
+                if key in hidden:
+                    continue
+                if key == "overflow" and not hidden:
+                    continue    # 没有收纳项时「»」自身隐藏，不占宽
+                # 搜索框有弹性：空间不足时它先收缩到自己的最小宽
+                total += (widget.minimumWidth() if key == "search"
+                          else widget.minimumSizeHint().width())
+                n += 1
+            return total + spacing * max(0, n - 1)
+
+        hidden: set = set()
+        for key in self._overflow_order:
+            if needed_width(hidden) <= avail:
+                break
+            hidden.add(key)
+        if hidden == set(self._overflow_hidden):
+            return
+        self._overflow_hidden = [k for k in self._overflow_order
+                                 if k in hidden]
+        for key, widget in self._toolbar_items:
+            if key in self._overflow_order:
+                widget.setVisible(key not in hidden)
+        self._sync_overflow_menu()
+    def _sync_overflow_menu(self) -> None:
+        """被收纳的入口进「»」菜单（点菜单项等价于点原按钮）"""
+        self._overflow_menu.clear()
+        by_key = dict(self._toolbar_items)
+        actionable = 0
+        for key in self._overflow_hidden:
+            widget = by_key.get(key)
+            if widget is None or not hasattr(widget, "click"):
+                continue        # 纯信息项（统计数字）不进菜单
+            act = self._overflow_menu.addAction(widget.text())
+            act.triggered.connect(widget.click)
+            actionable += 1
+        self._overflow_btn.setVisible(actionable > 0)
 
     def show_toast(self, text: str) -> None:
         """显示看板内轻提示（折叠态由控制器改走托盘通知）"""

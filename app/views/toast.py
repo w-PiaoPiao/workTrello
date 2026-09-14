@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPropertyAnimation, QTimer, Qt
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QTimer, Qt
 from PySide6.QtWidgets import QGraphicsOpacityEffect, QLabel
 
 from app.config import AppConfig
@@ -38,17 +38,21 @@ class Toast(QLabel):
 
         self._effect = QGraphicsOpacityEffect(self)
         self.setGraphicsEffect(self._effect)
-        self._fade = QPropertyAnimation(self._effect, b"opacity", self)
-        self._fade.setDuration(260)
-        self._fade.finished.connect(self._on_fade_finished)
+        self._fade = self._make_fade()
+
+    def _make_fade(self) -> QPropertyAnimation:
+        """淡入淡出动画（与全站同一缓动；此前用默认 Linear，出入不对称）"""
+        anim = QPropertyAnimation(self._effect, b"opacity", self)
+        anim.setDuration(260)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.finished.connect(self._on_fade_finished)
+        return anim
 
     def _rebuild_effect(self) -> None:
         """重建 effect 与其动画（setGraphicsEffect(None) 会销毁 effect）"""
         self._effect = QGraphicsOpacityEffect(self)
         self.setGraphicsEffect(self._effect)
-        self._fade = QPropertyAnimation(self._effect, b"opacity", self)
-        self._fade.setDuration(260)
-        self._fade.finished.connect(self._on_fade_finished)
+        self._fade = self._make_fade()
 
     def _drop_effect(self) -> None:
         """摘掉 effect：隐藏期不走离屏渲染通道（对齐 motion.py"播完即卸"）"""
@@ -95,6 +99,11 @@ class Toast(QLabel):
     # ── 淡出 ──────────────────────────────────────────────
 
     def _fade_out(self) -> None:
+        if not motion.enabled():
+            # "暂停动画"是总开关：淡出同样退化为瞬时（此前只有淡入查了它）
+            self.hide()
+            self._drop_effect()
+            return
         self._fade.stop()
         self._fade.setDuration(260)
         self._fade.setStartValue(1.0)

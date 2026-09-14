@@ -27,21 +27,27 @@ def _mod() -> str:
 
 
 def _shortcut_rows() -> list[tuple[str, str]]:
-    """(操作, 按键) 行；顺序即展示顺序"""
+    """(操作, 按键) 行；顺序即展示顺序
+
+    这里的每一行都必须在两个平台上真实注册（Ctrl+W / Ctrl+Shift+Z
+    此前只在 macOS 侧存在，面板却对 Windows 用户照报无误）。
+    """
     mod = _mod()
+    click = tr("单击")
+    redo = (f"{mod}+Shift+Z" if AppConfig.IS_MACOS
+            else f"{mod}+Y / {mod}+Shift+Z")
     return [
         (tr("快速添加卡片"), f"{mod}+N"),
         (tr("搜索卡片"), f"{mod}+F"),
         (tr("撤销"), f"{mod}+Z"),
-        (tr("重做"), f"{mod}+Shift+Z" if AppConfig.IS_MACOS
-         else f"{mod}+Y"),
+        (tr("重做"), redo),
         (tr("打开 / 编辑卡片"), tr("回车")),
         (tr("切换完成状态"), tr("空格")),
         (tr("卡片间移动焦点"), "↑ ↓ ← →"),
         (tr("保存卡片对话框"), f"{mod}+↩"),
         (tr("清空搜索 / 取消多选 / 收起看板"), "Esc"),
         (tr("收起为桌宠"), f"{mod}+W"),
-        (tr("多选卡片"), f"{mod}+单击 / Shift+单击"),
+        (tr("多选卡片"), f"{mod}+{click} / Shift+{click}"),
         (tr("快捷键速查"), "?"),
     ]
 
@@ -54,38 +60,6 @@ class ShortcutsDialog(QDialog):
         self.setWindowTitle(tr("快捷键"))
         self.setModal(True)
         self.setMinimumWidth(420)
-
-        c = AppTheme.colors()
-        self.setStyleSheet(f"""
-            QDialog {{ background: {c['bg_primary']}; }}
-            QLabel#scAction {{
-                color: {c['text_primary']};
-                font-size: 13px;
-                background: transparent;
-            }}
-            QLabel#scKey {{
-                color: {c['accent']};
-                font-size: 12px;
-                font-weight: bold;
-                background: {c['accent_soft']};
-                border-radius: 6px;
-                padding: 2px 8px;
-            }}
-            QFrame#scRow {{
-                background: {c['bg_card']};
-                border: 1px solid {c['border']};
-                border-radius: 8px;
-            }}
-            QPushButton {{
-                background: {c['accent']};
-                color: white;
-                border: none;
-                border-radius: 8px;
-                padding: 6px 20px;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{ background: {c['accent_hover']}; }}
-        """)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 16, 18, 14)
@@ -113,3 +87,40 @@ class ShortcutsDialog(QDialog):
         close.clicked.connect(self.accept)
         btns.addWidget(close)
         root.addLayout(btns)
+
+        self.reapply_theme()
+        AppTheme.register(self.reapply_theme)
+
+    def reapply_theme(self) -> None:
+        """重下配色：样式是构建期快照，打开期间跟随系统换主题时需重刷"""
+        c = AppTheme.colors()
+        self.setStyleSheet(f"""
+            QDialog {{ background: {c['bg_primary']}; }}
+            QLabel#scAction {{
+                color: {c['text_primary']};
+                font-size: 13px;
+                background: transparent;
+            }}
+            QLabel#scKey {{
+                color: {c['accent']};
+                font-size: 12px;
+                font-weight: bold;
+                background: {c['accent_soft']};
+                border-radius: 6px;
+                padding: 2px 8px;
+            }}
+            QFrame#scRow {{
+                background: {c['bg_card']};
+                border: 1px solid {c['border']};
+                border-radius: 8px;
+            }}
+            QPushButton {{
+                background: {c['accent']};
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 7px 22px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{ background: {c['accent_hover']}; }}
+        """)

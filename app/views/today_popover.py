@@ -175,6 +175,7 @@ class TodayPopover(QWidget):
         self._rows: list[tuple[str, str, QWidget]] = []   # (list_id, card_id, row)
         self._items: list[tuple[BoardList, Card]] = []    # 缓存供主题切换后重建
         self._done_label: QLabel | None = None            # "今日已完成 N 张"回顾行
+        self._empty_label: QLabel | None = None           # 空态行（主题切换需重刷）
         self._built = False
         AppTheme.register(self._on_theme_changed)
 
@@ -191,6 +192,7 @@ class TodayPopover(QWidget):
         for _lid, _cid, row in self._rows:
             row.reapply_theme()
         self._apply_done_label_style()
+        self._apply_empty_label_style()
 
     # ── 数据注入 ──────────────────────────────────────────
 
@@ -223,9 +225,8 @@ class TodayPopover(QWidget):
         if not items:
             empty = QLabel(tr("今天没有待办 🎉"))
             empty.setAlignment(Qt.AlignCenter)
-            empty.setStyleSheet(
-                f"color: {AppTheme.colors()['text_disabled']};"
-                " font-size: 12px; padding: 18px;")
+            self._empty_label = empty
+            self._apply_empty_label_style()
             layout.addWidget(empty)
             if show_done:
                 layout.addWidget(done_label)
@@ -236,6 +237,8 @@ class TodayPopover(QWidget):
                                  dismiss=current, keep=keep)
             return
 
+        # 有数据路径：旧空态标签已随 current 一起销毁，引用清掉避免野指针
+        self._empty_label = None
         for lst, card in items:
             row = reusable.pop(card.id, None)
             if row is None:
@@ -307,6 +310,14 @@ class TodayPopover(QWidget):
         self._done_label.setStyleSheet(
             f"color: {c['text_secondary']}; font-size: 12px;"
             " background: transparent; padding: 2px 0;")
+
+    def _apply_empty_label_style(self) -> None:
+        """空态配色随主题重下（此前是 set_items 时的内联快照）"""
+        if self._empty_label is None:
+            return
+        c = AppTheme.colors()
+        self._empty_label.setStyleSheet(
+            f"color: {c['text_disabled']}; font-size: 12px; padding: 18px;")
 
     # ── 基础 UI ──────────────────────────────────────────
 

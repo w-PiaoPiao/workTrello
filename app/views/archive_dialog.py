@@ -15,13 +15,47 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
+from app.config import AppConfig
 from app.i18n import tr
 from app.models.board import BoardList, Card
 from app.views.theme import AppTheme
+
+
+class _ElidedLabel(QLabel):
+    """单行标签：宽度不足时省略号截断（归档标题 / 来源列表名）
+
+    此前是普通 QLabel：最小宽度等于整段文本宽度，布局压不下去，长标题
+    会把「恢复」按钮整个挤出可视区——归档了长标题卡片就等于恢复不了。
+    sizeHint 由 Ignored 策略让位给布局（stretch 决定谁被压缩）。
+    """
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(text, parent)   # 先摆全文，首次布局后再按宽度截断
+        self._full = text
+        self.setSizePolicy(QSizePolicy.Policy.Ignored,
+                           QSizePolicy.Policy.Preferred)
+        self.setMinimumWidth(0)
+        self.setToolTip(text)
+
+    def set_full_text(self, text: str) -> None:
+        self._full = text
+        self.setToolTip(text)
+        self._apply_elide()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._apply_elide()
+
+    def _apply_elide(self) -> None:
+        if self.width() <= 0:      # 尚未参与布局：保持全文
+            return
+        fm = self.fontMetrics()
+        self.setText(fm.elidedText(self._full, Qt.ElideRight, self.width()))
 
 
 class _ArchiveRow(QFrame):
@@ -38,15 +72,18 @@ class _ArchiveRow(QFrame):
         lay.setContentsMargins(8, 4, 8, 4)
         lay.setSpacing(6)
 
-        self._title = QLabel(f"{'✅ ' if card.done else ''}{card.title}")
-        origin = QLabel(lst.title)
-        self._origin = origin
+        self._title = _ElidedLabel(f"{'✅ ' if card.done else ''}{card.title}")
+        self._title.setObjectName("archiveTitle")
+        # 来源列表名封顶：长列表名同样不得挤走「恢复」
+        self._origin = _ElidedLabel(lst.title)
+        self._origin.setObjectName("archiveOrigin")
+        self._origin.setMaximumWidth(120)
         btn = QPushButton(tr("恢复"))
         btn.setCursor(Qt.PointingHandCursor)
         btn.clicked.connect(lambda _=False, cid=card.id: on_restore(cid))
 
         lay.addWidget(self._title, 1)
-        lay.addWidget(origin)
+        lay.addWidget(self._origin, 0)
         lay.addWidget(btn)
         self.reapply_theme()
 
@@ -58,6 +95,7 @@ class _ArchiveRow(QFrame):
                 border: 1px solid {c['border']};
                 border-radius: 8px;
             }}
+            QFrame#archiveRow:hover {{ border: 1px solid {c['accent']}; }}
         """)
         self._title.setStyleSheet(
             f"color: {c['text_primary']}; background: transparent;")
@@ -79,7 +117,10 @@ class ArchiveDialog(QDialog):
 
         self._stats_label = QLabel()
         root = QVBoxLayout(self)
-        root.setContentsMargins(14, 12, 14, 12)
+        root.setContentsMargins(AppConfig.UI_DIALOG_MARGIN_H,
+                                AppConfig.UI_DIALOG_MARGIN_V,
+                                AppConfig.UI_DIALOG_MARGIN_H,
+                                AppConfig.UI_DIALOG_MARGIN_V - 2)
         root.addWidget(self._stats_label)
 
         self._scroll = QScrollArea()
@@ -158,8 +199,8 @@ class ArchiveDialog(QDialog):
                 background: {c['bg_card']};
                 color: {c['text_primary']};
                 border: 1px solid {c['border']};
-                border-radius: 8px;
-                padding: 4px 12px;
+                border-radius: {AppConfig.UI_RADIUS_CONTROL}px;
+                padding: {AppConfig.UI_PAD_SECONDARY};
             }}
             QPushButton:hover {{ background: {c['bg_hover']}; }}
         """)

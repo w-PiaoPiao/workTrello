@@ -25,20 +25,29 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
-from app.i18n import tr
+from app.config import AppConfig
+from app.i18n import tr, weekday_short
 from app.models.board import Card
 from app.views.board_view import MIME_CARD
 from app.views.theme import AppTheme
 
-_MAX_CHIPS_PER_CELL = 5
+# 每格最多渲染的条目数（含"还有 N 项…"按钮共 4 行，正好塞进最小行高；
+# 多出的走按钮菜单——此前是死标签，被折叠的卡片完全不可达）
+_MAX_CHIPS_PER_CELL = 3
 
-_WEEKDAY_HEADERS = ("一", "二", "三", "四", "五", "六", "日")
+# 单格最小高：日期号行 + 4 行内容（3 条 + 折叠入口）× 约 21px。
+# 宁可让月历出现纵向滚动，也不能让内容叠出格子。
+_CELL_MIN_H = 108
+
+_WEEKDAY_COUNT = 7
 
 
 def _fmt_month(y: int, m: int) -> str:
@@ -124,6 +133,11 @@ class _DayCell(QFrame):
         self._iso = iso
         self.setAcceptDrops(True)
         self.setObjectName("dayCell")
+        # 竖直方向忽略 sizeHint：月历所有行等高（此前某天卡片多就把整行
+        # 撑高，网格看着像渲染错乱），行高交给 grid 的 rowStretch 均分
+        self.setSizePolicy(QSizePolicy.Policy.Expanding,
+                           QSizePolicy.Policy.Ignored)
+        self.setMinimumHeight(_CELL_MIN_H)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(3, 2, 3, 2)
         lay.setSpacing(2)
@@ -141,12 +155,14 @@ class _DayCell(QFrame):
         self._in_month = in_month
         self._is_today = is_today
         self._chip_widgets: list[QWidget] = []
+        self._more_btn: QPushButton | None = None
+        self._all_cards: list[Card] = []
         self._apply_style()
 
     def iso(self) -> str:
         return self._iso
 
-    def _apply_style(self) -> None:
+    def _apply_style(self, hover: bool = False) -> None:
         c = AppTheme.colors()
         border = c["accent"] if self._is_today else c["border"]
         width = 2 if self._is_today else 1
@@ -161,14 +177,30 @@ class _DayCell(QFrame):
                 border-radius: 8px;
             }}
             QLabel#dayNum {{
-                color: {num_color};
+                color: {c['accent'] if hover else num_color};
                 font-size: 11px;
                 font-weight: {'bold' if self._is_today else 'normal'};
                 background: transparent;
             }}
+            QPushButton#dayMore {{
+                color: {c['text_secondary']};
+                font-size: 9px;
+                text-align: left;
+                background: transparent;
+                border: none;
+                padding: 0;
+            }}
+            QPushButton#dayMore:hover {{ color: {c['accent']}; }}
         """)
 
     def set_cards(self, cards: list[Card]) -> None:
+        """重建当天的条目（顺序即传入顺序）
+
+        注意清理循环会把 __init__ 里加的末尾弹性项一并摘掉，所以这里
+        按序 addWidget 并在最后补回弹性——此前用 count()-1 定位插入点，
+        弹性项消失后每个新条目都被插到倒数第二位，**日历条目顺序与
+        数据顺序不一致**（第 4 条会跑到第 3 条前面）。
+        """
         while self._chips_layout.count():
             item = self._chips_layout.takeAt(0)
             w = item.widget()
@@ -176,21 +208,39 @@ class _DayCell(QFrame):
                 w.setParent(None)
                 w.deleteLater()
         self._chip_widgets = []
-        for i, card in enumerate(cards[:_MAX_CHIPS_PER_CELL]):
+        self._more_btn = None
+        self._all_cards = list(cards)
+        for card in cards[:_MAX_CHIPS_PER_CELL]:
             chip = _Chip(card)
             chip.signal_edit.connect(self.signal_edit_card)
-            self._chips_layout.insertWidget(self._chips_layout.count() - 1,
-                                            chip)
+            self._chips_layout.addWidget(chip)
             self._chip_widgets.append(chip)
         rest = len(cards) - _MAX_CHIPS_PER_CELL
         if rest > 0:
-            more = QLabel(tr("还有 {n} 项…").format(n=rest))
+            # 此前是死标签：被折叠的卡片既看不到也点不开，只能逐张翻
+            # 编辑框去找。改成按钮，点开列出当天全部卡片
+            more = QPushButton(tr("还有 {n} 项…").format(n=rest))
             more.setObjectName("dayMore")
-            more.setStyleSheet(
-                f"color: {AppTheme.colors()['text_secondary']};"
-                " font-size: 9px; background: transparent;")
-            self._chips_layout.insertWidget(
-                self._chips_layout.count() - 1, more)
+            more.setCursor(Qt.PointingHandCursor)
+            more.setToolTip(tr("点击查看当天全部卡片"))
+            more.clicked.connect(self._show_all_cards)
+            self._chips_layout.addWidget(more)
+            self._more_btn = more
+        self._chips_layout.addStretch(1)
+
+    def _show_all_cards(self) -> None:
+        if not self._all_cards or self._more_btn is None:
+            return
+        menu = QMenu(self)
+        fm = menu.fontMetrics()
+        for card in self._all_cards:
+            act = menu.addAction(
+                fm.elidedText(card.title, Qt.ElideRight, 260))
+            act.triggered.connect(
+                lambda _=False, cid=card.id: self.signal_edit_card.emit(cid))
+        anchor = self._more_btn.mapToGlobal(
+            QPoint(0, self._more_btn.height()))
+        menu.exec(anchor)
 
     # ── 拖放改期 ──────────────────────────────────────────
 
@@ -209,9 +259,7 @@ class _DayCell(QFrame):
             event.acceptProposedAction()
 
     def enterEvent(self, event) -> None:
-        self._head.setStyleSheet(
-            f"color: {AppTheme.colors()['accent']}; font-size: 11px;"
-            " background: transparent;")
+        self._apply_style(hover=True)
         super().enterEvent(event)
 
     def leaveEvent(self, event) -> None:
@@ -236,7 +284,10 @@ class CalendarDialog(QDialog):
         self._cells: list[_DayCell] = []
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(14, 12, 14, 12)
+        root.setContentsMargins(AppConfig.UI_DIALOG_MARGIN_H,
+                                AppConfig.UI_DIALOG_MARGIN_V,
+                                AppConfig.UI_DIALOG_MARGIN_H,
+                                AppConfig.UI_DIALOG_MARGIN_V - 2)
         root.setSpacing(8)
 
         head = QHBoxLayout()
@@ -264,8 +315,8 @@ class CalendarDialog(QDialog):
         root.addLayout(head)
 
         grid_head = QGridLayout()
-        for i, name in enumerate(_WEEKDAY_HEADERS):
-            lab = QLabel(name)
+        for i in range(_WEEKDAY_COUNT):
+            lab = QLabel(weekday_short(i))
             lab.setAlignment(Qt.AlignCenter)
             lab.setObjectName("weekdayHead")
             grid_head.addWidget(lab, 0, i)
@@ -370,17 +421,12 @@ class CalendarDialog(QDialog):
                 font-size: 11px;
                 background: transparent;
             }}
-            QLabel#dayMore {{
-                color: {c['text_secondary']};
-                font-size: 9px;
-                background: transparent;
-            }}
             QPushButton {{
                 background: {c['bg_card']};
                 color: {c['text_primary']};
                 border: 1px solid {c['border']};
-                border-radius: 8px;
-                padding: 4px 12px;
+                border-radius: {AppConfig.UI_RADIUS_CONTROL}px;
+                padding: {AppConfig.UI_PAD_SECONDARY};
             }}
             QPushButton:hover {{ background: {c['bg_hover']}; }}
         """)

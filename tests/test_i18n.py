@@ -53,7 +53,20 @@ class TrTest(unittest.TestCase):
             self.assertEqual(calls, ["en"])
         finally:
             i18n.set_lang("zh")
-            i18n._listeners.remove(cb)
+            i18n.unregister(cb)
+
+    def test_unregister_stops_broadcast(self):
+        """显式退订后不再收到语言切换回调"""
+        calls = []
+        i18n.set_lang("zh")
+        cb = lambda: calls.append(i18n.lang())
+        i18n.register(cb)
+        i18n.unregister(cb)
+        try:
+            i18n.set_lang("en")
+            self.assertEqual(calls, [])
+        finally:
+            i18n.set_lang("zh")
 
     def test_format_style_entries(self):
         i18n.set_lang("en")

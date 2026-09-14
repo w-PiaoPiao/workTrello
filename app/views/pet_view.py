@@ -569,6 +569,11 @@ class PetView(QWidget):
     # ── 悬停反馈 ──────────────────────────────────────────
 
     def enterEvent(self, event: QEvent) -> None:
+        # 待机动画开关关掉时不做悬停弹跳（与随机小动作/庆祝同一判据；
+        # 此前只有悬停这一条漏检，"暂停动画"下仍会放大回弹）
+        if not self._animations_enabled:
+            super().enterEvent(event)
+            return
         if self._hover_anim is None or \
                 self._hover_anim.state() != QAbstractAnimation.Running:
             self._breath_anim.pause()

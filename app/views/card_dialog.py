@@ -50,8 +50,8 @@ def _selector_button_style(c: dict) -> str:
             background: {c['bg_card']};
             color: {c['text_secondary']};
             border: 1px solid {c['border']};
-            border-radius: 6px;
-            padding: 4px 10px;
+            border-radius: {AppConfig.UI_RADIUS_PILL}px;
+            padding: {AppConfig.UI_PAD_PILL};
             font-size: 12px;
         }}
         QPushButton:checked {{
@@ -61,6 +61,56 @@ def _selector_button_style(c: dict) -> str:
         }}
         QPushButton:hover {{
             border: 1.5px solid {c['accent']};
+        }}
+    """
+
+
+def _flat_button_style(c: dict) -> str:
+    """无底扁平按钮（插入时间 / 预览 / 添加清单项 / 附件 / 工作目录）"""
+    return f"""
+        QPushButton {{
+            color: {c['accent']};
+            font-size: 11px;
+            background: transparent;
+            border: none;
+            padding: 2px 6px;
+        }}
+        QPushButton:hover {{
+            background: {c['accent_soft']};
+            border-radius: 6px;
+        }}
+    """
+
+
+def _primary_button_style(c: dict) -> str:
+    """主操作按钮（保存）"""
+    return f"""
+        QPushButton {{
+            background: {c['accent']};
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 7px 22px;
+            font-weight: bold;
+        }}
+        QPushButton:hover {{ background: {c['accent_hover']}; }}
+    """
+
+
+def _dialog_style(c: dict) -> str:
+    """对话框自身的 QSS（标题/输入错误态/滚动区透明）"""
+    return f"""
+        QDialog {{ background: {c['bg_primary']}; }}
+        QScrollArea#cardFormScroll, QWidget#cardFormHost {{
+            background: transparent;
+        }}
+        QLabel[cap="true"] {{
+            color: {c['text_secondary']};
+            font-size: 12px;
+            font-weight: bold;
+        }}
+        QLineEdit[error="true"] {{
+            border: 1.5px solid {c['danger']};
         }}
     """
 
@@ -118,20 +168,8 @@ class CardDialog(QDialog):
         self._apply_saved_size()
 
         c = AppTheme.colors()
-        self.setStyleSheet(f"""
-            QDialog {{ background: {c['bg_primary']}; }}
-            QScrollArea#cardFormScroll, QWidget#cardFormHost {{
-                background: transparent;
-            }}
-            QLabel[cap="true"] {{
-                color: {c['text_secondary']};
-                font-size: 12px;
-                font-weight: bold;
-            }}
-            QLineEdit[error="true"] {{
-                border: 1.5px solid {c['danger']};
-            }}
-        """)
+        self._flat_buttons: list[QPushButton] = []   # 主题切换时统一下发配色
+        self._ok_btn: QPushButton | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(20, 18, 20, 16)
@@ -166,19 +204,6 @@ class CardDialog(QDialog):
         form.addWidget(self._title_edit)
 
         # 备注（标题行右侧：插入当前时间 + Markdown 预览切换）
-        self._flat_btn_qss = f"""
-            QPushButton {{
-                color: {c['accent']};
-                font-size: 11px;
-                background: transparent;
-                border: none;
-                padding: 2px 6px;
-            }}
-            QPushButton:hover {{
-                background: {c['accent_soft']};
-                border-radius: 6px;
-            }}
-        """
         notes_header = QHBoxLayout()
         cap2 = QLabel(tr("备注"))
         cap2.setProperty("cap", True)
@@ -189,14 +214,14 @@ class CardDialog(QDialog):
         self._insert_time_btn.setCursor(Qt.PointingHandCursor)
         self._insert_time_btn.setToolTip(
             tr("在备注光标处插入当前时间（如 09-08 14:30）"))
-        self._insert_time_btn.setStyleSheet(self._flat_btn_qss)
+        self._flat_buttons.append(self._insert_time_btn)
         self._insert_time_btn.clicked.connect(self._on_insert_time)
         notes_header.addWidget(self._insert_time_btn)
         self._preview_btn = QPushButton(tr("👁 预览"))
         self._preview_btn.setFlat(True)
         self._preview_btn.setCursor(Qt.PointingHandCursor)
         self._preview_btn.setToolTip(tr("按 Markdown 渲染备注预览"))
-        self._preview_btn.setStyleSheet(self._flat_btn_qss)
+        self._flat_buttons.append(self._preview_btn)
         self._preview_btn.setCheckable(True)
         self._preview_btn.toggled.connect(self._on_toggle_preview)
         notes_header.addWidget(self._preview_btn)
@@ -236,7 +261,7 @@ class CardDialog(QDialog):
         self._add_check_btn = QPushButton(tr("＋ 添加清单项"))
         self._add_check_btn.setFlat(True)
         self._add_check_btn.setCursor(Qt.PointingHandCursor)
-        self._add_check_btn.setStyleSheet(self._flat_btn_qss)
+        self._flat_buttons.append(self._add_check_btn)
         self._add_check_btn.clicked.connect(
             lambda: self._add_check_row("", False, focus=True))
         cl_btn_row.addWidget(self._add_check_btn)
@@ -396,8 +421,8 @@ class CardDialog(QDialog):
         self._workdir_clear_btn = QPushButton(tr("清除"))
         self._workdir_clear_btn.setFlat(True)
         self._workdir_clear_btn.setCursor(Qt.PointingHandCursor)
-        self._workdir_browse_btn.setStyleSheet(self._flat_btn_qss)
-        self._workdir_clear_btn.setStyleSheet(self._flat_btn_qss)
+        self._flat_buttons.append(self._workdir_browse_btn)
+        self._flat_buttons.append(self._workdir_clear_btn)
         self._workdir_browse_btn.clicked.connect(self._on_browse_workdir)
         self._workdir_clear_btn.clicked.connect(self._on_clear_workdir)
         workdir_row.addWidget(self._workdir_label, 1)
@@ -423,14 +448,14 @@ class CardDialog(QDialog):
         self._attach_add_btn = QPushButton(tr("📎 添加附件…"))
         self._attach_add_btn.setFlat(True)
         self._attach_add_btn.setCursor(Qt.PointingHandCursor)
-        self._attach_add_btn.setStyleSheet(self._flat_btn_qss)
+        self._flat_buttons.append(self._attach_add_btn)
         self._attach_add_btn.clicked.connect(self._on_add_attachment)
         attach_btn_row.addWidget(self._attach_add_btn)
         self._attach_paste_btn = QPushButton(tr("📋 粘贴图片"))
         self._attach_paste_btn.setFlat(True)
         self._attach_paste_btn.setCursor(Qt.PointingHandCursor)
         self._attach_paste_btn.setToolTip(tr("把剪贴板中的图片存为卡片附件"))
-        self._attach_paste_btn.setStyleSheet(self._flat_btn_qss)
+        self._flat_buttons.append(self._attach_paste_btn)
         self._attach_paste_btn.clicked.connect(self._on_paste_image)
         attach_btn_row.addWidget(self._attach_paste_btn)
         attach_btn_row.addStretch(1)
@@ -445,17 +470,7 @@ class CardDialog(QDialog):
         ok = QPushButton(tr("保存"))
         ok.setDefault(True)
         ok.clicked.connect(self._on_save)
-        ok.setStyleSheet(f"""
-            QPushButton {{
-                background: {c['accent']};
-                color: white;
-                border: none;
-                border-radius: 8px;
-                padding: 7px 22px;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{ background: {c['accent_hover']}; }}
-        """)
+        self._ok_btn = ok
         btns.addWidget(cancel)
         btns.addWidget(ok)
         outer.addLayout(btns)     # 按钮行不进滚动区：内容再长也点得到
@@ -468,6 +483,44 @@ class CardDialog(QDialog):
             self._mac_save_shortcut = QShortcut(
                 QKeySequence("Meta+Return"), self)
             self._mac_save_shortcut.activated.connect(self._on_save)
+
+        self.reapply_theme()
+        AppTheme.register(self.reapply_theme)
+
+    # ── 主题 ──────────────────────────────────────────────
+
+    def reapply_theme(self) -> None:
+        """重下全部配色（本对话框的样式是构建期快照）
+
+        打开期间系统外观变化时全局 QSS 已更新，这份快照若不重下，同一个
+        窗口会半深半浅：输入框/勾选框跟着新主题，标题、扁平按钮与色块
+        还停在旧配色。
+        """
+        c = AppTheme.colors()
+        self.setStyleSheet(_dialog_style(c))
+        flat = _flat_button_style(c)
+        for btn in self._flat_buttons:
+            btn.setStyleSheet(flat)
+        if self._ok_btn is not None:
+            self._ok_btn.setStyleSheet(_primary_button_style(c))
+        for chip in self._label_chips:
+            chip.reapply()
+        for btn in self._priority_choices.values():
+            btn.setStyleSheet(_selector_button_style(c))
+        self._due_none_label.setStyleSheet(f"""
+            QLabel {{
+                color: {c['text_disabled']};
+                font-size: 13px;
+                font-style: italic;
+                background: transparent;
+            }}
+        """)
+        self._check_progress_label.setStyleSheet(
+            f"color: {c['text_secondary']}; font-size: 11px;"
+            " background: transparent;")
+        self._rebuild_attach_rows()
+        self._apply_workdir_state()
+        self._apply_due_state()
 
     def showEvent(self, event) -> None:
         """打开即聚焦标题框并全选（直接输入即可覆盖标题）"""
@@ -611,7 +664,8 @@ class CardDialog(QDialog):
             open_btn = QPushButton(tr("打开"))
             open_btn.setFlat(True)
             open_btn.setCursor(Qt.PointingHandCursor)
-            open_btn.setStyleSheet(self._flat_btn_qss)
+            open_btn.setStyleSheet(
+                _flat_button_style(AppTheme.colors()))
             open_btn.clicked.connect(
                 lambda _=False, p=att.get("path", ""):
                 QDesktopServices.openUrl(QUrl.fromLocalFile(p)))
@@ -709,7 +763,7 @@ class CardDialog(QDialog):
         self._due_edit.setVisible(not self._due_cleared)
         self._due_none_label.setVisible(self._due_cleared)
         self._due_toggle_btn.setText(
-            "设置日期" if self._due_cleared else "清除日期")
+            tr("设置日期") if self._due_cleared else tr("清除日期"))
 
     def _on_toggle_due(self) -> None:
         """截止日期 清除 ⇄ 设置 双向切换"""
