@@ -22,8 +22,13 @@ os.environ["PET_BOARD_DATA_DIR"] = tempfile.mkdtemp()
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from PySide6.QtCore import QDate, QSize, Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QDate, QPoint, QSize, Qt
+from PySide6.QtWidgets import (
+    QApplication,
+    QPlainTextEdit,
+    QPushButton,
+    QScrollArea,
+)
 
 _qapp = QApplication.instance() or QApplication([])
 
@@ -456,6 +461,94 @@ class RepeatComboTest(unittest.TestCase):
         self.assertEqual(dlg.result_card()["repeat"], "daily")
         dlg._repeat_combo.setCurrentIndex(dlg._repeat_combo.findData("custom"))
         self.assertTrue(dlg._repeat_interval_spin.isVisibleTo(dlg))
+        dlg.deleteLater()
+
+
+class FormScrollTest(unittest.TestCase):
+    """表单滚动：内容超出窗口高度时滚动查看，不把控件压扁
+
+    回归背景：表单原先直接铺在对话框布局里，满内容（清单项/附件多）时布局
+    最小高约 869px 而默认窗高只有 620px，多出来的字段被压成几像素高并互相
+    叠字（备注框固定 90px，清单输入行只剩 2px、还压在备注框上）。
+    """
+
+    @staticmethod
+    def _busy_card() -> Card:
+        return Card(
+            title="长内容卡",
+            notes="进度：\n09-14 10:00 已联系负责人",
+            checklist=[{"text": f"清单项 {i}", "done": i % 2 == 1}
+                       for i in range(6)],
+            attachments=[{"id": f"a{i}", "name": f"文件{i}.pdf",
+                          "path": f"/tmp/f{i}.pdf", "is_image": False}
+                         for i in range(3)])
+
+    def _showed(self, dlg: CardDialog) -> CardDialog:
+        dlg.show()
+        _qapp.processEvents()
+        return dlg
+
+    def _form_scroll(self, dlg: CardDialog) -> QScrollArea:
+        scroll = dlg.findChild(QScrollArea, "cardFormScroll")
+        self.assertIsNotNone(scroll)
+        return scroll
+
+    def test_form_in_scroll_area_buttons_outside(self):
+        """结构约定：表单在滚动区内，保存/取消按钮在滚动区外（永远够得着）"""
+        dlg = self._showed(CardDialog(self._busy_card()))
+        scroll = self._form_scroll(dlg)
+        self.assertTrue(scroll.widgetResizable())
+        self.assertEqual(scroll.horizontalScrollBarPolicy(),
+                         Qt.ScrollBarAlwaysOff)   # 内容宽不超出最小窗宽
+        self.assertIn(dlg._notes_edit, scroll.findChildren(QPlainTextEdit))
+        buttons = {b.text() for b in scroll.findChildren(QPushButton)}
+        self.assertNotIn("保存", buttons)
+        self.assertNotIn("取消", buttons)
+        dlg.close()
+        dlg.deleteLater()
+
+    def test_long_content_keeps_natural_widget_sizes(self):
+        """长内容不压扁控件：备注框保持固定高、清单行有完整行高"""
+        dlg = self._showed(CardDialog(self._busy_card()))
+        self.assertEqual(dlg._notes_edit.height(), 90)
+        for _check, edit in dlg._check_rows:
+            self.assertGreaterEqual(edit.height(), 20)   # 修复前被压到 2px
+        self.assertGreater(
+            self._form_scroll(dlg).verticalScrollBar().maximum(), 0)
+        dlg.close()
+        dlg.deleteLater()
+
+    def test_scroll_to_bottom_reaches_last_fields(self):
+        """最小窗高下滚到底：表单最后一行的附件按钮完整可见"""
+        dlg = CardDialog(self._busy_card())
+        dlg.resize(AppConfig.CARD_DIALOG_MIN_WIDTH,
+                   AppConfig.CARD_DIALOG_MIN_HEIGHT)
+        self._showed(dlg)
+        scroll = self._form_scroll(dlg)
+        viewport_h = scroll.viewport().height()
+        bar = scroll.verticalScrollBar()
+        self.assertGreater(bar.maximum(), 0)
+        bar.setValue(bar.maximum())
+        _qapp.processEvents()
+        for btn in (dlg._attach_add_btn, dlg._attach_paste_btn):
+            top = btn.mapTo(scroll.viewport(), QPoint(0, 0)).y()
+            self.assertGreaterEqual(top, 0)
+            self.assertLessEqual(top + btn.height(), viewport_h)
+        dlg.close()
+        dlg.deleteLater()
+
+    def test_buttons_visible_at_min_size(self):
+        """最小窗高下按钮行仍在窗口内（此前被下方字段挤出可视区）"""
+        dlg = CardDialog(self._busy_card())
+        dlg.resize(AppConfig.CARD_DIALOG_MIN_WIDTH,
+                   AppConfig.CARD_DIALOG_MIN_HEIGHT)
+        self._showed(dlg)
+        for text in ("保存", "取消"):
+            btn = next(b for b in dlg.findChildren(QPushButton)
+                       if b.text() == text)
+            self.assertTrue(dlg.rect().contains(btn.geometry()),
+                            f"{text} 按钮不在窗口可视区内")
+        dlg.close()
         dlg.deleteLater()
 
 

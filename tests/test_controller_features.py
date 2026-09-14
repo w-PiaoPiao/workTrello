@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-控制器新特性测试：撤销快照栈、截止提醒统计、系统深浅色跟随
+控制器新特性测试：撤销快照栈、截止提醒统计、系统深浅色跟随、
+卡片对话框保存链路（表单结果的取出时机与落库）
 
 需要 Qt 离屏环境；数据目录隔离到临时目录（在导入 app 模块前设置）。
 """
@@ -19,6 +20,7 @@ os.environ["PET_BOARD_DATA_DIR"] = tempfile.mkdtemp()
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from PySide6.QtCore import QCoreApplication, QEvent, QTimer
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import QApplication, QLabel, QMessageBox
 
@@ -28,6 +30,7 @@ from app.config import AppConfig
 from app.controllers.app_controller import AppController
 from app.models.board import BoardList, Card
 import app.views.theme as theme_mod
+from app.views.card_dialog import CardDialog
 from app.views.theme import AppTheme
 
 
@@ -820,6 +823,125 @@ class MenuBarTest(unittest.TestCase):
         act = next(a for m in self.c._menu_bar.actions()
                    for a in m.menu().actions() if a.text() == "撤销")
         self.assertEqual(act.shortcut(), QKeySequence.Undo)
+
+
+class CardDialogRoundTripTest(unittest.TestCase):
+    """卡片对话框保存链路：exec() 之后表单结果仍要取得到、改得进模型
+
+    回归背景：两个入口曾给对话框设 WA_DeleteOnClose——exec() 的嵌套事件
+    循环退出时会先处理 DeferredDelete，返回时 C++ 对象连同子控件已析构，
+    随后 result_card() 抛 RuntimeError；槽函数里的异常只打日志不冒泡，
+    用户看到的是"点了保存，什么都没存上"（备注/标题等全部改动丢失）。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.c = AppController()
+        cls.c._ensure_board_ui()
+
+    def _list(self):
+        return self.c._store.load().lists[0]
+
+    def _reset(self):
+        board = self.c._store.load()
+        for lst in board.lists:
+            lst.cards.clear()
+        self.c._after_data_change(None)
+        self.c._undo_stack.clear()
+
+    def _open_dialog(self) -> CardDialog | None:
+        """正在 exec() 中的卡片对话框（只能从定时器回调里取）
+
+        用父窗口 + 可见性双重限定：别的测试若留下同名对话框，误取会让
+        本测试的 exec() 永远等不到保存而挂住整套用例。
+        """
+        for w in _qapp.topLevelWidgets():
+            if (isinstance(w, CardDialog) and w.isVisible()
+                    and w.parent() is self.c._window):
+                return w
+        return None
+
+    def _drive(self, act) -> None:
+        """在 exec() 阻塞期间轮询驱动对话框；超时兜底取消，绝不挂死"""
+        state = {"tries": 0}
+
+        def tick() -> None:
+            state["tries"] += 1
+            dlg = self._open_dialog()
+            if dlg is not None:
+                act(dlg)
+                return
+            if state["tries"] < 250:          # 250 × 20ms = 5s 上限
+                QTimer.singleShot(20, tick)
+                return
+            for w in _qapp.topLevelWidgets():  # 兜底：放行 exec，让用例失败而非卡住
+                if isinstance(w, CardDialog):
+                    w.reject()
+
+        QTimer.singleShot(0, tick)
+
+    def _fill_and_save(self, title: str, notes: str) -> None:
+        def act(dlg: CardDialog) -> None:
+            dlg._title_edit.setText(title)
+            dlg._notes_edit.setPlainText(notes)
+            dlg._on_save()
+
+        self._drive(act)
+
+    def test_edit_dialog_persists_notes_and_title(self):
+        self._reset()
+        lst = self._list()
+        card = Card(title="旧标题", notes="旧备注")
+        lst.cards.insert(0, card)
+        self.c._after_data_change(None)
+
+        self._fill_and_save("人力资源部档案", "进度：09-14 已联系负责人")
+        self.c._on_card_edit(lst.id, card.id)
+
+        saved = self.c._store.load().find_card(card.id)[1]
+        self.assertEqual(saved.title, "人力资源部档案")
+        self.assertEqual(saved.notes, "进度：09-14 已联系负责人")
+
+    def test_add_dialog_creates_card_with_notes(self):
+        self._reset()
+        lst = self._list()
+
+        self._fill_and_save("新建的卡", "备注正文")
+        self.c._on_card_add(lst.id)
+
+        self.assertEqual([c.title for c in lst.cards], ["新建的卡"])
+        self.assertEqual(lst.cards[0].notes, "备注正文")
+
+    def test_cancel_dialog_keeps_card_untouched(self):
+        """取消（含 X 关闭）不落任何改动"""
+        self._reset()
+        lst = self._list()
+        card = Card(title="原标题", notes="原备注")
+        lst.cards.insert(0, card)
+        self.c._after_data_change(None)
+
+        def act(dlg: CardDialog) -> None:
+            dlg._title_edit.setText("改了但不保存")
+            dlg._notes_edit.setPlainText("改了但不保存")
+            dlg.reject()
+
+        self._drive(act)
+        self.c._on_card_edit(lst.id, card.id)
+
+        saved = self.c._store.load().find_card(card.id)[1]
+        self.assertEqual(saved.title, "原标题")
+        self.assertEqual(saved.notes, "原备注")
+
+    def test_dialog_destroyed_after_use(self):
+        """用完即销毁：主窗口下不残留隐藏对话框（WA_DeleteOnClose 的本意）"""
+        self._reset()
+        lst = self._list()
+
+        self._fill_and_save("一次性", "")
+        self.c._on_card_add(lst.id)
+
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        self.assertEqual(self.c._window.findChildren(CardDialog), [])
 
 
 if __name__ == "__main__":

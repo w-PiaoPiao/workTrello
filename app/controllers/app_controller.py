@@ -13,7 +13,7 @@ import uuid
 from datetime import date, timedelta
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QThreadPool, QTimer, QUrl, Signal
+from PySide6.QtCore import QObject, QThreadPool, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QAction,
     QDesktopServices,
@@ -689,20 +689,32 @@ class AppController(QObject):
         title, fields = parse_quick_input(text)
         return Card(title=title or text.strip(), **fields)
 
-    def _on_card_add(self, list_id: str, title: str = "") -> None:
+    def _run_card_dialog(self, card: Card | None) -> dict | None:
+        """弹出卡片对话框，返回表单结果 dict；取消/关闭返回 None
+
+        顺序不能反：先取结果、再销毁。此前想让窗口"关了就销毁"而设了
+        WA_DeleteOnClose，可它的 deleteLater 是在 exec() 的嵌套事件循环退出
+        时处理的——exec() 返回时对话框连同子控件已经析构，此时再调
+        result_card() 只会抛 RuntimeError，而槽函数里的异常只打日志不冒泡，
+        用户看到的就是"点了保存，什么都没存上"。用完即销毁的意图照旧，
+        隐藏窗口不在主窗口下累积。
+        """
         from app.views.card_dialog import CardDialog
 
+        dialog = CardDialog(card, self._window)
+        accepted = dialog.exec() == CardDialog.Accepted
+        result = dialog.result_card() if accepted else None
+        dialog.deleteLater()
+        return result
+
+    def _on_card_add(self, list_id: str, title: str = "") -> None:
         lst = self._store.load().find_list(list_id)
         if lst is None:
             return
         if not title:
-            dialog = CardDialog(None, self._window)
-            # exec 返回后对话框即弃用：关闭时销毁，避免 widget 树在
-            # 主窗口下以隐藏状态无限累积（QDialog.exec 已 close）
-            dialog.setAttribute(Qt.WA_DeleteOnClose)
-            if dialog.exec() != CardDialog.Accepted:
+            result = self._run_card_dialog(None)
+            if result is None:
                 return
-            result = dialog.result_card()
             self._push_undo()
             card = Card(**result)
             # 新建卡也可能带附件（粘贴图片/选文件）：与编辑同一落库路径
@@ -717,16 +729,12 @@ class AppController(QObject):
         self._after_data_change(tr("已添加卡片"))
 
     def _on_card_edit(self, list_id: str, card_id: str) -> None:
-        from app.views.card_dialog import CardDialog
-
         _lst, card = self._store.load().find_card(card_id)
         if card is None:
             return
-        dialog = CardDialog(card, self._window)
-        dialog.setAttribute(Qt.WA_DeleteOnClose)   # 同 _on_card_add：用完即销毁
-        if dialog.exec() != CardDialog.Accepted:
+        result = self._run_card_dialog(card)
+        if result is None:
             return
-        result = dialog.result_card()
         # 附件先落库（复制文件/清理删除项），失败项保留 pending 不阻塞保存
         self._materialize_attachments(card, result)
         self._push_undo()

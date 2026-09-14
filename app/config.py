@@ -282,9 +282,11 @@ class AppConfig:
 
     # 卡片对话框（新建/编辑卡片）
     # 宽高均可调并记住上次值；此前宽度被 setFixedWidth 锁死、高度可拉伸，
-    # 只能纵向拉、不能横向拉。最小宽需容纳一行标签色块（6 个 chip）
+    # 只能纵向拉、不能横向拉。最小宽需容纳一行标签色块（6 个 chip）。
+    # 默认高按"空卡表单完整放下"取值（表单自然高约 573 + 按钮行与边距约 70），
+    # 免得新建卡片一打开就得出滚动条；内容超出时表单区滚动，按钮行固定在底部
     CARD_DIALOG_WIDTH = 460
-    CARD_DIALOG_HEIGHT = 620
+    CARD_DIALOG_HEIGHT = 660
     CARD_DIALOG_MIN_WIDTH = 380
     CARD_DIALOG_MIN_HEIGHT = 360
 

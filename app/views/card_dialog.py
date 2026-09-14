@@ -120,6 +120,9 @@ class CardDialog(QDialog):
         c = AppTheme.colors()
         self.setStyleSheet(f"""
             QDialog {{ background: {c['bg_primary']}; }}
+            QScrollArea#cardFormScroll, QWidget#cardFormHost {{
+                background: transparent;
+            }}
             QLabel[cap="true"] {{
                 color: {c['text_secondary']};
                 font-size: 12px;
@@ -130,19 +133,37 @@ class CardDialog(QDialog):
             }}
         """)
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(20, 18, 20, 16)
-        root.setSpacing(10)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(20, 18, 20, 16)
+        outer.setSpacing(10)
+
+        # 表单主体装进滚动区：清单项/附件/长备注会让内容自然长高，而对话框
+        # 高度受屏幕可用区与"上次记住的尺寸"限制——不滚动时多出的字段被压成
+        # 几像素高、彼此叠字。底部按钮行留在滚动区外，任何高度下都够得着。
+        form_scroll = QScrollArea()
+        form_scroll.setObjectName("cardFormScroll")
+        form_scroll.setWidgetResizable(True)
+        form_scroll.setFrameShape(QScrollArea.NoFrame)
+        form_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        form_host = QWidget()
+        form_host.setObjectName("cardFormHost")
+        # 视口默认刷调色板 Base 底色，会盖住对话框底色成一整块异色
+        form_scroll.viewport().setAutoFillBackground(False)
+        form = QVBoxLayout(form_host)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(10)
+        form_scroll.setWidget(form_host)
+        outer.addWidget(form_scroll, 1)
 
         # 标题
         cap = QLabel(tr("标题"))
         cap.setProperty("cap", True)
-        root.addWidget(cap)
+        form.addWidget(cap)
         self._title_edit = QLineEdit()
         self._title_edit.textChanged.connect(self._clear_title_error)
         if card:
             self._title_edit.setText(card.title)
-        root.addWidget(self._title_edit)
+        form.addWidget(self._title_edit)
 
         # 备注（标题行右侧：插入当前时间 + Markdown 预览切换）
         self._flat_btn_qss = f"""
@@ -179,14 +200,14 @@ class CardDialog(QDialog):
         self._preview_btn.setCheckable(True)
         self._preview_btn.toggled.connect(self._on_toggle_preview)
         notes_header.addWidget(self._preview_btn)
-        root.addLayout(notes_header)
+        form.addLayout(notes_header)
         self._notes_edit = QPlainTextEdit()
         self._notes_edit.setFixedHeight(90)
         self._notes_edit.setPlaceholderText(
             tr("补充说明、链接、清单…\n支持 Markdown：# 标题 **加粗** - [ ] 待办\n（记进度时点右上角「⏱ 插入当前时间」）"))
         if card:
             self._notes_edit.setPlainText(card.notes)
-        root.addWidget(self._notes_edit)
+        form.addWidget(self._notes_edit)
         # 预览（滚动区包裹，长文不出界；高度与编辑框一致）
         self._notes_preview_scroll = QScrollArea()
         self._notes_preview_scroll.setWidgetResizable(True)
@@ -199,18 +220,18 @@ class CardDialog(QDialog):
         self._notes_preview.setTextInteractionFlags(
             Qt.TextBrowserInteraction)
         self._notes_preview_scroll.setWidget(self._notes_preview)
-        root.addWidget(self._notes_preview_scroll)
+        form.addWidget(self._notes_preview_scroll)
 
         # 清单：可勾选子任务（带进度统计，全部完成才算卡面全绿）
         cap_cl = QLabel(tr("清单"))
         cap_cl.setProperty("cap", True)
-        root.addWidget(cap_cl)
+        form.addWidget(cap_cl)
         self._check_rows: list[tuple[QCheckBox, QLineEdit]] = []
         self._checklist_host = QWidget()
         self._checklist_layout = QVBoxLayout(self._checklist_host)
         self._checklist_layout.setContentsMargins(0, 0, 0, 0)
         self._checklist_layout.setSpacing(4)
-        root.addWidget(self._checklist_host)
+        form.addWidget(self._checklist_host)
         cl_btn_row = QHBoxLayout()
         self._add_check_btn = QPushButton(tr("＋ 添加清单项"))
         self._add_check_btn.setFlat(True)
@@ -225,7 +246,7 @@ class CardDialog(QDialog):
             " background: transparent;")
         cl_btn_row.addStretch(1)
         cl_btn_row.addWidget(self._check_progress_label)
-        root.addLayout(cl_btn_row)
+        form.addLayout(cl_btn_row)
         if card:
             for item in card.checklist:
                 self._add_check_row(item.get("text", ""),
@@ -235,7 +256,7 @@ class CardDialog(QDialog):
         # 标签色
         cap3 = QLabel(tr("标签"))
         cap3.setProperty("cap", True)
-        root.addWidget(cap3)
+        form.addWidget(cap3)
         labels_row = QHBoxLayout()
         labels_row.setSpacing(6)
         self._label_chips: list[LabelChip] = []
@@ -246,7 +267,7 @@ class CardDialog(QDialog):
             self._label_chips.append(chip)
             labels_row.addWidget(chip)
         labels_row.addStretch(1)
-        root.addLayout(labels_row)
+        form.addLayout(labels_row)
 
         # 截止日期 + 完成
         row = QGridLayout()
@@ -292,7 +313,7 @@ class CardDialog(QDialog):
         if card:
             self._star_check.setChecked(card.starred)
         row.addWidget(self._star_check, 1, 2)
-        root.addLayout(row)
+        form.addLayout(row)
 
         # 截止日期开关（清除 ⇄ 设置 双向；cleared 时提交 due_date 为 None）
         self._due_toggle_btn = QPushButton()
@@ -302,13 +323,13 @@ class CardDialog(QDialog):
         bottom = QHBoxLayout()
         bottom.addWidget(self._due_toggle_btn)
         bottom.addStretch(1)
-        root.addLayout(bottom)
+        form.addLayout(bottom)
         self._apply_due_state()
 
         # 重复周期：勾选完成时自动滚动截止日期到下一周期（配合截止日期使用）
         cap5 = QLabel(tr("重复"))
         cap5.setProperty("cap", True)
-        root.addWidget(cap5)
+        form.addWidget(cap5)
         repeat_row = QHBoxLayout()
         repeat_row.setSpacing(6)
         self._repeat_combo = QComboBox()
@@ -326,7 +347,7 @@ class CardDialog(QDialog):
         self._repeat_interval_spin.setVisible(False)
         repeat_row.addWidget(self._repeat_interval_spin)
         repeat_row.addStretch(1)
-        root.addLayout(repeat_row)
+        form.addLayout(repeat_row)
         selected = (card.repeat if card is not None
                     and card.repeat in AppConfig.REPEAT_ORDER else "never")
         idx = self._repeat_combo.findData(selected)
@@ -342,7 +363,7 @@ class CardDialog(QDialog):
         # 优先级：今日聚焦内按 高 > 中 > 低 排序展示
         cap6 = QLabel(tr("优先级"))
         cap6.setProperty("cap", True)
-        root.addWidget(cap6)
+        form.addWidget(cap6)
         priority_row = QHBoxLayout()
         priority_row.setSpacing(6)
         self._priority_choices: dict[int, QPushButton] = {}
@@ -358,13 +379,13 @@ class CardDialog(QDialog):
                       and card.priority in self._priority_choices else 0)
         self._priority_choices[selected_p].setChecked(True)
         priority_row.addStretch(1)
-        root.addLayout(priority_row)
+        form.addLayout(priority_row)
 
         # 工作目录（可选）：常在外接移动硬盘上，对话框只存路径不校验
         # 存在性——是否可达交给打开动作现场判断
         cap7 = QLabel(tr("工作目录"))
         cap7.setProperty("cap", True)
-        root.addWidget(cap7)
+        form.addWidget(cap7)
         workdir_row = QHBoxLayout()
         workdir_row.setSpacing(6)
         self._workdir = (card.workdir if card else "")
@@ -382,14 +403,14 @@ class CardDialog(QDialog):
         workdir_row.addWidget(self._workdir_label, 1)
         workdir_row.addWidget(self._workdir_browse_btn)
         workdir_row.addWidget(self._workdir_clear_btn)
-        root.addLayout(workdir_row)
+        form.addLayout(workdir_row)
         self._apply_workdir_state()
 
         # 附件（可选）：文件或粘贴图片；新附件仅记录来源路径，落库复制
         # 由控制器在保存时完成（对话框取消则不留任何文件）
         cap8 = QLabel(tr("附件"))
         cap8.setProperty("cap", True)
-        root.addWidget(cap8)
+        form.addWidget(cap8)
         self._attachments: list[dict] = []
         if card:
             self._attachments = [dict(a) for a in card.attachments]
@@ -397,7 +418,7 @@ class CardDialog(QDialog):
         self._attach_rows_layout = QVBoxLayout(self._attach_rows_host)
         self._attach_rows_layout.setContentsMargins(0, 0, 0, 0)
         self._attach_rows_layout.setSpacing(4)
-        root.addWidget(self._attach_rows_host)
+        form.addWidget(self._attach_rows_host)
         attach_btn_row = QHBoxLayout()
         self._attach_add_btn = QPushButton(tr("📎 添加附件…"))
         self._attach_add_btn.setFlat(True)
@@ -413,7 +434,7 @@ class CardDialog(QDialog):
         self._attach_paste_btn.clicked.connect(self._on_paste_image)
         attach_btn_row.addWidget(self._attach_paste_btn)
         attach_btn_row.addStretch(1)
-        root.addLayout(attach_btn_row)
+        form.addLayout(attach_btn_row)
         self._rebuild_attach_rows()
 
         # 按钮
@@ -437,7 +458,7 @@ class CardDialog(QDialog):
         """)
         btns.addWidget(cancel)
         btns.addWidget(ok)
-        root.addLayout(btns)
+        outer.addLayout(btns)     # 按钮行不进滚动区：内容再长也点得到
 
         # 备注是多行编辑框，Enter 只换行、够不到"保存"默认键 →
         # 补 Ctrl+Return（macOS 另有 ⌘+Return）直接保存
