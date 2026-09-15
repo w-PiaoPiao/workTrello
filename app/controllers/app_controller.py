@@ -130,6 +130,7 @@ class AppController(QObject):
         self._settings_dialog: SettingsDialog | None = None   # 惰性创建
         self._calendar_dialog = None                          # 惰性创建
         self._archive_key: tuple | None = None   # 归档内容指纹（按需重建用）
+        self._tray_hint_shown = False          # "已最小化到托盘"只提示一次
         if app is not None:
             QGuiApplication.styleHints().colorSchemeChanged.connect(
                 self._on_system_scheme_changed)
@@ -610,7 +611,8 @@ class AppController(QObject):
         # 看板 → 折叠 / 主题
         self._board_view.signal_collapse_clicked.connect(self._window.collapse)
         self._board_view.signal_theme_selected.connect(self._on_theme_selected)
-        self._board_view.signal_quit_requested.connect(self._on_quit)
+        self._board_view.signal_close_requested.connect(
+            self._on_close_requested)
         self._board_view.signal_zoom_requested.connect(self._window.toggle_zoom)
         # Windows 窗口控制键的最大化图标 ⇆ 跟随 toggle_zoom（含工具栏绿键/双击触发）
         self._window.zoom_state_changed.connect(
@@ -1946,6 +1948,27 @@ class AppController(QObject):
 
     def _on_tray_hide(self) -> None:
         self._window.hide_to_tray()
+
+    def _on_close_requested(self) -> None:
+        """窗口 ✕（Windows 标题栏关闭键 / macOS 红绿灯红灯）= 最小化到托盘
+
+        **不退出应用**：本应用是常驻托盘的小挂件，误点 ✕ 就整个退出、要重新
+        启动才回得来，代价远大于收益。真正退出收在托盘右键菜单的「退出」里
+        （桌宠右键菜单与 macOS ⌘Q 同样都是显式菜单操作）。
+
+        托盘不可用时（极少数环境没有系统托盘）退化为"折叠回桌宠"而非退出：
+        桌宠就在屏幕上，应用仍然找得到；退出这条路由菜单承担，不由 ✕ 承担。
+        """
+        if not self._tray.is_available():
+            self._window.collapse()
+            return
+        self._window.hide_to_tray()
+        if not self._tray_hint_shown:
+            # 只提示一次：窗口整个消失而毫无反馈会让人以为程序崩了，但每次
+            # 都弹就成了骚扰（托盘菜单里的"隐藏"走同一条路）
+            self._tray_hint_shown = True
+            self._tray.show_notification(
+                tr("已最小化到托盘；右键托盘图标可显示或退出"))
 
     def _on_quit(self) -> None:
         self._flush_store()

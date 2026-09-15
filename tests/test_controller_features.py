@@ -668,6 +668,53 @@ class ControllerFeatureTest(unittest.TestCase):
         self.assertEqual(titles, ["退出兜底"])
         self.assertFalse(self.c._store._dirty)
 
+    # ── 窗口 ✕：最小化到托盘（不退出） ────────────────────
+
+    def test_close_requested_hides_to_tray_without_quitting(self):
+        """✕ = 最小化到托盘：窗口藏起来、应用继续跑，首次给一次提示
+
+        回归背景：✕ 原先直接 _on_quit——常驻托盘的小挂件被误点一下就整个
+        退出，要重新启动才回得来。退出改由托盘菜单承担。
+        """
+        self._reset()
+        self.c._window.show_and_activate()
+        self.c._tray_hint_shown = False
+        with patch.object(self.c._tray, "is_available", return_value=True), \
+             patch.object(self.c._tray, "show_notification") as notify:
+            self.c._board_view.signal_close_requested.emit()
+        self.assertFalse(self.c._window.isVisible())
+        self.assertEqual(notify.call_count, 1)
+        # 托盘菜单"显示"能把它叫回来；再关一次不再重复提示
+        self.c._on_tray_show()
+        self.assertTrue(self.c._window.isVisible())
+        with patch.object(self.c._tray, "is_available", return_value=True), \
+             patch.object(self.c._tray, "show_notification") as notify2:
+            self.c._board_view.signal_close_requested.emit()
+        self.assertEqual(notify2.call_count, 0)
+        self.assertFalse(self.c._window.isVisible())
+
+    def test_close_requested_without_tray_collapses(self):
+        """没有系统托盘时退化为折叠回桌宠：不退出，也不把窗口藏到找不回来"""
+        self._reset()
+        self.c._window.show_and_activate()
+        with patch.object(self.c._tray, "is_available", return_value=False), \
+             patch.object(self.c._tray, "show_notification") as notify:
+            self.c._board_view.signal_close_requested.emit()
+        self.assertTrue(self.c._window.isVisible())      # 没藏丢
+        self.assertEqual(self.c._window.mode, "collapsed")
+        self.assertEqual(notify.call_count, 0)
+
+    def test_close_never_quits_and_quit_lives_in_menus(self):
+        """✕ 不接退出；退出的入口只有显式菜单（托盘菜单项仍在且可用）"""
+        self._reset()
+        with patch("app.controllers.app_controller.QApplication.quit") as quit_:
+            with patch.object(self.c._tray, "is_available", return_value=True):
+                self.c._board_view.signal_close_requested.emit()
+            self.assertEqual(quit_.call_count, 0)        # ✕ 不退出
+            self.c._tray._quit_action.trigger()          # 托盘右键 → 退出
+        self.assertEqual(quit_.call_count, 1)
+        self.c._on_tray_show()
+
     # ── 截止提醒（逐卡检查，每天每卡只提醒一次） ─────────────
 
     def test_due_check_reminds_each_card_once_per_day(self):

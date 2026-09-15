@@ -71,6 +71,14 @@ class TrayService(QObject):
         """更新托盘悬浮提示（番茄钟倒计时用）"""
         self._tray.setToolTip(text)
 
+    def is_available(self) -> bool:
+        """系统托盘是否真的可用
+
+        窗口 ✕ 靠它决定"藏起来"还是"退出"：托盘不可用时把窗口藏掉，应用就
+        再也叫不回来了（没有任务栏/Dock 图标），只能回退为退出。
+        """
+        return QSystemTrayIcon.isSystemTrayAvailable() and self._tray.isVisible()
+
     def reapply_texts(self) -> None:
         """语言切换后刷新菜单文案（显隐项按当前窗口状态取词）"""
         visible = self.parent().isVisible() if self.parent() else True

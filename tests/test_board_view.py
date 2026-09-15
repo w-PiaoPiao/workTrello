@@ -22,9 +22,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from unittest.mock import patch
 
-from PySide6.QtCore import QPoint
+from PySide6.QtCore import QPoint, Qt
+from PySide6.QtGui import QDrag
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QPushButton
+from PySide6.QtWidgets import QApplication, QPushButton, QWidget
 
 _qapp = QApplication.instance() or QApplication([])
 
@@ -1354,6 +1355,124 @@ class CardHoverResetTest(unittest.TestCase):
         self.assertFalse(cw._hovered)
         self.assertFalse(cw._delete_btn.isVisible())
         self.assertIsNone(self.view._hovered_card)
+
+
+@unittest.skipUnless(sys.platform == "win32", "窗口控制键仅 Windows 创建")
+class WindowCloseWiringTest(unittest.TestCase):
+    """标题栏三键的接线：✕ 接「最小化到托盘」，不再接退出
+
+    回归背景：✕ 原先直连 signal_quit_requested——常驻托盘的小挂件被误点一下
+    就整个退出、要重新启动才回得来。折叠键（─）行为不变。
+    """
+
+    def setUp(self):
+        self.view = BoardView()
+
+    def tearDown(self):
+        self.view.deleteLater()
+
+    def test_close_emits_close_requested(self):
+        hits = []
+        self.view.signal_close_requested.connect(lambda: hits.append(True))
+        self.view._window_controls.signal_close.emit()
+        self.assertEqual(hits, [True])
+
+    def test_board_view_no_longer_exposes_quit_signal(self):
+        """看板视图不再有退出信号（退出只走托盘 / 桌宠右键 / 菜单栏）"""
+        self.assertFalse(hasattr(self.view, "signal_quit_requested"))
+
+    def test_minimize_still_collapses(self):
+        hits = []
+        self.view.signal_collapse_clicked.connect(lambda: hits.append(True))
+        self.view._window_controls.signal_minimize.emit()
+        self.assertEqual(hits, [True])
+
+
+class DragHierarchyTest(unittest.TestCase):
+    """拖拽层级：卡片上拖卡片、列表上拖整列、看板空白处才拖窗口
+
+    回归背景：卡片与列头按下时都调 super().mousePressEvent()（= ignore），
+    事件于是冒泡到主窗口，被"空白处拖动整个窗口"接手并成为鼠标抓取者——
+    实测从卡片 / 列头 / 列内空白起拖都会把窗口搬走（各 120px），整列拖拽
+    因此完全失效。这里用 QTest 派发真实鼠标事件（经窗口系统层、含 Qt 的
+    隐式抓取），直接调 _start_drag() 测不到这条——它绕过了"谁接受按下"。
+    """
+
+    def setUp(self):
+        from app.views import motion
+        from app.views.main_window import MainWindow
+        self._motion_was = motion.enabled()
+        motion.set_enabled(False)      # 展开瞬时完成：测试不必等 240ms 动画
+        self.win = MainWindow()
+        self.win.resize(900, 620)
+        self.view = BoardView()
+        self.win.set_views(QWidget(), self.view)
+        lst = BoardList(title="列")
+        lst.cards.append(Card(title="卡片"))
+        self.view.refresh([lst])
+        self.win.show()
+        self.win.expand()              # 看板须真的可见，否则按下的不是这些控件
+        _qapp.processEvents()
+        self.col = self.view._columns[0]
+        self.card = self.col._card_widgets[0]
+
+    def tearDown(self):
+        from app.views import motion
+        self.win.hide()
+        self.win.deleteLater()
+        motion.set_enabled(self._motion_was)
+
+    def _drag(self, target, pos, offset=QPoint(60, 0)):
+        """按下 → 拖过阈值 → 释放；返回 (窗口位移, QDrag 启动次数)
+
+        位移在**释放前**取：释放会走 _snap_to_screen_edge() 把窗口吸附回
+        屏幕边缘，而离屏虚拟屏装得下整窗，于是"拖完又回到原位"。
+        """
+        before = self.win.pos()
+        with patch.object(QDrag, "exec", return_value=None) as dex:
+            QTest.mousePress(target, Qt.LeftButton, pos=pos)
+            _qapp.processEvents()
+            QTest.mouseMove(target, pos + offset)
+            _qapp.processEvents()
+            QTest.mouseMove(target, pos + offset * 2)
+            _qapp.processEvents()
+            moved = self.win.pos() - before
+            QTest.mouseRelease(target, Qt.LeftButton, pos=pos + offset * 2)
+            _qapp.processEvents()
+        self.win.move(before)          # 复位，避免影响后续断言
+        _qapp.processEvents()
+        return moved, dex.call_count
+
+    def test_card_drag_moves_card_not_window(self):
+        moved, drags = self._drag(self.card, self.card.rect().center())
+        self.assertEqual((moved.x(), moved.y()), (0, 0), "拖卡片不该搬走窗口")
+        self.assertEqual(drags, 1, "应当启动一次卡片拖拽")
+
+    def test_list_header_drag_moves_list(self):
+        moved, drags = self._drag(self.col._header,
+                                  self.col._header.rect().center())
+        self.assertEqual((moved.x(), moved.y()), (0, 0), "拖列头不该搬走窗口")
+        self.assertEqual(drags, 1, "列头应启动整列拖拽")
+
+    def test_list_blank_drag_moves_list(self):
+        """列内空白（卡片下方的空处）也要能拖动整列"""
+        blank = self.card.mapTo(
+            self.col, self.card.rect().bottomLeft()) + QPoint(20, 40)
+        self.assertTrue(self.col.rect().contains(blank),
+                        "取点须落在列内，否则测的不是列身空白")
+        moved, drags = self._drag(self.col, blank)
+        self.assertEqual((moved.x(), moved.y()), (0, 0), "拖列内空白不该搬走窗口")
+        self.assertEqual(drags, 1, "列内空白应启动整列拖拽")
+
+    def test_board_blank_drag_moves_window(self):
+        """看板空白（列之外的区域）才拖窗口——这一档要保住"""
+        col_geo = self.col.geometry()
+        blank = QPoint(col_geo.right() + 80, col_geo.center().y())
+        self.assertTrue(self.view.rect().contains(blank),
+                        f"取点 {blank} 须落列外空白处，看板尺寸 {self.view.size()}")
+        moved, drags = self._drag(self.view, blank)
+        self.assertNotEqual((moved.x(), moved.y()), (0, 0), "空白处应能拖窗口")
+        self.assertEqual(drags, 0, "空白处不该启动任何 QDrag")
 
 
 if __name__ == "__main__":

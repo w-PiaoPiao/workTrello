@@ -389,6 +389,13 @@ class MainWindow(QWidget):
                 and not self._expanding)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
+        """空白处按下 = 拖动整个窗口（拖拽层级的最后一档）
+
+        事件只会送到这里说明没有任何子控件接受它：卡片、列表（列头与列身）
+        都在自己的 mousePressEvent 里 accept 了，工具栏按钮也各自接受，
+        所以这里天然对应"看板/桌宠空白处"——正是拖窗口该生效的地方。
+        以后新增子控件若忘了 accept，它的拖动会退化成拖窗口。
+        """
         if event.button() == Qt.LeftButton:
             if AppConfig.IS_WINDOWS and self._mouse_in_expanded():
                 edge = self._edge_at(event.position().toPoint())

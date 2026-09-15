@@ -30,7 +30,7 @@ class TrafficLights(QWidget):
 
     @staticmethod
     def _tip_texts() -> tuple[str, str, str]:
-        return (tr("退出应用"), tr("折叠为桌宠"), tr("最大化 / 还原"))
+        return (tr("最小化到托盘"), tr("折叠为桌宠"), tr("最大化 / 还原"))
 
     def __init__(self, parent=None):
         super().__init__(parent)

@@ -1072,6 +1072,12 @@ class CardWidget(QFrame):
         if event.button() == Qt.LeftButton:
             self._pressing = True
             self._drag_start = event.position().toPoint()
+            # 接受按下：这张卡承担本次手势（拖卡片 / 单击编辑）。此前调
+            # super() 会 ignore 掉事件，它一路冒泡到主窗口，窗口的"空白处
+            # 拖动窗口"逻辑就成了鼠标抓取者——拖卡片同时把窗口也拖走，
+            # QDrag 与窗口移动互相打架
+            event.accept()
+            return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
@@ -1184,6 +1190,22 @@ class CardWidget(QFrame):
         # 原生循环结束后保守复核一次（此时 underMouse 可信，光标若仍在
         # 本卡上则保持隐藏也无妨——下一次真实 Enter 会重新显示）
         self._revalidate_hover()
+
+
+def _begin_list_drag(source: QWidget, board_list: BoardList) -> None:
+    """启动整列拖拽：抓 source 的截图作拖影，MIME_LIST 携带列表 id
+
+    列头与列身（空白处）共用同一入口：两处都是"搬走整列"的手势，只是一处
+    从标题抓、一处从列内空白抓。
+    """
+    mime = QMimeData()
+    mime.setData(MIME_LIST, board_list.id.encode("utf-8"))
+    drag = QDrag(source)
+    drag.setMimeData(mime)
+    pixmap = source.grab()
+    drag.setPixmap(pixmap)
+    drag.setHotSpot(QPoint(pixmap.width() // 2, pixmap.height() // 2))
+    drag.exec(Qt.MoveAction)
 
 
 class _TitleLabel(QLabel):
@@ -1338,6 +1360,11 @@ class ListHeader(QWidget):
     def mousePressEvent(self, event) -> None:
         if (event.button() == Qt.LeftButton and _ACTIVE_RENAME is None):
             self._drag_press_pos = event.position().toPoint()
+            # 接受按下：本次手势归列头（拖列 / 单击展开折叠列）。不接受就会
+            # 冒泡到主窗口——窗口的"空白处拖动"逻辑会拿走鼠标抓取权，于是
+            # 拖列变成拖窗，列头连后续的 move/release 都收不到
+            event.accept()
+            return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
@@ -1367,18 +1394,10 @@ class ListHeader(QWidget):
         super().mouseReleaseEvent(event)
 
     def _start_list_drag(self) -> None:
-        """启动整列拖拽：列头截图作拖影，MIME_LIST 携带列表 id"""
+        """启动整列拖拽（列头）"""
         col = self.parent()
-        if not isinstance(col, ListColumn):
-            return
-        mime = QMimeData()
-        mime.setData(MIME_LIST, self._lst.id.encode("utf-8"))
-        drag = QDrag(self)
-        drag.setMimeData(mime)
-        pixmap = self.grab()
-        drag.setPixmap(pixmap)
-        drag.setHotSpot(QPoint(pixmap.width() // 2, pixmap.height() // 2))
-        drag.exec(Qt.MoveAction)
+        if isinstance(col, ListColumn):
+            _begin_list_drag(self, self._lst)
 
 
 class _RenameEdit(QLineEdit):
@@ -1708,6 +1727,8 @@ class ListColumn(QFrame):
         self._geom_key: tuple | None = None
         # 拖拽落点快照（host 内 y 中点，升序）：dragEnter 时重建
         self._drop_mids: list[int] | None = None
+        # 整列拖拽起点（列身空白处按下；None=未按下）
+        self._drag_press_pos: QPoint | None = None
         # 父链上的看板横向滚动区缓存（构造后父链稳定）
         self._board_scroll_cache: QScrollArea | None = None
         # 以下三者在构造后半段才建立；sizeHint 可能在构造途中被查询，
@@ -1763,6 +1784,37 @@ class ListColumn(QFrame):
         root.addWidget(self._add_btn)
 
         self.refresh_cards()
+
+    # ── 整列拖拽：列身空白处按下并拖动即搬走整列 ──────────────
+
+    def mousePressEvent(self, event) -> None:
+        """列身空白处按下 → 记起点并**接受**事件
+
+        卡片、"+ 添加卡片"、列头都有各自的按下处理并各自接受，冒泡到这里
+        的只剩列内空白（卡片下方、列边距）。这里必须接受：不接受就会一路
+        冒泡到主窗口，被"空白处拖动整个窗口"接手——列内空白拖动应当是搬列。
+        """
+        if event.button() == Qt.LeftButton and _ACTIVE_RENAME is None:
+            self._drag_press_pos = event.position().toPoint()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if (self._drag_press_pos is not None
+                and event.buttons() & Qt.LeftButton
+                and not self.is_filtered()
+                and (event.position().toPoint() - self._drag_press_pos)
+                .manhattanLength() > AppConfig.LIST_DRAG_THRESHOLD):
+            self._drag_press_pos = None      # 只触发一次
+            _begin_list_drag(self, self._lst)
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self._drag_press_pos = None
+        super().mouseReleaseEvent(event)
 
     # ── 数据刷新 ──────────────────────────────────────────
 
@@ -2432,7 +2484,7 @@ class BoardView(QWidget):
     signal_list_title_changed = Signal(str, str)
     signal_list_delete = Signal(str)
     signal_list_collapsed = Signal(str, bool)   # list_id, collapsed
-    signal_quit_requested = Signal()
+    signal_close_requested = Signal()           # 窗口 ✕：最小化到托盘（不退出）
     signal_zoom_requested = Signal()
     signal_card_pomo = Signal(str)              # card_id
     signal_card_archive = Signal(str)           # card_id
@@ -2595,12 +2647,12 @@ class BoardView(QWidget):
         self._collapse_btn.clicked.connect(self.signal_collapse_clicked.emit)
         self._toolbar_layout.addWidget(self._collapse_btn)
 
-        # macOS 红绿灯（对齐 macOS 窗口范式）：红=退出 黄=折叠桌宠 绿=最大化/还原
+        # macOS 红绿灯（对齐 macOS 窗口范式）：红=最小化到托盘 黄=折叠桌宠 绿=最大化/还原
         if AppConfig.IS_MACOS:
             from app.views.traffic_lights import TrafficLights
             self._traffic_lights = TrafficLights()
             self._traffic_lights.signal_close.connect(
-                self.signal_quit_requested.emit)
+                self.signal_close_requested.emit)
             self._traffic_lights.signal_minimize.connect(
                 self.signal_collapse_clicked.emit)
             self._traffic_lights.signal_zoom.connect(
@@ -2608,7 +2660,7 @@ class BoardView(QWidget):
             self._toolbar_layout.insertWidget(0, self._traffic_lights)
             self._collapse_btn.hide()   # 黄灯已承担折叠，避免重复控件
 
-        # Windows 窗口控制键（贴右缘）：─ 折叠桌宠  □ 最大化/还原  ✕ 退出
+        # Windows 窗口控制键（贴右缘）：─ 折叠桌宠  □ 最大化/还原  ✕ 最小化到托盘
         self._window_controls = None
         if AppConfig.IS_WINDOWS:
             from app.views.window_controls import WindowControls
@@ -2618,7 +2670,7 @@ class BoardView(QWidget):
             self._window_controls.signal_zoom.connect(
                 self.signal_zoom_requested.emit)
             self._window_controls.signal_close.connect(
-                self.signal_quit_requested.emit)
+                self.signal_close_requested.emit)
             self._toolbar_layout.addWidget(self._window_controls)
             self._collapse_btn.hide()   # 最小化键已承担折叠，避免重复控件
 

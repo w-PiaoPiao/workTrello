@@ -7,7 +7,11 @@ Windows 窗口控制键（最小化 ─ / 最大化 □ / 关闭 ✕）
 信号语义与 macOS 红绿灯一致：
   signal_minimize = 折叠回桌宠（黄灯对应物）
   signal_zoom     = 最大化 / 还原（绿灯对应物）
-  signal_close    = 退出应用（红灯对应物）
+  signal_close    = 最小化到托盘，**不退出**应用（红灯对应物）
+
+关闭键刻意不对应"退出"：本应用是常驻托盘的挂件，误点 ✕ 就整个关掉要重新
+启动才回得来。真正退出走托盘右键菜单的「退出」（托盘不可用的极少数环境下
+由控制器回退为退出，否则窗口一藏就再也叫不出来）。
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
+from app.i18n import tr
 from app.views.theme import AppTheme
 
 
@@ -29,6 +34,11 @@ class WindowControls(QWidget):
     _BTN_W = 46          # 每个按钮宽度（对齐原生标题栏按钮区）
     _BTN_H = 40          # 按钮高度（撑满工具栏内边距后的可用高度）
     _RESIZE_HOVER = 8    # hover 高亮矩形与按钮边缘间距
+
+    @staticmethod
+    def _tip_texts() -> tuple[str, str, str]:
+        """悬停提示：✕ 的行为与系统标题栏不同（最小化而非退出），须写明"""
+        return (tr("折叠为桌宠"), tr("最大化 / 还原"), tr("最小化到托盘"))
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -119,11 +129,14 @@ class WindowControls(QWidget):
         idx = self._index_at(event.position())
         if idx != self._hover:
             self._hover = idx
+            tips = self._tip_texts()
+            self.setToolTip(tips[idx] if idx != -1 else "")
             self.update()
 
     def leaveEvent(self, event) -> None:
         if self._hover != -1:
             self._hover = -1
+            self.setToolTip("")
             self.update()
         super().leaveEvent(event)
 

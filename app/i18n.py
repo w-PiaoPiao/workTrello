@@ -134,6 +134,9 @@ _zh_en: dict[str, str] = {
     "删除列表": "Delete List",
     "导出": "Export",
     "退出": "Quit",
+    "已最小化到托盘；右键托盘图标可显示或退出":
+        "Minimized to tray — right-click the tray icon to show or quit",
+    "最小化到托盘": "Minimize to tray",
     "外观": "Appearance",
     "语言 / Language": "Language",
     "窗口": "Window",
