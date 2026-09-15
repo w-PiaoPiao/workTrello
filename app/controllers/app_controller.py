@@ -32,13 +32,14 @@ from PySide6.QtWidgets import (
 )
 
 from app import i18n
-from app.config import AppConfig
+from app.config import AppConfig, workdir_start_dir
 from app.i18n import tr
 from app.models import json_io
 from app.models.board import Board, BoardList, BoardStore, Card
 from app.models.importers import board_from_markdown, board_from_trello
 from app.models.quick_syntax import parse_quick_input
 from app.models.workspace import Workspace
+from app.services import autostart
 from app.services.tray_service import TrayService
 from app.views import motion
 from app.views.board_view import BoardView
@@ -151,6 +152,12 @@ class AppController(QObject):
         self._window.set_always_on_top(on_top)
         self._pet_view.set_always_top_checked(on_top)
         self._tray.set_always_top_checked(on_top)
+
+        # ── 开机自启动登记自愈（换目录/换解释器后旧命令已失效）──
+        if AppConfig.get_autostart():
+            svc = autostart.get_autostart()
+            if svc is not None:
+                svc.sync()
 
         # ── 菜单栏（macOS：应用激活接管菜单栏时可见）───────
         if AppConfig.IS_MACOS:
@@ -1257,6 +1264,7 @@ class AppController(QObject):
                 self._on_pet_animation_toggled)
             dlg.signal_always_top_toggled.connect(
                 self._on_always_top_toggled)
+            dlg.signal_autostart_toggled.connect(self._on_autostart_toggled)
             dlg.signal_remind_advance_changed.connect(
                 AppConfig.save_remind_advance)
             i18n.register(dlg.retexts)          # 语言切换整页刷新
@@ -1268,10 +1276,43 @@ class AppController(QObject):
             skin=AppConfig.get_pet_skin(),
             animation=AppConfig.get_animation_enabled(),
             always_top=self._window.is_always_on_top(),
-            remind_advance=AppConfig.get_remind_advance())
+            remind_advance=AppConfig.get_remind_advance(),
+            autostart=self._autostart_state())
         self._settings_dialog.show()
         self._settings_dialog.raise_()
         self._settings_dialog.activateWindow()
+
+    def _autostart_state(self) -> bool:
+        """开机自启动的实际状态（以系统启动项为准，反向收编用户的外部改动）
+
+        用户可能在任务管理器/msconfig 里直接关掉启动项，也可能手动加回来：
+        设置页显示的应是"系统里真实有没有"，而不是"上次点过什么"。以系统
+        为准后把偏好同步过去，下次启动的自愈逻辑才不会误判。
+        """
+        svc = autostart.get_autostart()
+        if svc is None:
+            return AppConfig.get_autostart()
+        live = svc.is_enabled()
+        if live != AppConfig.get_autostart():
+            AppConfig.save_autostart(live)
+        return live
+
+    def _on_autostart_toggled(self, on: bool) -> None:
+        """开机自启动开关：写系统启动项，失败则连偏好带开关一起回滚
+
+        写注册表/LaunchAgents 可能被权限或企业策略拒绝，此时若只留下"已开启"
+        的界面状态，用户要到下次开机才发现根本没起来。
+        """
+        svc = autostart.get_autostart()
+        ok = svc is not None and (svc.enable() if on else svc.disable())
+        if not ok:
+            AppConfig.save_autostart(not on)
+            if self._settings_dialog is not None:
+                self._settings_dialog.set_autostart(not on)
+            self._notify(tr("开机自启动设置失败（系统权限或策略限制）"))
+            return
+        AppConfig.save_autostart(on)
+        self._notify(tr("已开启开机自启动") if on else tr("已关闭开机自启动"))
 
     def _on_theme_pref_selected(self, mode: str) -> None:
         """设置里的三态主题：原始模式（含 system）落盘，供跟随系统切换"""
@@ -1330,6 +1371,11 @@ class AppController(QObject):
 
     def _on_pet_skin_selected(self, key: str) -> None:
         AppConfig.save_pet_skin(key)
+        # 三个入口（桌宠右键菜单 / 设置页 / 落盘偏好）保持同一份真相：
+        # 在设置页换肤后菜单里的旧皮肤不该继续显示勾选，反之亦然
+        self._pet_view.set_skin_checked(key)
+        if self._settings_dialog is not None:
+            self._settings_dialog.set_skin(key)
 
     def _on_always_top_toggled(self, on: bool) -> None:
         self._window.set_always_on_top(on)
@@ -1712,12 +1758,12 @@ class AppController(QObject):
         _lst, card = board.find_card(card_id)
         if card is None:
             return
-        start = (card.workdir if card.workdir and Path(card.workdir).is_dir()
-                 else str(Path.home()))
+        start = workdir_start_dir(card.workdir)
         chosen = QFileDialog.getExistingDirectory(
             self._window, tr("选择工作目录"), start)
         if not chosen:
             return
+        AppConfig.save_last_workdir(chosen)   # 下次选择器从这里续上
         self._push_undo()
         card.workdir = chosen
         self._after_data_change(tr("已设置工作目录"))

@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.config import AppConfig
+from app.config import AppConfig, workdir_start_dir
 from app.i18n import label_display, repeat_display, tr
 from app.models.board import Card
 from app.models.markdown_lite import render_markdown
@@ -79,6 +79,27 @@ def _flat_button_style(c: dict) -> str:
             background: {c['accent_soft']};
             border-radius: 6px;
         }}
+    """
+
+
+def _remove_button_style(c: dict) -> str:
+    """行内「✕」移除钮（清单项 / 附件行共用）
+
+    末尾的 `padding: 0` 不是装饰，是**必须保留**的：背景透明 + `border: none`
+    且不写任何盒模型属性时，Qt 的 QStyleSheetStyle 会把按钮文字绘制区算成
+    零尺寸——按钮还在、也点得到，但 ✕ 一个像素都不画，用户看到的就是
+    "能加清单项、却没有删除按钮"。显式给出 padding（或 min-width/height）
+    即恢复正常。同款坑（背景不透明）在卡片删除钮上没有触发。
+    """
+    return f"""
+        QPushButton {{
+            color: {c['text_secondary']};
+            background: transparent;
+            border: none;
+            font-size: 10px;
+            padding: 0;
+        }}
+        QPushButton:hover {{ color: {c['danger']}; }}
     """
 
 
@@ -135,16 +156,13 @@ class LabelChip(QPushButton):
 
         选中/取消由 Qt 伪态自动切换边框，点击时无需再重设样式表——
         此前每点一个 chip 会对全部 6 个 chip 重新拼接并 reparse。
+        色块内不写字：34×22 的块只够挤下一个被前景色压暗、几乎看不清的
+        小字，识别改由 hover tooltip 承担，选中态由加粗边框表达。
         """
         bg, fg = AppTheme.label_style(self._key)
-        # 色块内写标签首字：纯颜色区分对色盲用户不可达
-        self.setText(label_display(self._key)[:1])
         self.setStyleSheet(f"""
             QPushButton {{
                 background: {bg};
-                color: {fg};
-                font-size: 11px;
-                font-weight: bold;
                 border: 1px solid transparent;
                 border-radius: 6px;
             }}
@@ -587,15 +605,7 @@ class CardDialog(QDialog):
         remove.setFlat(True)
         remove.setCursor(Qt.PointingHandCursor)
         remove.setToolTip(tr("删除该清单项"))
-        remove.setStyleSheet(f"""
-            QPushButton {{
-                color: {AppTheme.colors()['text_secondary']};
-                background: transparent;
-                border: none;
-                font-size: 10px;
-            }}
-            QPushButton:hover {{ color: {AppTheme.colors()['danger']}; }}
-        """)
+        remove.setStyleSheet(_remove_button_style(AppTheme.colors()))
         remove.clicked.connect(lambda: self._remove_check_row(row))
         lay.addWidget(check)
         lay.addWidget(edit, 1)
@@ -674,15 +684,7 @@ class CardDialog(QDialog):
             remove.setFlat(True)
             remove.setCursor(Qt.PointingHandCursor)
             remove.setToolTip(tr("移除附件"))
-            remove.setStyleSheet(f"""
-                QPushButton {{
-                    color: {AppTheme.colors()['text_secondary']};
-                    background: transparent;
-                    border: none;
-                    font-size: 10px;
-                }}
-                QPushButton:hover {{ color: {AppTheme.colors()['danger']}; }}
-            """)
+            remove.setStyleSheet(_remove_button_style(AppTheme.colors()))
             remove.clicked.connect(
                 lambda _=False, i=idx: self._remove_attachment(i))
             lay.addWidget(name, 1)
@@ -802,14 +804,12 @@ class CardDialog(QDialog):
         self._workdir_clear_btn.setVisible(bool(self._workdir))
 
     def _on_browse_workdir(self) -> None:
-        """浏览选择工作目录；现有路径可达时以其为起始目录"""
-        start = (self._workdir
-                 if self._workdir and Path(self._workdir).is_dir()
-                 else str(Path.home()))
+        """浏览选择工作目录：从卡片现有目录或上次选过的目录续上"""
         chosen = QFileDialog.getExistingDirectory(
-            self, tr("选择工作目录"), start)
+            self, tr("选择工作目录"), workdir_start_dir(self._workdir))
         if not chosen:
             return
+        AppConfig.save_last_workdir(chosen)
         self._workdir = chosen
         self._apply_workdir_state()
 

@@ -32,7 +32,13 @@ from PySide6.QtGui import (
     QScreen,
     QShortcut,
 )
-from PySide6.QtWidgets import QApplication, QStackedWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from app.config import AppConfig
 from app.i18n import tr
@@ -216,16 +222,27 @@ class MainWindow(QWidget):
         return bool(self.windowFlags() & Qt.WindowStaysOnTopHint)
 
     def set_always_on_top(self, on: bool) -> None:
-        """切换窗口置顶；setWindowFlags 会隐藏并重建原生窗口，需补 show"""
+        """切换窗口置顶；setWindowFlags 会隐藏并重建原生窗口，需补 show
+
+        原生窗口重建会连同子窗口一起隐藏，其中包括正开着的对话框——而设置
+        对话框是**模态**的：窗口被藏起来了，应用却仍然堵在模态里，用户看到
+        的就是"点设置打不开"（点击全被模态吞掉）。故重建前记下开着的对话框，
+        重建后补回来。
+        """
         if self.is_always_on_top() == on:
             return
         was_visible = self.isVisible()
+        reopen = [d for d in self.findChildren(QDialog) if d.isVisible()]
         self.setWindowFlag(Qt.WindowStaysOnTopHint, on)
         if was_visible:
             self.show()
             if on:
                 self.raise_()
                 self.activateWindow()
+        for dlg in reopen:
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
 
     # ── 视图注入 ──────────────────────────────────────────
 

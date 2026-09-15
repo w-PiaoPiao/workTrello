@@ -155,6 +155,14 @@ _zh_en: dict[str, str] = {
     "窗口置顶": "Always on top",
     "桌宠与看板始终悬浮在其他窗口之上":
         "Keep the pet and board floating above other windows",
+    "开机自启动": "Launch at login",
+    "登录系统后自动启动，以桌宠形态常驻托盘":
+        "Start automatically at login, living in the tray as a pet",
+    "已开启开机自启动": "Launch at login enabled",
+    "已关闭开机自启动": "Launch at login disabled",
+    "开机自启动设置失败（系统权限或策略限制）":
+        "Could not change the launch-at-login setting "
+        "(blocked by system permissions or policy)",
     "数据目录": "Data folder",
     "看板数据与自动备份保存在": "Board data and auto backups live in",
     "打开目录": "Open Folder",

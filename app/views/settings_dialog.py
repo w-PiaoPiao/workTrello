@@ -14,6 +14,7 @@ from __future__ import annotations
 from PySide6.QtCore import QRectF, QUrl, Qt, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QIcon, QLinearGradient, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QComboBox,
     QDialog,
     QFrame,
@@ -99,6 +100,7 @@ class SettingsDialog(QDialog):
     signal_animation_toggled = Signal(bool)   # 动画启用
     signal_always_top_toggled = Signal(bool)
     signal_remind_advance_changed = Signal(int)  # 截止提前提醒天数 0~3
+    signal_autostart_toggled = Signal(bool)      # 开机自启动
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -158,6 +160,11 @@ class SettingsDialog(QDialog):
         skin_lay.setContentsMargins(0, 0, 0, 0)
         skin_lay.setSpacing(8)
         self._skin_buttons: dict[str, QPushButton] = {}
+        # 皮肤是单选：必须挂互斥组。此前只是各自 checkable，点新的不会取消
+        # 旧的——皮肤实际换了（偏好已存），界面却显示两个都选中。
+        # 互斥组同时挡住"再点一次已选中的那个把它取消掉"，避免出现零选中。
+        self._skin_group = QButtonGroup(self)
+        self._skin_group.setExclusive(True)
         for key in AppConfig.PET_SKINS:
             btn = QPushButton(skin_display(key))
             btn.setObjectName("skinBtn")
@@ -166,6 +173,7 @@ class SettingsDialog(QDialog):
             btn.setIcon(_skin_swatch(key))
             btn.clicked.connect(
                 lambda _=False, k=key: self.signal_skin_selected.emit(k))
+            self._skin_group.addButton(btn)
             self._skin_buttons[key] = btn
             skin_lay.addWidget(btn)
         skin_lay.addStretch(1)
@@ -179,6 +187,12 @@ class SettingsDialog(QDialog):
         self._t_top, self._h_top = self._sec_window.add_row(
             tr("窗口置顶"), tr("桌宠与看板始终悬浮在其他窗口之上"),
             self._top_toggle)
+        self._autostart_toggle = ToggleSwitch()
+        self._autostart_toggle.toggled.connect(
+            self.signal_autostart_toggled.emit)
+        self._t_autostart, self._h_autostart = self._sec_window.add_row(
+            tr("开机自启动"), tr("登录系统后自动启动，以桌宠形态常驻托盘"),
+            self._autostart_toggle)
         page.addWidget(self._sec_window)
 
         # 提醒
@@ -243,17 +257,48 @@ class SettingsDialog(QDialog):
 
     def sync_from_prefs(self, theme_mode: str, lang: str, skin: str,
                         animation: bool, always_top: bool,
-                        remind_advance: int = 0) -> None:
-        """打开时把当前偏好刷进控件（偏好可能被桌宠菜单等其他入口改过）"""
-        self._theme_seg.set_value(theme_mode)
-        self._lang_seg.set_value(lang)
-        for key, btn in self._skin_buttons.items():
-            btn.setChecked(key == skin)
-        self._anim_toggle.setChecked(animation)
-        self._top_toggle.setChecked(always_top)
-        idx = self._remind_combo.findData(int(remind_advance))
-        if idx >= 0:
-            self._remind_combo.setCurrentIndex(idx)
+                        remind_advance: int = 0,
+                        autostart: bool = False) -> None:
+        """打开时把当前偏好刷进控件（偏好可能被桌宠菜单等其他入口改过）
+
+        全程静音：这是"把真实状态刷进界面"，不是用户按了什么。此前
+        setChecked 照常 emit toggled，于是"打开设置"这个动作本身会触发
+        置顶/动画等副作用——切置顶会重建主窗口的原生句柄、连带把子对话框
+        （包括正在打开的这一个）一起隐藏，用户看到的就是"设置打不开"。
+        静音后同一份同步逻辑可以随便跑，不再有副作用。
+        """
+        silent = (self._anim_toggle, self._top_toggle, self._autostart_toggle,
+                  self._remind_combo)
+        prev = [w.blockSignals(True) for w in silent]
+        try:
+            self._theme_seg.set_value(theme_mode)
+            self._lang_seg.set_value(lang)
+            self.set_skin(skin)
+            self._anim_toggle.setChecked(animation)
+            self._top_toggle.setChecked(always_top)
+            self._autostart_toggle.setChecked(autostart)
+            idx = self._remind_combo.findData(int(remind_advance))
+            if idx >= 0:
+                self._remind_combo.setCurrentIndex(idx)
+        finally:
+            for w, was in zip(silent, prev):
+                w.blockSignals(was)
+
+    def set_skin(self, key: str) -> None:
+        """皮肤选中态对齐真实偏好（重开设置时消除残留的多个选中）"""
+        btn = self._skin_buttons.get(key)
+        if btn is not None and not btn.isChecked():
+            btn.setChecked(True)
+
+    def set_autostart(self, on: bool) -> None:
+        """回写开关状态**不发信号**：这是同步/回滚，不是用户改设置
+
+        写系统启动项失败时控制器要把开关拨回原位，若走 toggled 会再触发一次
+        写入（成功一次失败一次，开关来回跳）。
+        """
+        prev = self._autostart_toggle.blockSignals(True)
+        self._autostart_toggle.setChecked(on)
+        self._autostart_toggle.blockSignals(prev)
 
     def reapply_theme(self) -> None:
         self.setStyleSheet(self._build_qss())
@@ -280,6 +325,8 @@ class SettingsDialog(QDialog):
         self._sec_window.retexts(tr("窗口"))
         self._t_top.setText(tr("窗口置顶"))
         self._h_top.setText(tr("桌宠与看板始终悬浮在其他窗口之上"))
+        self._t_autostart.setText(tr("开机自启动"))
+        self._h_autostart.setText(tr("登录系统后自动启动，以桌宠形态常驻托盘"))
         self._sec_remind.retexts(tr("提醒"))
         self._t_remind.setText(tr("截止提前提醒"))
         self._h_remind.setText(tr("距离截止日还剩 N 天时也开始提醒"))

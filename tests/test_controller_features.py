@@ -36,6 +36,46 @@ from app.views.card_dialog import CardDialog
 from app.views.theme import AppTheme
 
 
+# 自启动实现的打桩目标（提取常量：写全路径会让 with 行超长）
+_AUTOSTART_GET = "app.controllers.app_controller.autostart.get_autostart"
+
+
+class _FakeAutostart:
+    """自启动实现替身：只记账，绝不碰真实注册表/启动项"""
+
+    def __init__(self, enabled: bool = False, fail: bool = False):
+        self.enabled = enabled
+        self.fail = fail
+
+    def is_enabled(self) -> bool:
+        return self.enabled
+
+    def enable(self) -> bool:
+        if self.fail:
+            return False
+        self.enabled = True
+        return True
+
+    def disable(self) -> bool:
+        if self.fail:
+            return False
+        self.enabled = False
+        return True
+
+    def sync(self) -> bool:
+        return False
+
+
+class _StubSettingsToggle:
+    """设置页替身：只记 set_autostart 调用（断言开关回滚）"""
+
+    def __init__(self):
+        self.set_calls: list[bool] = []
+
+    def set_autostart(self, on: bool) -> None:
+        self.set_calls.append(on)
+
+
 class ControllerFeatureTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -426,6 +466,156 @@ class ControllerFeatureTest(unittest.TestCase):
         self.assertEqual(card.workdir, "")
         self.assertFalse(self.c._store._dirty)
 
+    def test_workdir_set_opens_at_last_picked_dir(self):
+        """起始目录优先上次选过的目录，卡片自身目录可达时优先卡片"""
+        self._reset()
+        self.c._on_card_add(self._list().id, "起始目录")
+        card = self._list().cards[0]
+        last = tempfile.mkdtemp()
+        AppConfig.save_last_workdir(last)
+        with patch("app.controllers.app_controller.QFileDialog") as fdlg:
+            fdlg.getExistingDirectory.return_value = ""
+            self.c._on_card_workdir_set(card.id)
+        self.assertEqual(fdlg.getExistingDirectory.call_args[0][2], last)
+
+    def test_workdir_set_remembers_pick_and_drops_dead_path(self):
+        """选中的目录写进记忆；记忆失效（盘拔了）时回落用户主目录"""
+        self._reset()
+        self.c._on_card_add(self._list().id, "记忆路径")
+        card = self._list().cards[0]
+        picked = tempfile.mkdtemp()
+        with patch("app.controllers.app_controller.QFileDialog") as fdlg:
+            fdlg.getExistingDirectory.return_value = picked
+            self.c._on_card_workdir_set(card.id)
+        self.assertEqual(AppConfig.get_last_workdir(), picked)
+        # 换成另一张卡（自身无目录），选的还是记忆里的路径
+        self.c._on_card_add(self._list().id, "另一张")
+        other = self._list().cards[0]
+        with patch("app.controllers.app_controller.QFileDialog") as fdlg:
+            fdlg.getExistingDirectory.return_value = ""
+            self.c._on_card_workdir_set(other.id)
+        self.assertEqual(fdlg.getExistingDirectory.call_args[0][2], picked)
+        # 记忆里的目录没了 → 回落用户主目录
+        AppConfig.save_last_workdir(str(Path(tempfile.mkdtemp()) / "已删除"))
+        with patch("app.controllers.app_controller.QFileDialog") as fdlg:
+            fdlg.getExistingDirectory.return_value = ""
+            self.c._on_card_workdir_set(other.id)
+        self.assertEqual(fdlg.getExistingDirectory.call_args[0][2],
+                         str(Path.home()))
+        AppConfig.save_last_workdir("")
+
+    # ── 设置页：皮肤单选 / 重开 ───────────────────────────
+
+    def test_settings_skin_switch_keeps_single_checked(self):
+        """设置里换肤：偏好落盘 + 界面只留一个选中（旧的不再赖着）
+
+        回归背景：皮肤按钮没挂互斥组，点新皮肤后旧的仍显示选中——皮肤
+        实际换了（偏好已存），界面却像没换。
+        """
+        self._reset()
+        AppConfig.save_pet_skin("milk")
+        self.c._on_settings_open()
+        dlg = self.c._settings_dialog
+        dlg.sync_from_prefs("system", "zh", "milk", True, True)
+        dlg._skin_buttons["choco"].click()
+        checked = {k for k, b in dlg._skin_buttons.items() if b.isChecked()}
+        self.assertEqual(checked, {"choco"})
+        self.assertEqual(AppConfig.get_pet_skin(), "choco")
+        # 桌宠右键菜单换肤（另一入口）也把设置页刷成同一处为准
+        self.c._on_pet_skin_selected("midnight")
+        checked = {k for k, b in dlg._skin_buttons.items() if b.isChecked()}
+        self.assertEqual(checked, {"midnight"})
+        dlg.close()
+        self.c._settings_dialog = None
+        AppConfig.save_pet_skin("milk")
+
+    def test_settings_reopen_after_skin_switch(self):
+        """换肤 + 切置顶后关掉再开：设置页仍打得开且状态自洽
+
+        "打开设置"此前会经 sync_from_prefs 触发 toggled 副作用（切置顶重建
+        主窗口原生句柄，连带隐藏子对话框，而对话框是模态的——窗口没了、
+        模态阻塞还在，点击全被吞掉，表现即"设置打不开"）。现在同步静音，
+        开关状态改为打开时单向刷入。
+        """
+        self._reset()
+        self.c._on_settings_open()
+        dlg = self.c._settings_dialog
+        dlg._skin_buttons["snow"].click()
+        dlg._top_toggle.click()
+        dlg._done_btn.click()
+        self.c._on_settings_open()
+        self.assertTrue(self.c._settings_dialog.isVisible())
+        self.assertEqual(
+            {k for k, b in dlg._skin_buttons.items() if b.isChecked()},
+            {"snow"})
+        dlg._done_btn.click()
+        self.c._settings_dialog = None
+        AppConfig.save_pet_skin("milk")
+        AppConfig.save_always_on_top(True)
+
+    # ── 开机自启动 ────────────────────────────────────────
+
+    def test_autostart_toggle_persists_and_registers(self):
+        """开启：写系统启动项 + 落盘偏好；关闭：摘除启动项"""
+        self._reset()
+        svc = _FakeAutostart()
+        notes = []
+        self.c._notify = lambda text: notes.append(text)
+        with patch(_AUTOSTART_GET, return_value=svc):
+            self.c._on_autostart_toggled(True)
+            self.assertEqual(svc.enabled, True)
+            self.assertTrue(AppConfig.get_autostart())
+            self.c._on_autostart_toggled(False)
+        self.assertEqual(svc.enabled, False)
+        self.assertFalse(AppConfig.get_autostart())
+        self.assertEqual(len(notes), 2)      # 两种状态都有可见反馈
+
+    def test_autostart_failure_rolls_back_toggle(self):
+        """写系统启动项失败：偏好与开关一起回滚，并给出可见提示
+
+        只留在界面上显示"已开启"的话，用户要到下次开机才发现根本没起来。
+        """
+        self._reset()
+        AppConfig.save_autostart(False)
+        svc = _FakeAutostart(fail=True)
+        notes = []
+        self.c._notify = lambda text: notes.append(text)
+        dlg = _StubSettingsToggle()
+        self.c._settings_dialog = dlg
+        try:
+            with patch(_AUTOSTART_GET, return_value=svc):
+                self.c._on_autostart_toggled(True)
+        finally:
+            self.c._settings_dialog = None
+        self.assertFalse(AppConfig.get_autostart())   # 偏好回滚
+        self.assertEqual(dlg.set_calls, [False])      # 开关回拨（且不发信号）
+        self.assertEqual(len(notes), 1)
+        self.assertIn("失败", notes[0])
+
+    def test_autostart_unavailable_service_rolls_back(self):
+        """平台实现不可用（None）：按失败处理，不留假的"已开启"状态"""
+        self._reset()
+        AppConfig.save_autostart(False)
+        notes = []
+        self.c._notify = lambda text: notes.append(text)
+        with patch(_AUTOSTART_GET, return_value=None):
+            self.c._on_autostart_toggled(True)
+        self.assertFalse(AppConfig.get_autostart())
+        self.assertEqual(len(notes), 1)
+
+    def test_autostart_state_follows_system_not_pref(self):
+        """设置页显示系统里的真实状态：用户在任务管理器里关掉后能对上"""
+        self._reset()
+        AppConfig.save_autostart(True)
+        with patch(_AUTOSTART_GET,
+                   return_value=_FakeAutostart(False)):
+            self.assertFalse(self.c._autostart_state())
+        self.assertFalse(AppConfig.get_autostart())   # 偏好被收编为真实状态
+        with patch(_AUTOSTART_GET,
+                   return_value=_FakeAutostart(True)):
+            self.assertTrue(self.c._autostart_state())
+        AppConfig.save_autostart(False)
+
     def test_edit_persists_to_disk(self):
         """编辑落到 board.json（回归护栏）
 
@@ -568,6 +758,25 @@ class ControllerFeatureTest(unittest.TestCase):
         with patch.object(AppConfig, "save_pet_skin") as save:
             self.c._on_pet_skin_selected("snow")
         save.assert_called_once_with("snow")
+
+    def test_pet_skin_selected_syncs_both_menus(self):
+        """换肤落点唯一：桌宠菜单与设置页的勾选态都跟着走
+
+        入口有两个（桌宠右键菜单 / 设置页），此前各记各的勾选：在设置页
+        换肤后，菜单里的旧皮肤仍是"当前皮肤"。
+        """
+        from app.config import AppConfig as Cfg
+        self.c._on_settings_open()
+        dlg = self.c._settings_dialog
+        dlg.sync_from_prefs("system", "zh", "milk", True, True)
+        self.c._on_pet_skin_selected("choco")
+        self.assertEqual(Cfg.get_pet_skin(), "choco")
+        self.assertTrue(self.c._pet_view._skin_actions["choco"].isChecked())
+        self.assertFalse(self.c._pet_view._skin_actions["milk"].isChecked())
+        self.assertTrue(dlg._skin_buttons["choco"].isChecked())
+        dlg.close()
+        self.c._settings_dialog = None
+        Cfg.save_pet_skin("milk")
 
     # ── 备份导入导出 ──────────────────────────────────────
 

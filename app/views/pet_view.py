@@ -613,6 +613,16 @@ class PetView(QWidget):
             self._act_always_top.setChecked(on)
             self._act_always_top.blockSignals(False)
 
+    def set_skin_checked(self, key: str) -> None:
+        """同步右键菜单里皮肤的勾选态（互斥由 QActionGroup 保证）
+
+        设置页换肤是另一个入口，菜单不跟着走的话，两个界面会各显示一个
+        "当前皮肤"——与实际生效的那个都可能是错的。
+        """
+        act = self._skin_actions.get(key)
+        if act is not None and not act.isChecked():
+            act.setChecked(True)
+
     def _on_animation_toggled(self, paused: bool) -> None:
         self.set_animation_enabled(not paused)
         self.signal_animation_toggled.emit(not paused)

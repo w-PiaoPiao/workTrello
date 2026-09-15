@@ -52,7 +52,7 @@ class AppConfig:
 
     # 应用信息
     APP_NAME = "桌宠看板"
-    APP_VERSION = "0.2.0"
+    APP_VERSION = "0.2.1"
     APP_ORG = "Personal"
 
     @classmethod
@@ -72,6 +72,8 @@ class AppConfig:
     KEY_REMIND_LOG = "remind/log"
     KEY_COLLAPSED_LISTS = "board/collapsed_lists"
     KEY_CARD_DIALOG_SIZE = "dialog/card_size"
+    KEY_LAST_WORKDIR = "dialog/last_workdir"
+    KEY_AUTOSTART = "app/autostart"
 
     @classmethod
     def get_expanded_size(cls):
@@ -221,6 +223,28 @@ class AppConfig:
     @classmethod
     def save_card_dialog_size(cls, size) -> None:
         _settings().setValue(cls.KEY_CARD_DIALOG_SIZE, size)
+
+    # ── 工作目录选择器的起始位置 ──────────────────────────────
+
+    @classmethod
+    def get_last_workdir(cls) -> str:
+        """上次选过的工作目录（可能已被移动/拔出，用前须验活）"""
+        return str(_settings().value(cls.KEY_LAST_WORKDIR, "") or "")
+
+    @classmethod
+    def save_last_workdir(cls, path: str) -> None:
+        _settings().setValue(cls.KEY_LAST_WORKDIR, path)
+
+    # ── 开机自启动偏好 ────────────────────────────────────────
+
+    @classmethod
+    def get_autostart(cls) -> bool:
+        """用户是否要开机自启动（默认关闭：不主动往系统启动项里写东西）"""
+        return _settings().value(cls.KEY_AUTOSTART, False, type=bool)
+
+    @classmethod
+    def save_autostart(cls, on: bool) -> None:
+        _settings().setValue(cls.KEY_AUTOSTART, on)
 
     # ── 数据路径 ──────────────────────────────────────────────
     _env_override = os.environ.get("PET_BOARD_DATA_DIR")
@@ -509,3 +533,15 @@ class AppConfig:
     # ── 平台检测 ──────────────────────────────────────────────
     IS_WINDOWS = sys.platform == "win32"
     IS_MACOS = sys.platform == "darwin"
+
+
+def workdir_start_dir(current: str = "") -> str:
+    """选择工作目录时的起始目录：卡片当前值 → 上次选过的目录 → 用户主目录
+
+    目录常在外接盘上，不在是常态：每个候选都要 is_dir 验活，否则记忆里一个
+    已拔出的盘会让选择器每次都停在打不开的位置，用户得从"此电脑"重新找起。
+    """
+    for cand in (current, AppConfig.get_last_workdir()):
+        if cand and Path(cand).is_dir():
+            return cand
+    return str(Path.home())

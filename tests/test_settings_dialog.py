@@ -82,16 +82,85 @@ class SettingsDialogTest(unittest.TestCase):
         self.dlg._lang_seg._buttons["en"].click()
         self.assertEqual(hits, ["en"])
 
+    def test_autostart_toggle_syncs_and_emits(self):
+        """开机自启动开关：随偏好回填，点击发信号（持久化由控制器负责）"""
+        self.assertFalse(self.dlg._autostart_toggle.isChecked())
+        self.dlg.sync_from_prefs("system", "zh", "milk", True, True,
+                                 autostart=True)
+        self.assertTrue(self.dlg._autostart_toggle.isChecked())
+        hits = []
+        self.dlg.signal_autostart_toggled.connect(hits.append)
+        self.dlg.set_autostart(False)        # 回滚路径：只改状态不发信号
+        self.assertEqual(hits, [])
+        self.assertFalse(self.dlg._autostart_toggle.isChecked())
+        self.dlg._autostart_toggle.click()
+        self.assertEqual(hits, [True])
+
     def test_retexts_in_english(self):
         i18n.set_lang("en")
         self.dlg.retexts()
         self.assertEqual(self.dlg.windowTitle(), "Settings")
         self.assertEqual(self.dlg._t_theme.text(), "Theme")
         self.assertEqual(self.dlg._dir_open_btn.text(), "Open Folder")
+        self.assertEqual(self.dlg._t_autostart.text(), "Launch at login")
 
     def test_skin_buttons_cover_all_skins(self):
         from app.config import AppConfig
         self.assertEqual(set(self.dlg._skin_buttons), set(AppConfig.PET_SKINS))
+
+    def test_skin_buttons_are_exclusive(self):
+        """皮肤单选：点新的自动取消旧的，且不能把唯一的选中项点掉
+
+        回归背景：四个按钮各自 checkable、没挂互斥组，点新皮肤时旧的仍
+        显示选中——皮肤实际换了（偏好已存），界面却像没换。
+        """
+        self.dlg.sync_from_prefs("system", "zh", "milk", True, True)
+        self.assertEqual(self._checked_skins(), {"milk"})
+        self.dlg._skin_buttons["choco"].click()
+        self.assertEqual(self._checked_skins(), {"choco"})
+        self.dlg._skin_buttons["snow"].click()
+        self.assertEqual(self._checked_skins(), {"snow"})
+        self.dlg._skin_buttons["snow"].click()      # 再点已选中的：不变
+        self.assertEqual(self._checked_skins(), {"snow"})
+
+    def test_set_skin_realigns_to_pref(self):
+        """偏好在别处被改（桌宠右键菜单）时，设置页回写为唯一选中项"""
+        self.dlg.sync_from_prefs("system", "zh", "milk", True, True)
+        self.dlg._skin_buttons["choco"].click()
+        self.dlg.set_skin("midnight")
+        self.assertEqual(self._checked_skins(), {"midnight"})
+
+    def test_sync_from_prefs_is_silent(self):
+        """同步偏好**不发信号**：它只是把真实状态刷进界面
+
+        此前 setChecked 照常 emit toggled，"打开设置"这个动作本身就会触发
+        置顶/动画等副作用（切置顶会重建主窗口原生句柄，连带隐藏子对话框，
+        表现即"设置打不开"）。
+        """
+        hits: dict[str, list] = {"theme": [], "lang": [], "anim": [],
+                                 "top": [], "auto": [], "remind": []}
+        self.dlg.signal_theme_selected.connect(hits["theme"].append)
+        self.dlg.signal_language_selected.connect(hits["lang"].append)
+        self.dlg.signal_animation_toggled.connect(hits["anim"].append)
+        self.dlg.signal_always_top_toggled.connect(hits["top"].append)
+        self.dlg.signal_autostart_toggled.connect(hits["auto"].append)
+        self.dlg.signal_remind_advance_changed.connect(hits["remind"].append)
+        # 一次性把所有控件都刷成与当前不同的值
+        self.dlg.sync_from_prefs("dark", "en", "snow", False, False,
+                                 remind_advance=3, autostart=True)
+        self.assertEqual({k: v for k, v in hits.items() if v}, {})
+
+    def test_sync_from_prefs_then_user_click_still_emits(self):
+        """静音只覆盖同步本身：同步之后再点，信号照常发出"""
+        self.dlg.sync_from_prefs("system", "zh", "milk", True, True,
+                                 autostart=False)
+        hits = []
+        self.dlg.signal_always_top_toggled.connect(hits.append)
+        self.dlg._top_toggle.click()
+        self.assertEqual(hits, [False])
+
+    def _checked_skins(self) -> set[str]:
+        return {k for k, b in self.dlg._skin_buttons.items() if b.isChecked()}
 
 
 if __name__ == "__main__":

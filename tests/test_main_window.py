@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QKeySequence
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QDialog, QWidget
 
 _qapp = QApplication.instance() or QApplication([])
 
@@ -70,6 +70,32 @@ class AlwaysOnTopTest(unittest.TestCase):
         self.assertTrue(self.w.isVisible())
         self.w.set_always_on_top(True)  # 已是置顶：不应触发隐藏/重建
         self.assertTrue(self.w.isVisible())
+
+    def test_toggle_keeps_open_dialogs_visible(self):
+        """切置顶不能把开着的对话框丢掉（模态窗口丢了=应用假死）
+
+        setWindowFlags 会隐藏并重建原生窗口，子对话框随之被隐藏；设置对话框
+        还是模态的——窗口没了、模态阻塞还在，点击全被吞掉，用户看到的就是
+        "点设置打不开"。离屏平台不做原生重建（对话框不会真的被藏），故这里
+        按 Qt 的既有行为显式模拟隐藏，再断言切换后它仍然可见。
+        """
+        self.w.show()
+        dlg = QDialog(self.w)
+        dlg.show()
+        self.assertTrue(dlg.isVisible())
+        orig_set_flag = self.w.setWindowFlag
+
+        def fake_set_window_flag(flag, on):
+            for d in self.w.findChildren(QDialog):
+                d.hide()            # 模拟原生窗口重建时的连带隐藏
+            orig_set_flag(flag, on)
+
+        with patch.object(self.w, "setWindowFlag",
+                          side_effect=fake_set_window_flag):
+            self.w.set_always_on_top(False)
+        self.assertTrue(dlg.isVisible())
+        dlg.close()
+        dlg.deleteLater()
 
 
 class ExpandedSizeDebounceTest(unittest.TestCase):

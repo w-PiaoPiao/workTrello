@@ -93,6 +93,12 @@ class DueDateOptionalTest(unittest.TestCase):
 class WorkDirOptionalTest(unittest.TestCase):
     """工作目录可选：新建默认未设置，编辑回填，浏览/清除，提交进 result_card"""
 
+    def setUp(self):
+        AppConfig.save_last_workdir("")     # 清掉上次记录，逐例从主目录起测
+
+    def tearDown(self):
+        AppConfig.save_last_workdir("")
+
     def test_new_card_defaults_to_empty(self):
         """新建卡片：默认"未设置"，清除按钮隐藏，提交 workdir 为空串"""
         dlg = CardDialog(None)
@@ -143,6 +149,85 @@ class WorkDirOptionalTest(unittest.TestCase):
             fd.getExistingDirectory.return_value = ""
             dlg._on_browse_workdir()
         self.assertEqual(dlg._workdir, "/tmp/proj")
+        dlg.deleteLater()
+
+    def test_browse_starts_from_last_picked_dir(self):
+        """起始目录：上次选过的目录还在 → 直接从这里打开（不再每次回主目录）"""
+        last = tempfile.mkdtemp()
+        AppConfig.save_last_workdir(last)
+        dlg = CardDialog(None)
+        with patch("app.views.card_dialog.QFileDialog") as fd:
+            fd.getExistingDirectory.return_value = ""
+            dlg._on_browse_workdir()
+        self.assertEqual(fd.getExistingDirectory.call_args[0][2], last)
+        dlg.deleteLater()
+
+    def test_browse_starts_from_card_dir_when_it_exists(self):
+        """卡片已有目录且可达：优先从卡片自己的目录打开"""
+        card_dir = tempfile.mkdtemp()
+        AppConfig.save_last_workdir(tempfile.mkdtemp())
+        dlg = CardDialog(Card(title="x", workdir=card_dir))
+        with patch("app.views.card_dialog.QFileDialog") as fd:
+            fd.getExistingDirectory.return_value = ""
+            dlg._on_browse_workdir()
+        self.assertEqual(fd.getExistingDirectory.call_args[0][2], card_dir)
+        dlg.deleteLater()
+
+    def test_browse_falls_back_to_home_when_last_dir_gone(self):
+        """上次目录已不在（移动硬盘拔了/文件夹删了）→ 回落到用户主目录"""
+        AppConfig.save_last_workdir(str(Path(tempfile.mkdtemp()) / "已删除"))
+        dlg = CardDialog(None)
+        with patch("app.views.card_dialog.QFileDialog") as fd:
+            fd.getExistingDirectory.return_value = ""
+            dlg._on_browse_workdir()
+        self.assertEqual(fd.getExistingDirectory.call_args[0][2],
+                         str(Path.home()))
+        dlg.deleteLater()
+
+    def test_browse_pick_updates_last_dir_memory(self):
+        """选中的目录写进记忆：下次（换张卡）从这里续上"""
+        picked = tempfile.mkdtemp()
+        with patch("app.views.card_dialog.QFileDialog") as fd:
+            fd.getExistingDirectory.return_value = picked
+            dlg = CardDialog(None)
+            dlg._on_browse_workdir()
+        self.assertEqual(AppConfig.get_last_workdir(), picked)
+        other = CardDialog(None)
+        with patch("app.views.card_dialog.QFileDialog") as fd:
+            fd.getExistingDirectory.return_value = ""
+            other._on_browse_workdir()
+        self.assertEqual(fd.getExistingDirectory.call_args[0][2], picked)
+        dlg.deleteLater()
+        other.deleteLater()
+
+
+class LabelChipTest(unittest.TestCase):
+    """标签色块：只靠颜色与边框表达，块内不写字（小字看不清）"""
+
+    def test_chip_has_no_text_but_keeps_tooltip(self):
+        from app.views.card_dialog import LabelChip
+        chip = LabelChip("blue")
+        self.assertEqual(chip.text(), "")
+        self.assertEqual(chip.toolTip(), "蓝色")     # 识别改由 tooltip 承担
+        self.assertEqual((chip.width(), chip.height()), (34, 22))
+        self.assertTrue(chip.isCheckable())
+
+    def test_checked_state_drawn_by_pseudo_state(self):
+        """选中态由 :checked 伪态驱动：勾选后样式表无需重设（边框自动加粗）"""
+        from app.views.card_dialog import LabelChip
+        chip = LabelChip("red")
+        style = chip.styleSheet()
+        chip.setChecked(True)
+        self.assertEqual(chip.styleSheet(), style)   # 同一份样式，未因勾选重拼
+        self.assertIn(":checked", style)
+        self.assertIn("2px solid", style)
+
+    def test_labels_backfilled_from_card(self):
+        """编辑已有标签的卡：对应色块为选中态，其余未选"""
+        dlg = CardDialog(Card(title="x", labels=["blue", "teal"]))
+        checked = {c.key() for c in dlg._label_chips if c.isChecked()}
+        self.assertEqual(checked, {"blue", "teal"})
+        self.assertEqual(dlg.result_card()["labels"], ["blue", "teal"])
         dlg.deleteLater()
 
 
@@ -428,6 +513,61 @@ class AttachmentRowsTest(unittest.TestCase):
             qa.clipboard.return_value.image.return_value = QImage()
             dlg._on_paste_image()
         self.assertEqual(dlg._attachments, [])
+        dlg.deleteLater()
+
+
+class RemoveButtonStyleTest(unittest.TestCase):
+    """回归：清单项 / 附件行的「✕」必须真的画得出来
+
+    QSS 只写 `background: transparent; border: none;` 而不给任何盒模型属性时，
+    Qt 的 QStyleSheetStyle 把按钮文字绘制区算成零尺寸——按钮还在、也点得到，
+    但 ✕ 一个像素都不画。用户看到的是"能加清单项，却没有删除按钮"。
+    离屏平台本身画不出 ✕ 字形（无样式也画不出），截图断言不可用，因此这里
+    锁住修好的那个不变量：样式表必须带显式 padding / min-width / min-height。
+    """
+
+    @staticmethod
+    def _assert_box_declared(case, btn):
+        qss = btn.styleSheet()
+        has_box = any(k in qss for k in ("padding", "min-width", "min-height"))
+        case.assertTrue(
+            has_box,
+            f"✕ 按钮缺少盒模型属性，文字绘制区会被压成 0（按钮不可见）：{qss}")
+
+    def test_checklist_remove_button_is_visible(self):
+        dlg = CardDialog(None)
+        dlg._add_check_row("第一项", False)
+        _check, edit = dlg._check_rows[0]
+        btn = edit.parentWidget().layout().itemAt(2).widget()
+        self.assertEqual(btn.text(), "✕")
+        self.assertEqual(btn.toolTip(), "删除该清单项")
+        self.assertTrue(btn.isVisibleTo(dlg))
+        self._assert_box_declared(self, btn)
+        dlg.deleteLater()
+
+    def test_attachment_remove_button_is_visible(self):
+        att = {"id": "a1", "name": "a.png", "path": "/tmp/a.png",
+               "is_image": True}
+        dlg = CardDialog(Card(title="x", attachments=[att]))
+        row = dlg._attach_rows_layout.itemAt(0).widget()
+        btn = row.layout().itemAt(2).widget()
+        self.assertEqual(btn.text(), "✕")
+        self.assertEqual(btn.toolTip(), "移除附件")
+        self._assert_box_declared(self, btn)
+        dlg.deleteLater()
+
+    def test_both_remove_buttons_share_one_style(self):
+        """两处 ✕ 共用 _remove_button_style：修一处即修两处，不会再各写一份"""
+        dlg = CardDialog(Card(
+            title="x",
+            checklist=[{"text": "项", "done": False}],
+            attachments=[{"id": "a1", "name": "a.png", "path": "/tmp/a.png",
+                          "is_image": False}]))
+        _check, edit = dlg._check_rows[0]
+        check_btn = edit.parentWidget().layout().itemAt(2).widget()
+        row = dlg._attach_rows_layout.itemAt(0).widget()
+        att_btn = row.layout().itemAt(2).widget()
+        self.assertEqual(check_btn.styleSheet(), att_btn.styleSheet())
         dlg.deleteLater()
 
 
