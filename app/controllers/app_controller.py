@@ -166,7 +166,7 @@ class AppController(QObject):
 
         # ── 显示 ──────────────────────────────────────────
         self._window.show()
-        self._window.start_collapsed_idle()
+        self._open_in_default_view()
 
     # ── 公共访问 ──────────────────────────────────────────
 
@@ -1269,6 +1269,8 @@ class AppController(QObject):
             dlg.signal_autostart_toggled.connect(self._on_autostart_toggled)
             dlg.signal_remind_advance_changed.connect(
                 AppConfig.save_remind_advance)
+            dlg.signal_default_view_selected.connect(
+                AppConfig.save_default_view)
             i18n.register(dlg.retexts)          # 语言切换整页刷新
             AppTheme.register(dlg.reapply_theme)
             self._settings_dialog = dlg
@@ -1279,7 +1281,8 @@ class AppController(QObject):
             animation=AppConfig.get_animation_enabled(),
             always_top=self._window.is_always_on_top(),
             remind_advance=AppConfig.get_remind_advance(),
-            autostart=self._autostart_state())
+            autostart=self._autostart_state(),
+            default_view=AppConfig.get_default_view())
         self._settings_dialog.show()
         self._settings_dialog.raise_()
         self._settings_dialog.activateWindow()
@@ -1944,10 +1947,30 @@ class AppController(QObject):
         self._tray.set_window_visible(visible)
 
     def _on_tray_show(self) -> None:
+        """托盘"显示"：按偏好形态打开
+
+        窗口隐藏时 hideEvent 已把它压回折叠态，故 show 出来的必然是桌宠；
+        是否再展开由 _open_in_default_view 按偏好决定。
+        """
         self._window.show_and_activate()
+        self._open_in_default_view()
 
     def _on_tray_hide(self) -> None:
         self._window.hide_to_tray()
+
+    def _open_in_default_view(self) -> None:
+        """把刚显示出来的窗口落到"默认打开形态"偏好对应的形态
+
+        启动与托盘"显示"共用这一处判断。偏好看板时走 expand()——与点击
+        桌宠完全同一条路（首帧构建看板控件 + 展开动画），所以折叠态启动
+        不建看板控件那条启动优化依然成立：偏好桌宠时一行看板代码都不会跑。
+        偏好桌宠时只保证待机动画在跑（托盘路径 show_and_activate 已起过，
+        重复调用是重启同一组动画，无副作用）。
+        """
+        if AppConfig.get_default_view() == "board":
+            self._window.expand()
+        else:
+            self._window.start_collapsed_idle()
 
     def _on_close_requested(self) -> None:
         """窗口 ✕（Windows 标题栏关闭键 / macOS 红绿灯红灯）= 最小化到托盘

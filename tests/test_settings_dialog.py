@@ -13,11 +13,15 @@ os.environ["PET_BOARD_DATA_DIR"] = tempfile.mkdtemp()
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from PySide6.QtCore import QRectF
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 _qapp = QApplication.instance() or QApplication([])
 
 from app import i18n
+from app.config import AppConfig
+from app.views import motion
 from app.views.controls import SegmentedControl, ToggleSwitch
 from app.views.settings_dialog import SettingsDialog
 
@@ -40,6 +44,61 @@ class ControlsTest(unittest.TestCase):
         seg.retexts([("a", "A"), ("b", "B")])
         self.assertEqual(seg._buttons["a"].text(), "A")
         self.assertEqual(seg.value(), "b")
+
+    def _seg(self, values=("a", "A", "b", "B")) -> SegmentedControl:
+        seg = SegmentedControl([(values[0], values[1]), (values[2], values[3])])
+        seg.show()                 # 触发布局：高亮块要贴按钮真实几何
+        _qapp.processEvents()
+        return seg
+
+    def test_segmented_pill_sits_on_selection_without_animating(self):
+        """set_value 是"同步真实偏好"，高亮块必须瞬时落位
+
+        回归背景：选中态原先只是按钮自己的 :checked 边框，点另一侧时没有
+        任何东西在动，看不出选中项换到了哪边（"点了没反应"）。改成容器自绘
+        高亮块后，同步路径仍不许播动画——打开设置这个动作不该在动。
+        """
+        seg = self._seg()
+        seg.set_value("b")
+        self.assertEqual(seg._selected, "b")
+        self.assertIsNone(seg._pill_anim)              # 不播动画
+        self.assertEqual(seg._pill, QRectF(seg._buttons["b"].geometry()))
+
+    def test_segmented_pill_slides_on_click(self):
+        """用户点击：高亮块滑向被点中的按钮，而不是原地消失再出现在另一侧"""
+        seg = self._seg()
+        seg.set_value("a")
+        start = QRectF(seg._pill)
+        self.assertEqual(start, QRectF(seg._buttons["a"].geometry()))
+        seg._buttons["b"].click()
+        self.assertIsNotNone(seg._pill_anim)           # 播动画，不是瞬时跳
+        QTest.qWait(AppConfig.SEGMENT_PILL_MS + 150)
+        self.assertIsNone(seg._pill_anim)
+        self.assertEqual(seg._pill, QRectF(seg._buttons["b"].geometry()))
+        self.assertNotEqual(start, seg._pill)
+
+    def test_segmented_pill_follows_retexts_relayout(self):
+        """切语言后按钮文字变宽 → 高亮块要跟着新几何落位，不能停在旧位置"""
+        seg = self._seg(("zh", "中文", "en", "English"))
+        seg.set_value("en")
+        seg.retexts([("zh", "Chinese"), ("en", "English")])
+        _qapp.processEvents()          # 让重排请求跑完
+        seg.retexts([("zh", "中"), ("en", "E")])   # 大幅缩窄，几何必然变
+        _qapp.processEvents()
+        self.assertEqual(seg._pill, QRectF(seg._buttons["en"].geometry()))
+
+    def test_segmented_pill_snaps_when_animation_paused(self):
+        """「暂停动画」总开关一关：高亮块瞬时落位，不建动画对象"""
+        seg = self._seg()
+        seg.set_value("a")
+        original = motion.enabled()
+        try:
+            motion.set_enabled(False)
+            seg._buttons["b"].click()
+            self.assertIsNone(seg._pill_anim)
+            self.assertEqual(seg._pill, QRectF(seg._buttons["b"].geometry()))
+        finally:
+            motion.set_enabled(original)
 
     def test_toggle_switch_checked_emits_once(self):
         t = ToggleSwitch()
@@ -103,6 +162,28 @@ class SettingsDialogTest(unittest.TestCase):
         self.assertEqual(self.dlg._t_theme.text(), "Theme")
         self.assertEqual(self.dlg._dir_open_btn.text(), "Open Folder")
         self.assertEqual(self.dlg._t_autostart.text(), "Launch at login")
+        self.assertEqual(self.dlg._t_view.text(), "Default view on open")
+
+    # ── 默认打开形态 ──────────────────────────────────────
+
+    def test_default_view_options_and_signal(self):
+        """默认打开形态是二选一段控：点选发信号，值只有 pet/board"""
+        self.assertEqual(set(self.dlg._view_seg._buttons), {"pet", "board"})
+        hits = []
+        self.dlg.signal_default_view_selected.connect(hits.append)
+        self.dlg._view_seg._buttons["board"].click()
+        self.assertEqual(hits, ["board"])
+        self.assertEqual(self.dlg._view_seg.value(), "board")
+
+    def test_default_view_synced_from_pref(self):
+        """打开设置时回填真实偏好（段控与主题/语言一样由同步填入选中项）"""
+        self.assertIsNone(self.dlg._view_seg.value())    # 构造时无选中
+        self.dlg.sync_from_prefs("system", "zh", "milk", True, True,
+                                 default_view="board")
+        self.assertEqual(self.dlg._view_seg.value(), "board")
+        self.dlg.sync_from_prefs("system", "zh", "milk", True, True,
+                                 default_view="pet")
+        self.assertEqual(self.dlg._view_seg.value(), "pet")
 
     def test_skin_buttons_cover_all_skins(self):
         from app.config import AppConfig
@@ -138,16 +219,19 @@ class SettingsDialogTest(unittest.TestCase):
         表现即"设置打不开"）。
         """
         hits: dict[str, list] = {"theme": [], "lang": [], "anim": [],
-                                 "top": [], "auto": [], "remind": []}
+                                 "top": [], "auto": [], "remind": [],
+                                 "view": []}
         self.dlg.signal_theme_selected.connect(hits["theme"].append)
         self.dlg.signal_language_selected.connect(hits["lang"].append)
         self.dlg.signal_animation_toggled.connect(hits["anim"].append)
         self.dlg.signal_always_top_toggled.connect(hits["top"].append)
         self.dlg.signal_autostart_toggled.connect(hits["auto"].append)
         self.dlg.signal_remind_advance_changed.connect(hits["remind"].append)
+        self.dlg.signal_default_view_selected.connect(hits["view"].append)
         # 一次性把所有控件都刷成与当前不同的值
         self.dlg.sync_from_prefs("dark", "en", "snow", False, False,
-                                 remind_advance=3, autostart=True)
+                                 remind_advance=3, autostart=True,
+                                 default_view="board")
         self.assertEqual({k: v for k, v in hits.items() if v}, {})
 
     def test_sync_from_prefs_then_user_click_still_emits(self):

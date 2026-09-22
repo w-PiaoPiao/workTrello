@@ -101,6 +101,7 @@ class SettingsDialog(QDialog):
     signal_always_top_toggled = Signal(bool)
     signal_remind_advance_changed = Signal(int)  # 截止提前提醒天数 0~3
     signal_autostart_toggled = Signal(bool)      # 开机自启动
+    signal_default_view_selected = Signal(str)   # pet / board
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -182,6 +183,13 @@ class SettingsDialog(QDialog):
 
         # 窗口
         self._sec_window = _Section(tr("窗口"))
+        self._view_seg = SegmentedControl(
+            [("pet", tr("桌宠")), ("board", tr("展开看板"))])
+        self._view_seg.changed.connect(self.signal_default_view_selected.emit)
+        self._t_view, self._h_view = self._sec_window.add_row(
+            tr("默认打开形态"),
+            tr("启动应用或从托盘显示时，以哪种形态打开"),
+            self._view_seg)
         self._top_toggle = ToggleSwitch()
         self._top_toggle.toggled.connect(self.signal_always_top_toggled.emit)
         self._t_top, self._h_top = self._sec_window.add_row(
@@ -191,7 +199,7 @@ class SettingsDialog(QDialog):
         self._autostart_toggle.toggled.connect(
             self.signal_autostart_toggled.emit)
         self._t_autostart, self._h_autostart = self._sec_window.add_row(
-            tr("开机自启动"), tr("登录系统后自动启动，以桌宠形态常驻托盘"),
+            tr("开机自启动"), tr("登录系统后自动启动，常驻托盘"),
             self._autostart_toggle)
         page.addWidget(self._sec_window)
 
@@ -258,7 +266,8 @@ class SettingsDialog(QDialog):
     def sync_from_prefs(self, theme_mode: str, lang: str, skin: str,
                         animation: bool, always_top: bool,
                         remind_advance: int = 0,
-                        autostart: bool = False) -> None:
+                        autostart: bool = False,
+                        default_view: str = "pet") -> None:
         """打开时把当前偏好刷进控件（偏好可能被桌宠菜单等其他入口改过）
 
         全程静音：这是"把真实状态刷进界面"，不是用户按了什么。此前
@@ -273,6 +282,8 @@ class SettingsDialog(QDialog):
         try:
             self._theme_seg.set_value(theme_mode)
             self._lang_seg.set_value(lang)
+            # 分段控件只在用户点击时发 changed，set_value 天然静音
+            self._view_seg.set_value(default_view)
             self.set_skin(skin)
             self._anim_toggle.setChecked(animation)
             self._top_toggle.setChecked(always_top)
@@ -323,10 +334,13 @@ class SettingsDialog(QDialog):
         for key, btn in self._skin_buttons.items():
             btn.setText(skin_display(key))
         self._sec_window.retexts(tr("窗口"))
+        self._t_view.setText(tr("默认打开形态"))
+        self._h_view.setText(tr("启动应用或从托盘显示时，以哪种形态打开"))
+        self._view_seg.retexts([("pet", tr("桌宠")), ("board", tr("展开看板"))])
         self._t_top.setText(tr("窗口置顶"))
         self._h_top.setText(tr("桌宠与看板始终悬浮在其他窗口之上"))
         self._t_autostart.setText(tr("开机自启动"))
-        self._h_autostart.setText(tr("登录系统后自动启动，以桌宠形态常驻托盘"))
+        self._h_autostart.setText(tr("登录系统后自动启动，常驻托盘"))
         self._sec_remind.retexts(tr("提醒"))
         self._t_remind.setText(tr("截止提前提醒"))
         self._h_remind.setText(tr("距离截止日还剩 N 天时也开始提醒"))
@@ -393,19 +407,20 @@ class SettingsDialog(QDialog):
                 font-size: 12px;
                 background: transparent;
             }}
+            /* 选中态的背景/边框由 SegmentedControl 自绘（会滑动的高亮块），
+               按钮只上文字色——两边都画就会叠成两层色块 */
             QPushButton#segmentBtn {{
                 background: transparent;
                 color: {c['text_secondary']};
-                border: 1px solid transparent;
+                border: none;
                 border-radius: {AppConfig.UI_RADIUS_PILL}px;
                 padding: {AppConfig.UI_PAD_PILL};
                 font-size: 12px;
             }}
             QPushButton#segmentBtn:hover {{ color: {c['text_primary']}; }}
             QPushButton#segmentBtn:checked {{
-                background: {c['accent_soft']};
+                background: transparent;
                 color: {c['accent']};
-                border: 1.5px solid {c['accent']};
                 font-weight: bold;
             }}
             QPushButton#skinBtn {{

@@ -140,6 +140,9 @@ _zh_en: dict[str, str] = {
     "外观": "Appearance",
     "语言 / Language": "Language",
     "窗口": "Window",
+    "默认打开形态": "Default view on open",
+    "启动应用或从托盘显示时，以哪种形态打开":
+        "Which form the app opens in — on launch or when shown from the tray",
     "数据": "Data",
     "关于": "About",
     "跟随系统": "System",
@@ -159,8 +162,8 @@ _zh_en: dict[str, str] = {
     "桌宠与看板始终悬浮在其他窗口之上":
         "Keep the pet and board floating above other windows",
     "开机自启动": "Launch at login",
-    "登录系统后自动启动，以桌宠形态常驻托盘":
-        "Start automatically at login, living in the tray as a pet",
+    "登录系统后自动启动，常驻托盘":
+        "Start automatically at login, living in the tray",
     "已开启开机自启动": "Launch at login enabled",
     "已关闭开机自启动": "Launch at login disabled",
     "开机自启动设置失败（系统权限或策略限制）":

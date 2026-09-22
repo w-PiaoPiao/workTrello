@@ -74,6 +74,7 @@ class AppConfig:
     KEY_CARD_DIALOG_SIZE = "dialog/card_size"
     KEY_LAST_WORKDIR = "dialog/last_workdir"
     KEY_AUTOSTART = "app/autostart"
+    KEY_DEFAULT_VIEW = "window/default_view"
 
     @classmethod
     def get_expanded_size(cls):
@@ -246,6 +247,26 @@ class AppConfig:
     def save_autostart(cls, on: bool) -> None:
         _settings().setValue(cls.KEY_AUTOSTART, on)
 
+    # ── 默认打开形态（启动 / 从托盘显示以哪种形态出现）────────
+
+    DEFAULT_VIEWS = ("pet", "board")
+
+    @classmethod
+    def get_default_view(cls) -> str:
+        """默认打开形态："pet" 桌宠（折叠）/"board" 展开看板
+
+        非法值一律回退 pet：偏好损坏时宁可退回最保守的形态，也不能让窗口
+        以一个界面上选不出来的状态打开。
+        """
+        val = str(_settings().value(cls.KEY_DEFAULT_VIEW, "pet") or "")
+        return val if val in cls.DEFAULT_VIEWS else "pet"
+
+    @classmethod
+    def save_default_view(cls, view: str) -> None:
+        if view not in cls.DEFAULT_VIEWS:
+            return
+        _settings().setValue(cls.KEY_DEFAULT_VIEW, view)
+
     # ── 数据路径 ──────────────────────────────────────────────
     _env_override = os.environ.get("PET_BOARD_DATA_DIR")
     if _env_override:
@@ -321,6 +342,7 @@ class AppConfig:
     CARD_EXIT_ANIM_MS = 120     # 卡片删除淡出
     POPOVER_ANIM_MS = 130       # 弹层淡入（备注浮层 / 今日清单）
     HOVER_ANIM_MS = 110         # 悬停控件淡入（卡片右上角删除按钮）
+    SEGMENT_PILL_MS = 160       # 分段控件选中高亮块滑动（设置页主题/语言/形态）
     # 单次刷新最多为多少张卡播放增删动画：超出则直接切换。
     # 实测同时动画 60 张卡约 1.5ms/帧（占 60fps 预算 9%），搜索/过滤这类
     # 批量增删必须设上限，否则逐键输入会把多轮动画叠在一起。

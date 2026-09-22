@@ -715,6 +715,52 @@ class ControllerFeatureTest(unittest.TestCase):
         self.assertEqual(quit_.call_count, 1)
         self.c._on_tray_show()
 
+    # ── 默认打开形态（启动 / 托盘显示以桌宠还是看板出现） ────
+
+    def test_default_view_pref_roundtrip_and_fallback(self):
+        """偏好读写往返；非法值回退桌宠（界面选不出的值不能生效）"""
+        self.assertEqual(AppConfig.get_default_view(), "pet")   # 默认桌宠
+        AppConfig.save_default_view("board")
+        self.assertEqual(AppConfig.get_default_view(), "board")
+        AppConfig.save_default_view("pet")
+        self.assertEqual(AppConfig.get_default_view(), "pet")
+        AppConfig.save_default_view("乱写的值")
+        self.assertEqual(AppConfig.get_default_view(), "pet")
+
+    def test_tray_show_opens_board_when_pref_board(self):
+        """偏好看板时，托盘"显示"直接展开看板，而不是停在桌宠形态
+
+        回归背景：隐藏时窗口被压回折叠态，托盘显示固定落回桌宠——偏好
+        看板的用户每次都得再点一次桌宠才看得到看板。
+        """
+        self._reset()
+        with patch.object(AppConfig, "get_default_view", return_value="board"):
+            self.c._on_tray_show()
+            self.assertTrue(self.c._window.isVisible())
+            self.assertEqual(self.c._window.mode, "expanded")
+        self.c._window.hide_to_tray()      # 收尾：别把展开态留给后续用例
+
+    def test_tray_show_stays_pet_when_pref_pet(self):
+        """偏好桌宠时，托盘"显示"停在桌宠形态（原行为不变）"""
+        self._reset()
+        with patch.object(AppConfig, "get_default_view", return_value="pet"):
+            self.c._on_tray_show()
+            self.assertTrue(self.c._window.isVisible())
+            self.assertEqual(self.c._window.mode, "collapsed")
+        self.c._window.hide_to_tray()
+
+    def test_startup_open_uses_pref(self):
+        """启动显示走同一处偏好判断：看板偏好展开、桌宠偏好停在折叠态"""
+        self._reset()
+        with patch.object(AppConfig, "get_default_view", return_value="board"):
+            self.c._open_in_default_view()
+            self.assertEqual(self.c._window.mode, "expanded")
+        self.c._window.hide_to_tray()
+        with patch.object(AppConfig, "get_default_view", return_value="pet"):
+            self.c._open_in_default_view()
+            self.assertEqual(self.c._window.mode, "collapsed")
+        self.c._window.hide_to_tray()
+
     # ── 截止提醒（逐卡检查，每天每卡只提醒一次） ─────────────
 
     def test_due_check_reminds_each_card_once_per_day(self):
