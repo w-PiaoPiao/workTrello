@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import (QPointF, QEasingCurve, QRectF, Qt,
+from PySide6.QtCore import (QPointF, QEasingCurve, QEvent, QRectF, Qt,
                             QVariantAnimation, Signal)
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QAbstractButton, QButtonGroup, QFrame, QHBoxLayout, QPushButton
@@ -103,6 +103,13 @@ class SegmentedControl(QFrame):
 
     滑动只在**用户点击**时播（点哪儿滑哪儿）；set_value 是同步真实偏好、
     布局变化是重排，都必须瞬时落位——否则"打开设置"这个动作本身就在动画。
+
+    几何**不缓存**：静止时每次绘制现取选中按钮的 geometry，只在动画期间用
+    插值。缓存过一次就错过——Qt 可能先把容器的 resize 事件发出来、之后才
+    activate 布局（macOS 实测如此），在 resizeEvent 里读按钮几何拿到的是中间
+    态，高亮块会偏差几个像素；而布局落位按钮本身不会惊动容器的 resizeEvent，
+    没有任何时机能补上这一笔。改为监听按钮自身的 Move/Resize 触发重绘（见
+    eventFilter），绘制时现取，偏差从结构上不可能发生。
     """
 
     changed = Signal(str)   # 新选中的 value
@@ -123,10 +130,11 @@ class SegmentedControl(QFrame):
             btn.setCursor(Qt.PointingHandCursor)
             btn.setFocusPolicy(Qt.NoFocus)
             btn.clicked.connect(lambda _=False, v=value: self._on_clicked(v))
+            btn.installEventFilter(self)   # 布局落位 → 重绘（见 eventFilter）
             self._group.addButton(btn)
             self._buttons[value] = btn
             lay.addWidget(btn)
-        self._pill = QRectF()            # 高亮块当前几何（动画中为插值）
+        self._pill = QRectF()            # 仅动画期间有效：插值中的高亮块几何
         self._selected: str | None = None
         self._pill_anim: QVariantAnimation | None = None
 
@@ -136,22 +144,34 @@ class SegmentedControl(QFrame):
         self._move_pill(value, animate=True)
         self.changed.emit(value)
 
+    def _paint_rect(self) -> QRectF:
+        """本次绘制该画的高亮块几何
+
+        静止时现取选中按钮的 geometry——**不缓存**：布局落位按钮的时机既不在
+        容器的 resizeEvent 里、也不保证任何时点能补上，缓存值会停在中间态
+        （macOS 实测偏 2px，CI 抓到）。动画期间才用插值。
+        """
+        if self._pill_anim is not None:
+            return QRectF(self._pill)
+        btn = self._buttons.get(self._selected) if self._selected else None
+        return QRectF(btn.geometry()) if btn is not None else QRectF()
+
     def _move_pill(self, value: str, animate: bool) -> None:
         btn = self._buttons.get(value)
         if btn is None:
             return
+        start = self._paint_rect()          # 此刻 _selected 仍是旧值
         self._selected = value
-        start, target = QRectF(self._pill), QRectF(btn.geometry())
+        target = QRectF(btn.geometry())
         if self._pill_anim is not None:
             self._pill_anim.stop()
             self._pill_anim = None
-        if start.isNull():
-            animate = False          # 首次落位（布局还没跑过）没有起点
-        if start == target:
-            animate = False          # 原地：别为没位移的切换空转一次动画
-        if not animate or not motion.enabled():
-            # "暂停动画"总开关：高亮块同样瞬时落位
-            self._set_pill(target)
+        # 无起点（布局还没跑过）/ 原地 / 非用户点击 / "暂停动画"总开关：
+        # 一律瞬时落位，把几何交回"绘制时现取"
+        if (start.isNull() or start == target or not animate
+                or not motion.enabled()):
+            self._pill = QRectF()
+            self.update()
             return
         anim = QVariantAnimation(self)
         anim.setDuration(AppConfig.SEGMENT_PILL_MS)
@@ -159,25 +179,30 @@ class SegmentedControl(QFrame):
         anim.setStartValue(0.0)
         anim.setEndValue(1.0)
         anim.valueChanged.connect(
-            lambda t: self._set_pill(_lerp_rect(start, target, float(t))))
+            lambda t: self._set_anim_pill(_lerp_rect(start, target, float(t))))
 
         def _done() -> None:
+            # 终点交还给按钮自己：动画的值只是过渡，最终几何以布局为准
             self._pill_anim = None
-            self._set_pill(target)
+            self._pill = QRectF()
+            self.update()
             anim.deleteLater()
 
         anim.finished.connect(_done)
         self._pill_anim = anim
+        self._pill = start          # 起播首帧就有几何，不留空窗
         anim.start()
 
-    def _set_pill(self, rect: QRectF) -> None:
+    def _set_anim_pill(self, rect: QRectF) -> None:
+        """动画推进：只改插值几何"""
         self._pill = rect
         self.update()
 
     def paintEvent(self, event) -> None:
         # 基类先画（宿主将来若给容器下发底色，高亮块才不会压在它下面）
         super().paintEvent(event)
-        if self._pill.isEmpty():
+        rect = self._paint_rect()
+        if rect.isEmpty():
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -186,20 +211,19 @@ class SegmentedControl(QFrame):
         painter.setPen(QPen(QColor(c["accent"]), 1.5))
         painter.setBrush(QColor(c["accent_soft"]))
         r = AppConfig.UI_RADIUS_PILL
-        painter.drawRoundedRect(
-            self._pill.adjusted(0.75, 0.75, -0.75, -0.75), r, r)
+        painter.drawRoundedRect(rect.adjusted(0.75, 0.75, -0.75, -0.75), r, r)
         painter.end()
 
-    def resizeEvent(self, event) -> None:
-        """重排（首次布局/窗口缩放）后高亮块跟上当前选中项"""
-        super().resizeEvent(event)
-        if self._selected is not None:
-            self._move_pill(self._selected, animate=False)
+    def eventFilter(self, obj, event) -> bool:
+        """按钮被布局挪动/改尺寸 → 重绘高亮块
 
-    def showEvent(self, event) -> None:
-        super().showEvent(event)
-        if self._selected is not None:
-            self._move_pill(self._selected, animate=False)
+        容器自身的 resizeEvent 不是可靠时机（Qt 可能先发它、之后再 activate
+        布局，见类注释），盯按钮自己的 Move/Resize 才对得上。
+        """
+        if (event.type() in (QEvent.Move, QEvent.Resize)
+                and self._selected is not None):
+            self.update()
+        return super().eventFilter(obj, event)
 
     def set_value(self, value: str) -> None:
         btn = self._buttons.get(value)

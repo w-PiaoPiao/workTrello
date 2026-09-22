@@ -62,20 +62,41 @@ class ControlsTest(unittest.TestCase):
         seg.set_value("b")
         self.assertEqual(seg._selected, "b")
         self.assertIsNone(seg._pill_anim)              # 不播动画
-        self.assertEqual(seg._pill, QRectF(seg._buttons["b"].geometry()))
+        self.assertEqual(seg._paint_rect(),
+                         QRectF(seg._buttons["b"].geometry()))
 
     def test_segmented_pill_slides_on_click(self):
         """用户点击：高亮块滑向被点中的按钮，而不是原地消失再出现在另一侧"""
         seg = self._seg()
         seg.set_value("a")
-        start = QRectF(seg._pill)
-        self.assertEqual(start, QRectF(seg._buttons["a"].geometry()))
+        pet_rect = QRectF(seg._buttons["a"].geometry())
+        board_rect = QRectF(seg._buttons["b"].geometry())
+        self.assertEqual(seg._paint_rect(), pet_rect)
         seg._buttons["b"].click()
         self.assertIsNotNone(seg._pill_anim)           # 播动画，不是瞬时跳
+        QTest.qWait(AppConfig.SEGMENT_PILL_MS // 4)
+        mid = QRectF(seg._pill)
+        self.assertIsNotNone(seg._pill_anim)           # 仍在滑动途中
+        self.assertLessEqual(pet_rect.x(), mid.x())
+        self.assertLessEqual(mid.x(), board_rect.x())
         QTest.qWait(AppConfig.SEGMENT_PILL_MS + 150)
         self.assertIsNone(seg._pill_anim)
-        self.assertEqual(seg._pill, QRectF(seg._buttons["b"].geometry()))
-        self.assertNotEqual(start, seg._pill)
+        self.assertEqual(seg._paint_rect(), board_rect)
+
+    def test_segmented_pill_tracks_button_geometry_without_cache(self):
+        """高亮块几何不缓存：按钮被挪动后立刻跟上，不依赖容器 resize
+
+        回归背景：几何原先是缓存值、只在容器的 resizeEvent 里更新。但 Qt 在
+        macOS 上先发容器 resizeEvent、之后才 activate 布局，那一刻读到的还是
+        中间态（CI 实测偏 2px）；而布局挪动按钮自身不会再触发容器 resize，
+        没有任何时机能补上。改为绘制时现取后，直接挪按钮即可验证。
+        """
+        seg = self._seg()
+        seg.set_value("b")
+        btn = seg._buttons["b"]
+        btn.move(btn.x() + 7, btn.y())
+        btn.resize(btn.width() + 5, btn.height())
+        self.assertEqual(seg._paint_rect(), QRectF(btn.geometry()))
 
     def test_segmented_pill_follows_retexts_relayout(self):
         """切语言后按钮文字变宽 → 高亮块要跟着新几何落位，不能停在旧位置"""
@@ -85,7 +106,8 @@ class ControlsTest(unittest.TestCase):
         _qapp.processEvents()          # 让重排请求跑完
         seg.retexts([("zh", "中"), ("en", "E")])   # 大幅缩窄，几何必然变
         _qapp.processEvents()
-        self.assertEqual(seg._pill, QRectF(seg._buttons["en"].geometry()))
+        self.assertEqual(seg._paint_rect(),
+                         QRectF(seg._buttons["en"].geometry()))
 
     def test_segmented_pill_snaps_when_animation_paused(self):
         """「暂停动画」总开关一关：高亮块瞬时落位，不建动画对象"""
@@ -96,7 +118,8 @@ class ControlsTest(unittest.TestCase):
             motion.set_enabled(False)
             seg._buttons["b"].click()
             self.assertIsNone(seg._pill_anim)
-            self.assertEqual(seg._pill, QRectF(seg._buttons["b"].geometry()))
+            self.assertEqual(seg._paint_rect(),
+                             QRectF(seg._buttons["b"].geometry()))
         finally:
             motion.set_enabled(original)
 
