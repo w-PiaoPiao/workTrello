@@ -625,9 +625,17 @@ class CardWidget(QFrame):
         必须覆盖 rebuild() 实际渲染的每个字段：遗漏字段曾让优先级/重复/
         番茄数变化时不重建，卡片一直显示旧徽章，直到其他字段变化才连带
         刷新。tests/test_board_view.py 有字段覆盖断言兜底。
+
+        "今天"同样在渲染字段之列：截止徽标是「今天截止 / 明天截止 /
+        已逾期 9/20」这类相对文案，只认 due_date 的话，跨天后任何一次
+        refresh 都会被指纹短路，徽标停在昨天的文案，直到进程重启才纠正
+        （本应用常驻托盘，开着过夜是常态）。无日期卡片用 0 占位，跨天
+        不会连带重建全板。
         """
         c = self._card
-        return (c.title, c.done, c.due_date, bool(c.notes), bool(c.workdir),
+        return (c.title, c.done, c.due_date,
+                date.today().toordinal() if c.due_date else 0,
+                bool(c.notes), bool(c.workdir),
                 tuple(c.labels), c.priority, c.repeat, c.pomodoros,
                 tuple((it.get("text"), bool(it.get("done")))
                       for it in c.checklist),

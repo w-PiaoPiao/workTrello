@@ -109,17 +109,18 @@ class AppController(QObject):
         if app is not None:
             app.aboutToQuit.connect(self._on_about_to_quit)
 
-        # ── 撤销/重做 / 截止提醒 / 系统主题跟随 / 番茄钟 ──
+        # ── 撤销/重做 / 日期检查 / 系统主题跟随 / 番茄钟 ──
         self._undo_stack: list[dict] = []
         self._redo_stack: list[dict] = []
         self._today_popover: TodayPopover | None = None   # 今日清单浮窗（惰性创建）
+        self._ui_day = date.today()   # 日相关视图的渲染日期（跨天检测基线）
         self._due_timer = QTimer(self)
         self._due_timer.setInterval(AppConfig.DUE_CHECK_INTERVAL_MS)
-        self._due_timer.timeout.connect(self._check_due_dates)
+        self._due_timer.timeout.connect(self._on_date_check)
         self._due_timer.start()
         # 启动后立即检查一次(等窗口就绪,避免提醒弹在启动瞬间)；
         # 之后由 DUE_CHECK_INTERVAL_MS 周期驱动
-        QTimer.singleShot(2000, self._check_due_dates)
+        QTimer.singleShot(2000, self._on_date_check)
         self._pomo_card_id: str | None = None
         self._pomo_shown_minute: int | None = None   # 托盘 tooltip 已显示的分钟位
         self._pomo_left = 0
@@ -1594,6 +1595,46 @@ class AppController(QObject):
         self._after_data_change(None)
         self._notify(tr("已重做"))
 
+    # ── 日期检查（跨天刷新 + 截止提醒）────────────────────
+
+    def _on_date_check(self) -> None:
+        """分钟级日期检查：先补跨天刷新，再走截止提醒
+
+        两件事共用同一个定时器（1 分钟一次，空转成本可忽略），职责分开：
+        跨天刷新管"视图显示得对不对"，截止提醒管"要不要弹通知"。
+        """
+        self._refresh_if_new_day()
+        self._check_due_dates()
+
+    def _refresh_if_new_day(self) -> None:
+        """跨天刷新：日相关的内容全是渲染时快照，进程不重启就永不更新
+
+        看板卡片的截止徽标（今天/明天截止）、桌宠表情与角标（逾期难过）、
+        今日清单浮窗、日历的"今天"高亮、归档的周统计都以 date.today() 为
+        准，而它们只在数据变更链路上重算。本应用是常驻托盘的小挂件，开着
+        过夜是常态：没有这一步，昨天的"明天截止"会一直挂着，直到用户碰出
+        一次数据变更或重启进程。看板控件尚未构建（折叠态启动后从未展开）
+        时跳过——首次展开本就用最新数据构建，无缺口。
+        """
+        today = date.today()
+        if today == self._ui_day:
+            return
+        self._ui_day = today
+        board = self._store.load()
+        stats = board.today_stats(today)
+        if self._board_ui_built:
+            self._board_view.refresh(board.lists, stats=stats)
+        self._refresh_pet_state(stats)
+        if (self._today_popover is not None
+                and self._today_popover.isVisible()):
+            self._today_popover.set_items(
+                self._today_focus_items(stats["focus"]),
+                done_count=stats["done_today"])
+        if (self._calendar_dialog is not None
+                and self._calendar_dialog.isVisible()):
+            self._refresh_calendar()
+        self._refresh_archive()
+
     # ── 截止提醒 ──────────────────────────────────────────
 
     def _check_due_dates(self) -> None:
@@ -1966,7 +2007,12 @@ class AppController(QObject):
         不建看板控件那条启动优化依然成立：偏好桌宠时一行看板代码都不会跑。
         偏好桌宠时只保证待机动画在跑（托盘路径 show_and_activate 已起过，
         重复调用是重启同一组动画，无副作用）。
+
+        拉开窗口前先补一次跨天刷新：后台定时器可能被系统节流（macOS App
+        Nap / 长时间隐藏），而"用户刚把窗口调出来"正是最不该看到昨天文案
+        的时刻。日期没变时是一次 O(1) 空转。
         """
+        self._refresh_if_new_day()
         if AppConfig.get_default_view() == "board":
             self._window.expand()
         else:

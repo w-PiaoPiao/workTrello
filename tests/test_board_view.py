@@ -11,6 +11,7 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import date, timedelta
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -31,6 +32,7 @@ _qapp = QApplication.instance() or QApplication([])
 
 from app.config import AppConfig
 from app.models.board import BoardList, Card
+from app.views import board_view
 from app.views.board_view import WORKDIR_BADGE_TEXT, BoardView, CardWidget
 
 
@@ -42,6 +44,16 @@ def make_lists(spec):
         lst.cards = [Card(title=t) for t in cards]
         lists.append(lst)
     return lists
+
+
+def frozen_date(day):
+    """date 替身：today() 固定为 day，其余行为（fromisoformat / 减法）保持真实
+
+    跨天用例要"拨钟"，但不能把 date 换成 Mock——视图内部靠 fromisoformat
+    解析 due_date、靠日期减法算天数差。
+    """
+    return type("_FrozenDay", (date,),
+                {"today": classmethod(lambda cls: day)})
 
 
 class BoardViewRefreshTest(unittest.TestCase):
@@ -258,6 +270,46 @@ class BoardViewRefreshTest(unittest.TestCase):
         cw._card = Card(title="A", id="fp-probe", notes="有备注了")
         self.assertNotEqual(cw._content_fingerprint(), no_notes,
                             "notes 的有/无未参与指纹")
+
+    def test_due_badge_follows_day_change(self):
+        """跨天且数据一字未改：截止徽标文案必须跟着重建
+
+        回归：指纹只认 due_date 时，相对文案（今天/明天截止）在跨天后被
+        指纹短路——看板开一夜仍显示昨天算出来的「明天截止」，直到进程
+        重启。多待命一天同理变成逾期，配色也要一起翻转。
+        """
+        tomorrow = date.today() + timedelta(days=1)
+        lists = make_lists([("待办", [])])
+        lists[0].cards.append(
+            Card(title="决算公开", due_date=tomorrow.isoformat()))
+        self.view.refresh(lists)
+        cw = self.view._columns[0]._card_widgets[0]
+        self.assertIn("明天截止", self._badges(cw))
+
+        # 时钟推进到截止当天：同一批模型对象、同一个卡片控件
+        with patch.object(board_view, "date", frozen_date(tomorrow)):
+            self.view.refresh(lists)
+        self.assertIn("今天截止", self._badges(cw), "跨天后仍未换文案")
+        self.assertIn("danger", [tone for _b, tone in cw._meta_badges])
+
+        # 再推一天 → 逾期（文案与告警色同步）
+        with patch.object(board_view, "date",
+                          frozen_date(tomorrow + timedelta(days=1))):
+            self.view.refresh(lists)
+        self.assertTrue(any("已逾期" in t for t in self._badges(cw)))
+
+    def test_no_due_date_card_keeps_fingerprint_across_days(self):
+        """无截止日期卡片跨天不重建：日期只参与「有日期」卡片的指纹"""
+        lists = make_lists([("待办", ["A"])])
+        self.view.refresh(lists)
+        cw = self.view._columns[0]._card_widgets[0]
+        rebuilds = []
+        orig = cw.rebuild
+        cw.rebuild = lambda: (rebuilds.append(1), orig())
+        with patch.object(board_view, "date",
+                          frozen_date(date.today() + timedelta(days=1))):
+            self.view.refresh(lists)
+        self.assertEqual(rebuilds, [])
 
     def test_priority_change_refreshes_badge(self):
         """优先级变化立即刷新徽章（回归：指纹曾漏 priority）"""

@@ -31,6 +31,8 @@ _qapp = QApplication.instance() or QApplication([])
 from app.config import AppConfig
 from app.controllers.app_controller import AppController
 from app.models.board import BoardList, Card
+import app.controllers.app_controller as controller_mod
+import app.views.board_view as board_view_mod
 import app.views.theme as theme_mod
 from app.views.card_dialog import CardDialog
 from app.views.theme import AppTheme
@@ -38,6 +40,16 @@ from app.views.theme import AppTheme
 
 # 自启动实现的打桩目标（提取常量：写全路径会让 with 行超长）
 _AUTOSTART_GET = "app.controllers.app_controller.autostart.get_autostart"
+
+
+def _frozen_date(day):
+    """date 替身：today() 固定为 day，其余行为（fromisoformat / 减法）保持真实
+
+    跨天用例要"拨钟"，但不能把 date 换成 Mock——控制器与视图都靠
+    fromisoformat 解析 due_date、靠日期减法算天数差。
+    """
+    return type("_FrozenDay", (date,),
+                {"today": classmethod(lambda cls: day)})
 
 
 class _FakeAutostart:
@@ -89,6 +101,11 @@ class ControllerFeatureTest(unittest.TestCase):
 
     def _titles(self):
         return [x.title for x in self._list().cards]
+
+    def _badges(self):
+        """看板首列第一张卡片的徽章文案（断言截止文案用）"""
+        cw = self.c._board_view._columns[0]._card_widgets[0]
+        return [b.text() for b, _tone in cw._meta_badges]
 
     def _flush_sync(self):
         """触发防抖落盘并等后台写线程收口
@@ -760,6 +777,63 @@ class ControllerFeatureTest(unittest.TestCase):
             self.c._open_in_default_view()
             self.assertEqual(self.c._window.mode, "collapsed")
         self.c._window.hide_to_tray()
+
+    # ── 跨天刷新（日相关视图的过夜自愈） ───────────────────
+
+    def _open_board_yesterday(self):
+        """把看板摆成"昨天打开后一直没关"的样子：今天到期的卡显示「明天截止」
+
+        拨钟到昨天再渲染，并把 _ui_day 一起压回昨天——它就是"上次按哪一天
+        渲染"的记录，昨天启动的进程记的正是昨天。返回真实的今天。
+        """
+        real_today = date.today()
+        yesterday = real_today - timedelta(days=1)
+        self._reset()
+        self.c._ui_day = yesterday
+        with patch.object(controller_mod, "date", _frozen_date(yesterday)), \
+                patch.object(board_view_mod, "date", _frozen_date(yesterday)):
+            self.c._on_card_add(self._list().id, "决算公开")
+            self._list().cards[0].due_date = real_today.isoformat()
+            self.c._after_data_change(None)
+        self.assertIn("明天截止", self._badges())
+        return real_today
+
+    def test_day_rollover_refreshes_day_dependent_views(self):
+        """跨天自动刷新：分钟级检查发现日期推进，就重算日相关的视图
+
+        回归：看板开一夜（进程不重启）时，昨天渲染的「明天截止」不会自己
+        变成「今天截止」——期间没有任何数据变更去触发 refresh。
+        """
+        real_today = self._open_board_yesterday()
+        # 时钟跨过零点，视图原样留着昨天的渲染结果
+        with patch.object(self.c._tray, "show_notification"), \
+                patch.object(AppConfig, "get_remind_log", return_value={}), \
+                patch.object(AppConfig, "save_remind_log"), \
+                patch.object(self.c._pet_view, "set_mood") as mood:
+            self.c._on_date_check()
+        self.assertIn("今天截止", self._badges(), "跨天后看板仍是昨天的文案")
+        self.assertEqual(self.c._ui_day, real_today)
+        mood.assert_called_once_with("worried")   # 昨天不算到期，今天算
+
+        # 同一天内重复检查不重算：一分钟一次的空转不做全板刷新
+        with patch.object(self.c._board_view, "refresh") as refresh, \
+                patch.object(AppConfig, "get_remind_log", return_value={}), \
+                patch.object(AppConfig, "save_remind_log"):
+            self.c._on_date_check()
+        refresh.assert_not_called()
+
+    def test_open_view_from_tray_refreshes_stale_day(self):
+        """从托盘/桌宠拉起窗口时也补一次跨天刷新
+
+        定时器会被系统节流（macOS App Nap / 长期隐藏），而"用户刚把窗口
+        调出来"正是最不该显示昨天文案的时刻。
+        """
+        real_today = self._open_board_yesterday()
+        with patch.object(AppConfig, "get_default_view", return_value="pet"):
+            self.c._open_in_default_view()
+        self.c._window.hide_to_tray()
+        self.assertEqual(self.c._ui_day, real_today)
+        self.assertIn("今天截止", self._badges())
 
     # ── 截止提醒（逐卡检查，每天每卡只提醒一次） ─────────────
 
