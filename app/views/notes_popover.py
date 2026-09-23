@@ -12,16 +12,24 @@
 - 样式实时取 AppTheme.colors()，深浅主题自动跟随
 - 底色不透明：复用看板列的 bg_panel 是半透明色，下方卡片文字会透上来
   与正文叠成重影；专用 popover_bg 保证正文清晰可读
-- 默认弹在徽章上方（盖住本卡下缘，不压住下一张卡）；仅上方放不下才翻转
+- 默认弹在徽章上方（盖住本卡下缘，不压住下一张卡）；上方空间不足时压缩
+  正文高度、超出部分改在浮层内滚动，只有连最小正文都放不下才翻到下方。
+  翻转判据此后基本不再命中：长备注（进度流水）面板可高 370px，而徽章在
+  看板上半部的卡片几乎都在该阈值以内 → 一翻就压住下一张卡，等于没修
+- 悬停模式带巡检自愈：可见期间定期按光标实际位置复核，光标既不在浮层也
+  不在锚点徽章上就立即收起。列表重建（徽章控件被销毁）、看板滚动、拖拽
+  等路径都可能漏投递 Leave，只靠事件补齐会留下"鼠标早移开了、浮层还在"
 - 软阴影在 paintEvent 手绘（静态，仅显隐/移动时重绘）；不用
   QGraphicsDropShadowEffect——motion.py 记录了其 8 倍于 opacity 的性能代价
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRect, QRectF, Qt, QTimer
+from PySide6.QtCore import QPoint, QRect, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QCursor, QPainter
 from PySide6.QtWidgets import QFrame, QLabel, QScrollArea, QVBoxLayout
+# 徽章控件可能已被重建销毁：C++ 对象失效后调 mapToGlobal 会抛异常
+from shiboken6 import isValid as is_valid
 
 from app.views.theme import AppTheme
 from app.views import motion
@@ -29,8 +37,12 @@ from app.config import AppConfig
 from app.i18n import tr
 
 _HIDE_DELAY_MS = 160   # 徽章→浮层移动时的容忍延迟
+_GAP = 6               # 浮层与锚点徽章之间的间隙
 _SHADOW = 8            # 自绘软阴影的向外扩散边距（窗口命中区随之略大）
 _MAX_BODY_H = 320      # 正文区高度上限：超长备注改为在浮层内滚动
+_MIN_BODY_H = 44       # 正文区最小高度（约两行）：再矮就没有阅读价值，
+                       # 此时才允许翻转到徽章下方
+_WATCH_MS = 220        # 悬停巡检周期：漏投递 Leave 时的收口时延上限
 
 
 class NotesPopover(QFrame):
@@ -48,10 +60,17 @@ class NotesPopover(QFrame):
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self._recent_anchor = None      # 最近锚定徽章（全局矩形）
         self._recent_hint = None        # 最近一次提示行可见性（重建判据之一）
+        self._anchor_widget = None      # 锚点徽章控件：巡检按它的实时矩形
+                                        # 判"光标还在徽章上"，被销毁则退回
+                                        # 登记矩形（见 _anchor_rect）
         self._hide_timer = QTimer(self)
         self._hide_timer.setSingleShot(True)
         self._hide_timer.setInterval(_HIDE_DELAY_MS)
         self._hide_timer.timeout.connect(self._do_hide)
+        # 巡检只在可见期间跑：漏投递的 Leave 不能指望事件补齐
+        self._watch = QTimer(self)
+        self._watch.setInterval(_WATCH_MS)
+        self._watch.timeout.connect(self._revalidate_scope)
         self.setMouseTracking(True)
         self._pin_card_id: str | None = None   # 固定展示所属卡片 id（None=悬停模式）
 
@@ -165,15 +184,22 @@ class NotesPopover(QFrame):
 
     # ── 显隐 ──────────────────────────────────────────────
 
-    def show_for(self, text: str, anchor_global: QRect) -> None:
-        """悬停展示备注全文（临时：移开后延迟自动关闭）"""
+    def show_for(self, text: str, anchor_global: QRect,
+                 badge=None) -> None:
+        """悬停展示备注全文（临时：移开后延迟自动关闭）
+
+        badge 为锚点徽章控件（可选）：巡检按它的实时矩形判定"光标还在徽章
+        上"；控件被重建销毁时退回登记矩形，光标仍压在原处也不会闪掉。
+        """
         self._pin_card_id = None
+        self._anchor_widget = badge
         self._show(text, anchor_global)
 
-    def show_pinned(self, card_id: str, text: str,
-                    anchor_global: QRect) -> None:
+    def show_pinned(self, card_id: str, text: str, anchor_global: QRect,
+                    badge=None) -> None:
         """点击徽章固定展示：鼠标移开不自动关闭，直至再次点击该徽章收起"""
         self._pin_card_id = card_id
+        self._anchor_widget = badge
         self._show(text, anchor_global)
 
     def is_pinned(self) -> bool:
@@ -187,6 +213,7 @@ class NotesPopover(QFrame):
         """展示备注全文（text 为空则隐藏）"""
         if not text.strip():
             self._pin_card_id = None
+            self._stop_watch()
             self.hide()
             return
         hint = self._pin_card_id is None
@@ -205,28 +232,51 @@ class NotesPopover(QFrame):
             fm = self._body.fontMetrics()
             natural = max((fm.horizontalAdvance(line)
                            for line in text.splitlines()), default=0) + 8
-            width = max(120, min(natural, self._MAX_WIDTH))
-            self._body.setFixedWidth(width)
+            body_w = max(120, min(natural, self._MAX_WIDTH))
+            self._body.setFixedWidth(body_w)
             # 正文区高度：折行后的自然高，超过上限则内部滚动
-            self._body_scroll.setFixedHeight(
-                min(self._body_height_for(width), _MAX_BODY_H))
+            body_natural = min(self._body_height_for(body_w), _MAX_BODY_H)
+            self._body_scroll.setFixedHeight(body_natural)
+            # 版式尺寸全部显式算，不读面板 sizeHint：布局缓存会滞留在上一次
+            # 的尺寸（连续展示"长备注→短备注"时量到长备注的高度），按它定位
+            # 会压住徽章。全新窗口在 show() 前也不跑布局，子控件 live 几何
+            # 同样无效（实测面板读到 624x464），故按各控件 sizeHint 求和
+            lay = self._panel.layout()
+            m = lay.contentsMargins()
+            spacing = lay.spacing()
+            frame = self._panel.frameWidth()
+            title_h = self._title.sizeHint().height()
+            hint_h = self._hint.sizeHint().height() if hint else 0
+            chrome = (m.top() + m.bottom() + 2 * frame + title_h
+                      + spacing + (spacing + hint_h if hint else 0))
+            body_h = self._fit_body_height(anchor_global, chrome, body_natural)
+            if body_h != body_natural:
+                self._body_scroll.setFixedHeight(body_h)
+            # 正文需要在浮层内滚动时，给竖向滚动条留出宽度，
+            # 否则它压掉每行右缘十来个像素
+            bar_w = (self._body_scroll.verticalScrollBar().sizeHint().width()
+                     if body_h < body_natural else 0)
+            panel_w = (m.left() + m.right() + 2 * frame
+                       + max(body_w + bar_w, self._title.sizeHint().width(),
+                             self._hint.sizeHint().width() if hint else 0))
+            panel_h = chrome + body_h
+            x, y = self._place(anchor_global, panel_w, panel_h)
+            self._panel.setGeometry(_SHADOW, _SHADOW, panel_w, panel_h)
+            # 尺寸用固定值锁定，不用 resize：顶层窗口的最小尺寸会被上一版
+            # 布局缓存在 300ms 级的时间内拖住（实测"长备注→短备注"时窗口
+            # 不肯缩回去），结果"渲染出的高度"大于"定位时用的高度"——浮层
+            # 顶部按 6px 间隙摆好、却向下多长出一截压住徽章与下一张卡
+            self.setFixedSize(panel_w + _SHADOW * 2, panel_h + _SHADOW * 2)
+            self.move(x - _SHADOW, y - _SHADOW)
             self._recent_anchor = anchor_global
             self._recent_hint = hint
-            # 全新窗口在 show() 前不跑布局，子控件 live 几何是无效值
-            # （实测面板读到 624x464，按它定位会把浮层摆错位置），
-            # 故按 sizeHint 显式固定面板与窗口尺寸后再定位
-            hint_size = self._panel.sizeHint()
-            self._panel.setGeometry(_SHADOW, _SHADOW,
-                                    hint_size.width(), hint_size.height())
-            self.resize(hint_size.width() + _SHADOW * 2,
-                        hint_size.height() + _SHADOW * 2)
-            self._place_near(anchor_global)
         self._hide_timer.stop()
         self.show()
         self.raise_()
         # 淡入只在"从无到有"时播放；锚点变化等重定位不重播，避免闪烁
         if not was_visible:
             motion.fade_in(self, AppConfig.POPOVER_ANIM_MS)
+        self._start_watch()
 
     def _body_height_for(self, width: int) -> int:
         """正文按给定宽度折行后的自然高度（heightForWidth 不可用时退回 sizeHint）"""
@@ -243,15 +293,17 @@ class NotesPopover(QFrame):
         self._hide_timer.start()
 
     def _do_hide(self) -> None:
-        if self.mouse_inside():
-            self._hide_timer.start()   # 鼠标仍在本浮层上：稍后再试
+        if self._cursor_in_scope():
+            self._hide_timer.start()   # 光标仍在浮层/徽章上：稍后再试
             return
+        self._stop_watch()
         self.hide()
 
     def hide_now(self) -> None:
         """立即隐藏（并取消延迟计时与固定状态）"""
         self._pin_card_id = None
         self._hide_timer.stop()
+        self._stop_watch()
         self.hide()
 
     def cancel_pending_hide(self) -> None:
@@ -267,9 +319,66 @@ class NotesPopover(QFrame):
         self.schedule_hide()
         super().leaveEvent(event)
 
-    def mouse_inside(self) -> bool:
-        """鼠标是否仍在本浮层内（用于徽章 leave 时判断是否真隐藏）"""
-        return self.isVisible() and self.geometry().contains(QCursor.pos())
+    # ── 悬停巡检（漏投递 Leave 的自愈收口）────────────────
+
+    def _start_watch(self) -> None:
+        """悬停模式启动巡检；固定展示本就不自动关闭，无须巡检"""
+        if not self.is_pinned():
+            self._watch.start()
+
+    def _stop_watch(self) -> None:
+        self._watch.stop()
+
+    def _revalidate_scope(self) -> None:
+        """按光标实际位置复核：既不在浮层也不在锚点徽章上就收起
+
+        列表重建（徽章控件被销毁，Leave 无从投递）、看板滚动、拖拽、
+        切到别的应用等路径都可能让"移开"这件事收不到事件；巡检把这些
+        残留统一收口，失败方向固定为"藏起来"——下次真实悬停自会再显示。
+        按住鼠标键时不收：用户可能正在框选正文，光标划出浮层是选择动作的
+        一部分；松手后下一次巡检照常收口。
+        """
+        from PySide6.QtWidgets import QApplication
+        if not self.isVisible() or self.is_pinned():
+            return
+        if QApplication.mouseButtons() != Qt.NoButton:
+            return
+        if self._cursor_in_scope():
+            return
+        self._hide_timer.stop()
+        self._stop_watch()
+        self.hide()
+
+    def _cursor_pos(self) -> QPoint:
+        """当前光标位置（屏幕坐标）；单列出来便于测试注入"""
+        return QCursor.pos()
+
+    def _cursor_in_scope(self, pos=None) -> bool:
+        """光标是否仍在浮层窗口或锚点徽章上（浮层含自绘阴影的命中余量）"""
+        if not self.isVisible():
+            return False
+        if pos is None:
+            pos = self._cursor_pos()
+        if self.geometry().contains(pos):
+            return True
+        anchor = self._anchor_rect()
+        return anchor is not None and anchor.contains(pos)
+
+    def _anchor_rect(self) -> "QRect | None":
+        """锚点徽章的实时矩形（屏幕坐标）；控件缺失/已销毁退回登记矩形
+
+        退回登记矩形是有意的：徽章因重建（内容变化、换语言/主题）被销毁而
+        光标仍压在原处时，浮层不该闪掉。真正的"光标已离开"由巡检按位置判。
+        """
+        badge = self._anchor_widget
+        if badge is not None and is_valid(badge):
+            return QRect(badge.mapToGlobal(QPoint(0, 0)), badge.size())
+        return self._recent_anchor
+
+    def anchored_to(self, badge) -> bool:
+        """是否正以该控件为锚点展示（悬停/固定都算）"""
+        return self.isVisible() and badge is not None \
+            and self._anchor_widget is badge
 
     # ── 几何口径 ──────────────────────────────────────────
 
@@ -282,31 +391,45 @@ class NotesPopover(QFrame):
 
     # ── 定位 ──────────────────────────────────────────────
 
-    def _place_near(self, anchor: "QRect") -> None:
-        """锚点（徽章屏幕矩形）上方放置；越界自动翻转/回拉
-
-        徽章位于卡片底部信息行，朝下弹必然压住下一张卡；改为朝上弹只盖住
-        本卡下缘，鼠标仍在徽章上、正文也不与下方卡片叠字。
-        占位用 _panel（不含阴影），窗口位置相应内缩 _SHADOW。
-        """
+    @staticmethod
+    def _available(anchor: "QRect") -> "QRect":
+        """锚点所在屏幕的可用区域（避开任务栏）"""
         from PySide6.QtWidgets import QApplication
         screen = QApplication.screenAt(anchor.center())
-        avail = (screen.availableGeometry()
-                 if screen is not None
-                 else QApplication.primaryScreen().availableGeometry())
-        gap = 6
-        w, h = self._panel.width(), self._panel.height()
-        x = anchor.left()
-        y = anchor.top() - gap - h
+        if screen is None:
+            screen = QApplication.primaryScreen()
+        return screen.availableGeometry()
+
+    def _fit_body_height(self, anchor: "QRect", chrome: int,
+                         natural_body: int) -> int:
+        """按锚点上方可用空间决定正文高度（上方优先，不够就压缩而非翻转）
+
+        徽章位于卡片底部信息行，朝下弹必然压住下一张卡。长备注（进度流水）
+        面板可高 370px，比看板上半部多数徽章的"上方余量"还高，于是老判据
+        （上方放不下就翻转）几乎必然触发——用户看到的就是"还是压在下一张
+        卡上"。改为：上方不够就压缩正文高度、超出部分在浮层内滚动，
+        只有连最小正文（约两行）都放不下（徽章贴着屏幕顶）才翻到下方。
+        """
+        avail = self._available(anchor)
+        room_above = anchor.top() - _GAP - avail.top()
+        if room_above - chrome >= _MIN_BODY_H:
+            return min(natural_body, room_above - chrome)
+        room_below = avail.bottom() - anchor.bottom() - _GAP
+        return max(min(natural_body, room_below - chrome), _MIN_BODY_H)
+
+    def _place(self, anchor: "QRect", panel_w: int,
+               panel_h: int) -> tuple[int, int]:
+        """面板左上角落点（屏幕坐标）：上方优先，越界翻转/夹紧"""
+        avail = self._available(anchor)
+        y = anchor.top() - _GAP - panel_h
         if y < avail.top():
-            # 上方放不下则放到徽章下方
-            y = anchor.bottom() + gap
-            if y + h > avail.bottom():
-                y = max(avail.top(), avail.bottom() - h)   # 上下都紧张：贴顶
-        if x + w > avail.right():
-            x = avail.right() - w
-        x = max(avail.left(), x)
-        self.move(x - _SHADOW, y - _SHADOW)
+            y = anchor.bottom() + _GAP        # 上方连最小正文都放不下
+            if y + panel_h > avail.bottom():
+                y = max(avail.top(), avail.bottom() - panel_h)   # 贴底
+        x = anchor.left()
+        if x + panel_w > avail.right():
+            x = avail.right() - panel_w
+        return max(avail.left(), x), y
 
 
 _popover: NotesPopover | None = None
@@ -340,6 +463,11 @@ def retexts_if_created() -> None:
 def notes_popover_hovering() -> bool:
     """浮层存在且处于悬停模式（未固定）"""
     return _popover is not None and not _popover.is_pinned()
+
+
+def notes_popover_anchored_to(badge) -> bool:
+    """浮层是否正锚定在该徽章上（只读判定，不触发单例创建）"""
+    return _popover is not None and _popover.anchored_to(badge)
 
 
 # 供测试直接清理单例

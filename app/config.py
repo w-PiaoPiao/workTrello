@@ -52,7 +52,7 @@ class AppConfig:
 
     # 应用信息
     APP_NAME = "桌宠看板"
-    APP_VERSION = "0.2.1"
+    APP_VERSION = "0.2.2"
     APP_ORG = "Personal"
 
     @classmethod

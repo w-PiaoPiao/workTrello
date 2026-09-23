@@ -67,6 +67,7 @@ from app.views.notes_popover import (
     hide_notes_popover,
     notes_pinned_for,
     notes_popover,
+    notes_popover_anchored_to,
     notes_popover_hovering,
 )
 from app.views.theme import AppTheme
@@ -612,11 +613,14 @@ class CardWidget(QFrame):
     def update_from_model(self, card: Card) -> None:
         """增量刷新：重指向模型对象；内容指纹未变则跳过重建"""
         self._card = card
-        # 备注正文不进指纹（仅 bool 参与），编辑保存后固定预览会残留旧文本：
-        # 本卡任一模型刷新即收起其固定预览
-        if notes_pinned_for(card.id):
+        changed = self._fingerprint != self._content_fingerprint()
+        # 备注正文不进指纹（仅 bool 参与），编辑保存后预览会残留旧文本：
+        # 固定预览在本卡任一刷新时收起；悬停预览只在内容真的变了时收，
+        # 否则别处一次无关刷新会把用户正在读的浮层闪掉
+        if notes_pinned_for(card.id) or (
+                changed and notes_popover_anchored_to(self._notes_badge)):
             notes_popover().hide_now()
-        if self._fingerprint != self._content_fingerprint():
+        if changed:
             self.rebuild()
 
     def _content_fingerprint(self) -> tuple:
@@ -972,7 +976,9 @@ class CardWidget(QFrame):
                 # 卡片 tooltip 会压在自绘浮层上叠字：悬停徽章期间暂存清空
                 self._tooltip_backup = self.toolTip()
                 self.setToolTip("")
-                pop.show_for(self._card.notes, global_rect)
+                # 徽章控件一并交给浮层：巡检按它的实时矩形判定"光标还在
+                # 徽章上"，这是漏投递 Leave（重建/滚动/拖拽）时的收口依据
+                pop.show_for(self._card.notes, global_rect, badge)
                 return False
             if event.type() == QEvent.Leave:
                 if self._tooltip_backup is not None:
@@ -996,7 +1002,8 @@ class CardWidget(QFrame):
         if pop.is_pinned() and pop.pinned_for(self._card.id):
             pop.hide_now()                       # 同卡再点一次 → 收起
         else:
-            pop.show_pinned(self._card.id, self._card.notes, rect)
+            pop.show_pinned(self._card.id, self._card.notes, rect,
+                            self._notes_badge)
 
     def hideEvent(self, event) -> None:
         """卡片隐藏时收起备注浮层并复位悬停态

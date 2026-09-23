@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from PySide6.QtCore import QEvent, QPoint, QRect, Qt
 from PySide6.QtGui import QColor, QMouseEvent
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 _qapp = QApplication.instance() or QApplication([])
@@ -29,6 +30,7 @@ _qapp = QApplication.instance() or QApplication([])
 from app.models.board import BoardList, Card
 from app.views.board_view import BoardView
 from app.views.notes_popover import (
+    _WATCH_MS,
     _reset_popover,
     hide_notes_popover,
     notes_popover,
@@ -326,6 +328,185 @@ class PopoverPlacementTest(unittest.TestCase):
         panel = pop.panel_geometry_global()
         self.assertLessEqual(panel.right(), self.avail.right(), "面板越出屏幕右侧")
         self.assertGreaterEqual(panel.left(), self.avail.left(), "面板越出屏幕左侧")
+
+    def test_long_notes_stay_above_badge_by_capping_body(self):
+        """长备注：上方放不下时压缩正文留在上方，而不是翻到徽章下方
+
+        回归：徽章在卡片底部信息行，长备注（进度流水）面板可高 370px，
+        而看板上半部多数徽章的"上方余量"都不够——老判据（上方放不下就
+        翻转）于是几乎必然触发，表现就是"还是压住下一张卡"。
+        """
+        note = "\n".join(f"09-{i:02d} 14:30 进展记录第{i}条"
+                         for i in range(1, 21))
+        # 屏幕中部：上方余量充足 → 按自然高展示
+        roomy = self._show(QRect(self.avail.left() + 60,
+                                 self.avail.bottom() - 400, 60, 18), note)
+        natural_h = roomy.panel_geometry_global().height()
+        # 上部：上方余量不足 → 压缩正文高度留在上方
+        anchor = QRect(self.avail.left() + 60, self.avail.top() + 300, 60, 18)
+        pop = self._show(anchor, note)
+        panel = pop.panel_geometry_global()
+        self.assertLess(panel.height(), natural_h, "正文高度未按可用空间压缩")
+        self.assertLess(panel.bottom(), anchor.top(), "长备注翻到了徽章下方")
+        self.assertGreaterEqual(panel.top(), self.avail.top(), "面板越出屏幕顶部")
+
+    def test_panel_rendered_size_matches_placement(self):
+        """长→短连续展示后浮层缩回短备注高度，且渲染尺寸=定位尺寸
+
+        回归：顶层窗口的最小尺寸会被上一版布局缓存拖住，多出来的一截会
+        向下压住徽章与下一张卡（截图里"浮层压住卡片"就是这个成因）。
+        """
+        anchor = QRect(self.avail.left() + 60,
+                       self.avail.bottom() - 400, 60, 18)
+        note = "\n".join(f"进展第{i}条" for i in range(1, 21))
+        tall = self._show(anchor, note).panel_geometry_global().height()
+        pop = self._show(anchor, "两行\n备注")
+        QApplication.processEvents()   # 让布局真正跑一遍：缓存拖住的最小
+                                       # 尺寸只在布局激活后才显形
+        panel = pop.panel_geometry_global()
+        self.assertLess(panel.height(), tall, "短备注没有缩回自然高度")
+        self.assertEqual(panel.top() + panel.height(), anchor.top() - 6,
+                         "渲染出的底边与定位用的高度不一致，浮层会多压一截")
+        self.assertEqual((pop._panel.width(), pop._panel.height()),
+                         (panel.width(), panel.height()),
+                         "面板 live 尺寸与定位口径不一致")
+
+
+class HoverScopeWatchTest(unittest.TestCase):
+    """悬停巡检：光标离开浮层与锚点徽章就收起（漏投递 Leave 的兜底）
+
+    回归背景：列表重建（徽章控件被销毁，Leave 无从投递）、看板滚动、拖拽、
+    切换应用等路径都可能收不到 Leave；只靠事件补齐会留下"鼠标早就移开了、
+    浮层还赖在原地"的残留（用户报的"有时候鼠标离开了不消失"）。
+    """
+
+    def setUp(self):
+        _reset_popover()
+        self.view = _make_view()
+
+    def tearDown(self):
+        hide_notes_popover()
+        self.view.hide()
+        self.view.deleteLater()
+        _reset_popover()
+
+    def _cards(self):
+        return self.view._columns[0]._card_widgets
+
+    def _hover(self, card):
+        card.eventFilter(card._notes_badge, QEvent(QEvent.Enter))
+        return notes_popover()
+
+    @staticmethod
+    def _at(pop, pos):
+        """注入巡检读到的光标位置（离屏下没有真实光标可摆）"""
+        pop._cursor_pos = lambda: pos
+        return pop
+
+    def test_badge_widget_registered_as_anchor(self):
+        """徽章控件随悬停一起交给浮层：巡检才有实时矩形可用"""
+        c1, *_ = self._cards()
+        pop = self._hover(c1)
+        self.assertIs(pop._anchor_widget, c1._notes_badge)
+        self.assertTrue(pop.anchored_to(c1._notes_badge))
+        self.assertFalse(pop.anchored_to(None))
+
+    def test_watch_runs_only_while_visible(self):
+        c1, *_ = self._cards()
+        pop = self._hover(c1)
+        self.assertTrue(pop._watch.isActive(), "悬停展示期间巡检没有启动")
+        pop.hide_now()
+        self.assertFalse(pop._watch.isActive(), "浮层已隐藏，巡检仍在空跑")
+
+    def test_scope_follows_badge_instead_of_stale_rect(self):
+        """按徽章实时矩形判定：登记矩形过期（卡片重排/滚动）也不误判"""
+        c1, *_ = self._cards()
+        pop = self._hover(c1)
+        live = pop._anchor_rect()
+        pop._recent_anchor = QRect(0, 0, 1, 1)      # 登记矩形已过期
+        self.assertIsNotNone(live)
+        self.assertTrue(pop._cursor_in_scope(live.center()),
+                        "光标仍在徽章上却被判为已离开")
+
+    def test_cursor_left_badge_and_panel_hides(self):
+        c1, *_ = self._cards()
+        pop = self._hover(c1)
+        badge = pop._anchor_rect()
+        self._at(pop, QPoint(badge.right() + 400, badge.bottom() + 400))
+        pop._revalidate_scope()
+        self.assertFalse(pop.isVisible(), "光标早已离开，浮层却没收起")
+
+    def test_cursor_on_badge_keeps_popover(self):
+        c1, *_ = self._cards()
+        pop = self._hover(c1)
+        self._at(pop, pop._anchor_rect().center())
+        pop._revalidate_scope()
+        self.assertTrue(pop.isVisible(), "光标还在徽章上就把浮层收掉了")
+
+    def test_watch_reaps_after_cursor_leaves_without_any_event(self):
+        """整条巡检链路（定时器 → 位置复核 → 收起）在真事件循环里跑通
+
+        模拟"漏投递 Leave"：只挪光标位置，不发任何事件。
+        """
+        c1, *_ = self._cards()
+        pop = self._hover(c1)
+        self._at(pop, pop._anchor_rect().center())
+        QTest.qWait(_WATCH_MS * 3)      # 巡检跑过两轮：仍悬停 → 不收
+        self.assertTrue(pop.isVisible(), "巡检把仍在悬停的浮层收掉了")
+        badge = pop._anchor_rect()
+        self._at(pop, QPoint(badge.right() + 400, badge.bottom() + 400))
+        QTest.qWait(_WATCH_MS * 3)      # 光标已离开 → 巡检收口
+        self.assertFalse(pop.isVisible(), "漏投递 Leave 时巡检没有收口")
+
+    def test_destroyed_badge_falls_back_to_registered_rect(self):
+        """徽章被重建销毁：光标仍压原处不闪掉，离开照常收起"""
+        from shiboken6 import delete
+        c1, *_ = self._cards()
+        pop = self._hover(c1)
+        rect = pop._anchor_rect()
+        delete(c1._notes_badge)         # 模拟 rebuild 销毁旧徽章控件
+        c1._notes_badge = None
+        self.assertEqual(pop._anchor_rect(), rect, "控件没了就丢了锚点矩形")
+        self._at(pop, rect.center())
+        pop._revalidate_scope()
+        self.assertTrue(pop.isVisible(), "光标还压在原处，浮层却闪掉了")
+        self._at(pop, QPoint(rect.right() + 300, rect.bottom() + 300))
+        pop._revalidate_scope()
+        self.assertFalse(pop.isVisible(), "光标离开后仍不收口")
+
+    def test_pinned_popover_not_reaped_by_watch(self):
+        """固定展示不受巡检影响：那是用户明示的常驻态"""
+        c1, *_ = self._cards()
+        press = QMouseEvent(QEvent.Type.MouseButtonPress,
+                            QPoint(0, 0), Qt.LeftButton, Qt.LeftButton,
+                            Qt.NoModifier)
+        c1.eventFilter(c1._notes_badge, press)
+        pop = notes_popover()
+        self.assertTrue(pop.is_pinned())
+        self._at(pop, QPoint(5000, 5000))
+        pop._revalidate_scope()
+        self.assertTrue(pop.isVisible(), "固定展示被巡检收掉了")
+        pop.hide_now()
+
+    def test_content_change_hides_hover_preview(self):
+        """本卡内容真的变了 → 悬停预览立即收起，免得展示旧内容"""
+        c1, *_ = self._cards()
+        pop = self._hover(c1)
+        c1.card().title = "改过的标题"
+        c1.update_from_model(c1.card())
+        self.assertFalse(pop.isVisible())
+
+    def test_unrelated_refresh_keeps_hover_preview(self):
+        """与指纹无关的刷新不打断悬停预览
+
+        备注正文不进指纹（只 bool 参与）：别处一次无关刷新若顺手收起
+        浮层，用户正在读的备注会莫名闪掉。
+        """
+        c1, *_ = self._cards()
+        pop = self._hover(c1)
+        c1.card().notes = "别处刷新时改的正文"
+        c1.update_from_model(c1.card())
+        self.assertTrue(pop.isVisible(), "无关刷新把正在读的浮层闪掉了")
 
 
 class PopoverUnitTest(unittest.TestCase):
