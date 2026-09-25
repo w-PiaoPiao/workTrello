@@ -35,6 +35,7 @@ import app.controllers.app_controller as controller_mod
 import app.views.board_view as board_view_mod
 import app.views.theme as theme_mod
 from app.views.card_dialog import CardDialog
+from app.views import motion
 from app.views.theme import AppTheme
 
 
@@ -632,6 +633,52 @@ class ControllerFeatureTest(unittest.TestCase):
                    return_value=_FakeAutostart(True)):
             self.assertTrue(self.c._autostart_state())
         AppConfig.save_autostart(False)
+
+    def test_pet_enabled_toggle_persists_and_notifies(self):
+        """开关走控制器：落盘偏好 + 窗口形态迁移 + 可见反馈
+
+        类级窗口默认处桌宠态（默认打开形态=pet）：关闭瞬间应就地展开为
+        看板（设置对话框是主窗口模态子窗，主窗口不能藏走）。
+        """
+        AppConfig.save_pet_enabled(True)
+        motion.set_enabled(False)    # 就地展开瞬时落位，断言状态可靠
+        notes = []
+        orig_notify = self.c._notify
+        self.c._notify = lambda text: notes.append(text)
+        try:
+            self.c._on_pet_enabled_toggled(False)
+            self.assertFalse(AppConfig.get_pet_enabled())
+            self.assertFalse(self.c._window.is_pet_enabled())
+            self.assertEqual(self.c._window.mode, "expanded")
+            self.assertTrue(self.c._window.isVisible())
+            self.assertEqual(len(notes), 1)
+            self.c._on_pet_enabled_toggled(True)
+            self.assertTrue(AppConfig.get_pet_enabled())
+            self.assertTrue(self.c._window.is_pet_enabled())
+            self.assertEqual(len(notes), 2)
+        finally:
+            AppConfig.save_pet_enabled(True)
+            motion.set_enabled(True)
+            self.c._notify = orig_notify
+
+    def test_pet_disabled_startup_opens_board(self):
+        """禁用偏好下启动：窗口直接以看板形态亮出，待机动画不启动
+
+        "默认打开形态=桌宠"的偏好被覆盖：没有桌宠形态可落，统一看板。
+        """
+        AppConfig.save_pet_enabled(False)
+        try:
+            c = AppController()
+            self.assertFalse(c._window.is_pet_enabled())
+            self.assertEqual(c._window.mode, "expanded")
+            self.assertTrue(c._window.isVisible())
+            self.assertIs(c._window._stack.currentWidget(),
+                          c._window._expanded_view)
+            self.assertFalse(c._pet_view._idle_timer.isActive())
+            c._window.hide()
+            c._window.deleteLater()
+        finally:
+            AppConfig.save_pet_enabled(True)
 
     def test_edit_persists_to_disk(self):
         """编辑落到 board.json（回归护栏）

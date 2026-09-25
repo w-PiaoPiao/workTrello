@@ -165,6 +165,11 @@ class AppController(QObject):
         if AppConfig.IS_MACOS:
             self._build_menu_bar()
 
+        # ── 桌宠显示偏好（show 之前应用：禁用时 expand 内部会以看板
+        # 几何首次 show，启动直接亮出完整看板，不闪桌宠小窗）──
+        if not AppConfig.get_pet_enabled():
+            self._window.set_pet_enabled(False)
+
         # ── 显示 ──────────────────────────────────────────
         self._window.show()
         self._open_in_default_view()
@@ -1265,6 +1270,8 @@ class AppController(QObject):
             dlg.signal_skin_selected.connect(self._on_settings_skin)
             dlg.signal_animation_toggled.connect(
                 self._on_pet_animation_toggled)
+            dlg.signal_pet_enabled_toggled.connect(
+                self._on_pet_enabled_toggled)
             dlg.signal_always_top_toggled.connect(
                 self._on_always_top_toggled)
             dlg.signal_autostart_toggled.connect(self._on_autostart_toggled)
@@ -1283,7 +1290,8 @@ class AppController(QObject):
             always_top=self._window.is_always_on_top(),
             remind_advance=AppConfig.get_remind_advance(),
             autostart=self._autostart_state(),
-            default_view=AppConfig.get_default_view())
+            default_view=AppConfig.get_default_view(),
+            pet_enabled=self._window.is_pet_enabled())
         self._settings_dialog.show()
         self._settings_dialog.raise_()
         self._settings_dialog.activateWindow()
@@ -1374,6 +1382,26 @@ class AppController(QObject):
         self._pet_view.set_animation_enabled(enabled)
         if enabled:
             self._window.start_collapsed_idle()
+
+    def _on_pet_enabled_toggled(self, on: bool) -> None:
+        """桌宠显示总开关：落盘 → 窗口形态迁移 → 菜单文案对齐 → 提示
+
+        关闭时若正处桌宠态，set_pet_enabled 内部会就地展开为看板（设置
+        对话框是主窗口的模态子窗，主窗口不能藏走）；通知按窗口形态自动
+        走 toast / 托盘气泡。
+        """
+        AppConfig.save_pet_enabled(on)
+        self._window.set_pet_enabled(on)
+        act = getattr(self, "_menu_act_collapse", None)
+        if act is not None:
+            act.setText(self._collapse_menu_text())
+        self._notify(tr("桌宠已开启") if on
+                     else tr("桌宠已关闭：收起看板将直接隐藏到托盘"))
+
+    def _collapse_menu_text(self) -> str:
+        """macOS 菜单栏"收起"项文案随桌宠开关切换（行为同为 collapse）"""
+        return (tr("收起为桌宠") if self._window.is_pet_enabled()
+                else tr("隐藏窗口"))
 
     def _on_pet_skin_selected(self, key: str) -> None:
         AppConfig.save_pet_skin(key)
@@ -1500,10 +1528,12 @@ class AppController(QObject):
         act_expand = _act("展开看板")
         act_expand.triggered.connect(self._window.expand)
         m_view.addAction(act_expand)
-        act_collapse = _act("收起为桌宠")
-        act_collapse.setShortcut(QKeySequence.Close)   # Cmd+W
-        act_collapse.triggered.connect(self._window.collapse)
-        m_view.addAction(act_collapse)
+        # 不走 _act()：文案随桌宠开关动态切换（收起为桌宠 ↔ 隐藏窗口），
+        # 固定 key 的 _menu_texts 条目会在语言切换时把它冲回"收起为桌宠"
+        self._menu_act_collapse = QAction(self._collapse_menu_text(), self)
+        self._menu_act_collapse.setShortcut(QKeySequence.Close)   # Cmd+W
+        self._menu_act_collapse.triggered.connect(self._window.collapse)
+        m_view.addAction(self._menu_act_collapse)
 
         # 应用菜单项（macOS 按 role 自动归入应用名菜单）
         act_about = _act("关于桌宠看板")
@@ -1528,6 +1558,9 @@ class AppController(QObject):
         """语言切换后整栏重设菜单文案（勾选态不受影响）"""
         for setter, key in getattr(self, "_menu_texts", []):
             setter(tr(key))
+        act = getattr(self, "_menu_act_collapse", None)
+        if act is not None:
+            act.setText(self._collapse_menu_text())
 
     def _on_menu_today_toggled(self, on: bool) -> None:
         self._board_view.set_today_mode(on)
@@ -2013,7 +2046,9 @@ class AppController(QObject):
         的时刻。日期没变时是一次 O(1) 空转。
         """
         self._refresh_if_new_day()
-        if AppConfig.get_default_view() == "board":
+        if (AppConfig.get_default_view() == "board"
+                or not self._window.is_pet_enabled()):
+            # 桌宠已禁用时无"桌宠形态"可落，统一以看板亮出
             self._window.expand()
         else:
             self._window.start_collapsed_idle()

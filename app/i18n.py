@@ -153,6 +153,14 @@ _zh_en: dict[str, str] = {
     "界面语言": "Interface language",
     "切换后立即生效": "Applies immediately",
     "桌宠": "Pet",
+    "显示桌宠": "Show desktop pet",
+    "关闭后不再出现桌宠，收起看板即隐藏到托盘，常驻开销更低":
+        "Hide the pet entirely: collapsing the board hides to tray, "
+        "with a lighter idle footprint",
+    "桌宠已关闭：收起看板将直接隐藏到托盘":
+        "Pet disabled: collapsing the board now hides to tray",
+    "桌宠已开启": "Pet enabled",
+    "隐藏窗口": "Hide window",
     "待机动画": "Idle animations",
     "漂浮、呼吸、眨眼与全部过渡动效的总开关":
         "Master switch for floating, breathing, blinking and all transitions",

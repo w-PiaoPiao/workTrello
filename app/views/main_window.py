@@ -130,6 +130,9 @@ class MainWindow(QWidget):
         self._visible_cb = None
         self._zoomed = False
         self._zoom_restore_geo = QRect()
+        # 桌宠形态总开关（设置页"显示桌宠"）：False = 折叠形态不存在，
+        # 收起即隐藏到托盘、启动/托盘显示直接以看板亮出（语义见各分支）
+        self._pet_enabled = True
 
         # 展开尺寸持久化防抖：系统缩放循环按帧触发 resizeEvent，
         # 停顿（或折叠）后才写 QSettings，避免逐帧写注册表
@@ -259,6 +262,24 @@ class MainWindow(QWidget):
     def mode(self) -> str:
         return self._mode
 
+    def is_pet_enabled(self) -> bool:
+        """桌宠形态是否可用（设置页"显示桌宠"开关的实时值）"""
+        return self._pet_enabled
+
+    def set_pet_enabled(self, on: bool) -> None:
+        """桌宠形态总开关（设置页"显示桌宠"）
+
+        False = 折叠形态不存在：正在桌宠态时就地展开为看板（复用完整
+        展开链：构建、stack 切换、几何落位与动画），此后 collapse 一律
+        改道 hide_to_tray，启动/托盘显示也不再回到桌宠。开启无即时动作：
+        桌宠只在折叠态出现，等下一次收起自然恢复。
+        """
+        if on == self._pet_enabled:
+            return
+        self._pet_enabled = on
+        if not on and self._mode == "collapsed":
+            self.expand()
+
     def _set_pet_idle(self, active: bool) -> None:
         view = self._collapsed_view
         if view is None or self._mode != "collapsed":
@@ -272,6 +293,8 @@ class MainWindow(QWidget):
             handler()
 
     def start_collapsed_idle(self) -> None:
+        if not self._pet_enabled:
+            return    # 桌宠已禁用：不启动待机动画（防御未来新调用点）
         self._set_pet_idle(True)
 
     def expand(self) -> None:
@@ -304,6 +327,11 @@ class MainWindow(QWidget):
             self._edge_cursor_timer.start()
 
     def collapse(self) -> None:
+        if not self._pet_enabled:
+            # 桌宠已禁用：折叠形态不存在，所有"收起"入口（看板按钮/Esc/
+            # Cmd+W/菜单）统一落到隐藏到托盘
+            self.hide_to_tray()
+            return
         if self._mode == "collapsed" or self._animation_running:
             return
         self._finish_board_rename()    # 提交未完成的重命名
@@ -477,6 +505,7 @@ class MainWindow(QWidget):
 
     def hideEvent(self, event) -> None:
         # 立即终止进行中的折叠/展开动画，避免隐藏态下动画继续驱动 geometry
+        anim_was_running = self._animation_running
         if self._animation_running and hasattr(self, "anim"):
             self.anim.stop()
         self._animation_running = False
@@ -484,6 +513,20 @@ class MainWindow(QWidget):
         if AppConfig.IS_WINDOWS:
             self._edge_cursor_timer.stop()   # 隐藏态不再轮询光标
         self._finish_board_rename()    # 隐藏前提交未完成的重命名
+        if not self._pet_enabled:
+            # 桌宠已禁用：隐藏不落回桌宠形态——保持展开几何与视图堆栈，
+            # 下次托盘显示直接是完整看板（不再闪桌宠小窗、无尺寸跳变）。
+            # 被打断的展开动画直接落到目标几何，窗口不停在中间帧
+            if anim_was_running and self._mode == "expanded":
+                end_geo = self.anim.endValue()
+                if end_geo is not None:
+                    self.setGeometry(end_geo)
+            self.unsetCursor()
+            self._update_grip_visibility()
+            super().hideEvent(event)
+            if self._visible_cb is not None:
+                self._visible_cb(False)
+            return
         if self._collapsed_view is not None:
             self._set_pet_idle(False)
         # 动画可能被 hide 打断：finished 不再触发，_on_animation_finished
@@ -753,9 +796,14 @@ class MainWindow(QWidget):
         self._visible_cb = callback
 
     def hide_to_tray(self) -> None:
-        """隐藏到托盘：先折叠回桌宠态，再隐藏窗口"""
-        if self._mode == "expanded":
-            self.collapse()
+        """隐藏到托盘（托盘"隐藏"/窗口 ✕/桌宠禁用后的所有"收起"入口）
+
+        不再经 collapse()（桌宠禁用后会递归）：折叠恢复由 hideEvent 统一
+        处理；展开尺寸冲刷是 collapse 原本顺带做的事，在此补上。
+        """
+        if self._mode == "expanded" and self._pet_enabled:
+            self._flush_expanded_size()
+        self._zoomed = False
         self.hide()
 
     def show_and_activate(self) -> None:

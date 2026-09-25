@@ -27,6 +27,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QWidget
 _qapp = QApplication.instance() or QApplication([])
 
 from app.config import AppConfig
+from app.views import motion
 from app.views.main_window import MainWindow
 from app.views.pet_view import PetView
 
@@ -456,6 +457,71 @@ class CollapseInterruptTest(unittest.TestCase):
         if self.w._resize_grip is not None:
             self.assertFalse(self.w._resize_grip.isVisible())
 
+
+class PetEnabledStateTest(unittest.TestCase):
+    """桌宠显示总开关：禁用后"折叠形态"不存在
+
+    收起（按钮/Esc/Cmd+W/菜单）= 隐藏到托盘；隐藏不落回桌宠形态（mode
+    保持 expanded、视图堆栈不动），下次托盘显示直接是完整看板；重新
+    启用后 collapse 恢复桌宠。
+    """
+
+    def setUp(self):
+        motion.set_enabled(False)   # 展开/折叠瞬时落位，状态断言可靠
+        self.w = MainWindow()
+        self.w.set_views(PetView(), QWidget())
+        self.w.show()
+        _qapp.processEvents()
+
+    def tearDown(self):
+        self.w.hide()
+        self.w.deleteLater()
+        motion.set_enabled(True)
+
+    def test_disabled_from_collapsed_expands_in_place(self):
+        """桌宠态拨开关：就地展开为看板（设置对话框是主窗口模态子窗，
+        主窗口不能藏走）"""
+        self.assertEqual(self.w.mode, "collapsed")
+        self.w.set_pet_enabled(False)
+        self.assertEqual(self.w.mode, "expanded")
+        self.assertTrue(self.w.isVisible())
+        self.assertIs(self.w._stack.currentWidget(), self.w._expanded_view)
+
+    def test_collapse_hides_to_tray_when_disabled(self):
+        self.w.set_pet_enabled(False)
+        self.assertTrue(self.w.isVisible())
+        self.w.collapse()
+        self.assertFalse(self.w.isVisible())
+        # mode 不落回 collapsed：下次显示直接是看板，不会闪桌宠
+        self.assertEqual(self.w.mode, "expanded")
+        self.assertIs(self.w._stack.currentWidget(), self.w._expanded_view)
+
+    def test_hide_keeps_expanded_state_when_disabled(self):
+        self.w.set_pet_enabled(False)
+        self.w.hide()
+        self.assertEqual(self.w.mode, "expanded")
+        self.w.show()
+        self.assertTrue(self.w.isVisible())
+        self.assertEqual(self.w.mode, "expanded")
+        self.assertIs(self.w._stack.currentWidget(), self.w._expanded_view)
+
+    def test_reenable_pet_restores_collapse(self):
+        self.w.set_pet_enabled(False)
+        self.w.set_pet_enabled(True)
+        self.w.collapse()
+        self.assertEqual(self.w.mode, "collapsed")
+        self.assertIs(self.w._stack.currentWidget(), self.w._collapsed_view)
+        self.assertTrue(self.w.isVisible())
+
+    def test_disable_stops_idle_and_blocks_restart(self):
+        """禁用即停待机动画，且防御分支不再把它拉起来（省 CPU 的关键）"""
+        self.w.start_collapsed_idle()
+        pet = self.w._collapsed_view
+        self.assertTrue(pet._idle_timer.isActive())
+        self.w.set_pet_enabled(False)
+        self.assertFalse(pet._idle_timer.isActive())
+        self.w.start_collapsed_idle()
+        self.assertFalse(pet._idle_timer.isActive())
 
 
 if __name__ == "__main__":

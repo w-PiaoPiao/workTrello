@@ -178,6 +178,19 @@ class SettingsDialogTest(unittest.TestCase):
         self.dlg._autostart_toggle.click()
         self.assertEqual(hits, [True])
 
+    def test_pet_enabled_toggle_syncs_and_emits(self):
+        """显示桌宠开关：随偏好回填，点击发信号（持久化由控制器负责）"""
+        self.assertFalse(self.dlg._pet_toggle.isChecked())
+        self.dlg.sync_from_prefs("system", "zh", "milk", True, True,
+                                 pet_enabled=True)
+        self.assertTrue(self.dlg._pet_toggle.isChecked())
+        hits = []
+        self.dlg.signal_pet_enabled_toggled.connect(hits.append)
+        self.dlg._pet_toggle.click()
+        self.assertEqual(hits, [False])       # 默认开 → 点击即关
+        self.dlg._pet_toggle.click()
+        self.assertEqual(hits, [False, True])
+
     def test_retexts_in_english(self):
         i18n.set_lang("en")
         self.dlg.retexts()
@@ -186,6 +199,7 @@ class SettingsDialogTest(unittest.TestCase):
         self.assertEqual(self.dlg._dir_open_btn.text(), "Open Folder")
         self.assertEqual(self.dlg._t_autostart.text(), "Launch at login")
         self.assertEqual(self.dlg._t_view.text(), "Default view on open")
+        self.assertEqual(self.dlg._t_pet.text(), "Show desktop pet")
 
     # ── 默认打开形态 ──────────────────────────────────────
 
@@ -243,7 +257,7 @@ class SettingsDialogTest(unittest.TestCase):
         """
         hits: dict[str, list] = {"theme": [], "lang": [], "anim": [],
                                  "top": [], "auto": [], "remind": [],
-                                 "view": []}
+                                 "view": [], "pet_on": []}
         self.dlg.signal_theme_selected.connect(hits["theme"].append)
         self.dlg.signal_language_selected.connect(hits["lang"].append)
         self.dlg.signal_animation_toggled.connect(hits["anim"].append)
@@ -251,10 +265,11 @@ class SettingsDialogTest(unittest.TestCase):
         self.dlg.signal_autostart_toggled.connect(hits["auto"].append)
         self.dlg.signal_remind_advance_changed.connect(hits["remind"].append)
         self.dlg.signal_default_view_selected.connect(hits["view"].append)
+        self.dlg.signal_pet_enabled_toggled.connect(hits["pet_on"].append)
         # 一次性把所有控件都刷成与当前不同的值
         self.dlg.sync_from_prefs("dark", "en", "snow", False, False,
                                  remind_advance=3, autostart=True,
-                                 default_view="board")
+                                 default_view="board", pet_enabled=True)
         self.assertEqual({k: v for k, v in hits.items() if v}, {})
 
     def test_sync_from_prefs_then_user_click_still_emits(self):

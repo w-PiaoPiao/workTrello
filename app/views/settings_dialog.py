@@ -98,6 +98,7 @@ class SettingsDialog(QDialog):
     signal_language_selected = Signal(str)    # zh / en
     signal_skin_selected = Signal(str)        # 皮肤 key
     signal_animation_toggled = Signal(bool)   # 动画启用
+    signal_pet_enabled_toggled = Signal(bool)  # 桌宠显示总开关
     signal_always_top_toggled = Signal(bool)
     signal_remind_advance_changed = Signal(int)  # 截止提前提醒天数 0~3
     signal_autostart_toggled = Signal(bool)      # 开机自启动
@@ -145,6 +146,12 @@ class SettingsDialog(QDialog):
 
         # 桌宠
         self._sec_pet = _Section(tr("桌宠"))
+        self._pet_toggle = ToggleSwitch()
+        self._pet_toggle.toggled.connect(self.signal_pet_enabled_toggled.emit)
+        self._t_pet, self._h_pet = self._sec_pet.add_row(
+            tr("显示桌宠"),
+            tr("关闭后不再出现桌宠，收起看板即隐藏到托盘，常驻开销更低"),
+            self._pet_toggle)
         self._anim_toggle = ToggleSwitch()
         self._anim_toggle.toggled.connect(self.signal_animation_toggled.emit)
         self._t_anim, self._h_anim = self._sec_pet.add_row(
@@ -267,7 +274,8 @@ class SettingsDialog(QDialog):
                         animation: bool, always_top: bool,
                         remind_advance: int = 0,
                         autostart: bool = False,
-                        default_view: str = "pet") -> None:
+                        default_view: str = "pet",
+                        pet_enabled: bool = True) -> None:
         """打开时把当前偏好刷进控件（偏好可能被桌宠菜单等其他入口改过）
 
         全程静音：这是"把真实状态刷进界面"，不是用户按了什么。此前
@@ -276,8 +284,8 @@ class SettingsDialog(QDialog):
         （包括正在打开的这一个）一起隐藏，用户看到的就是"设置打不开"。
         静音后同一份同步逻辑可以随便跑，不再有副作用。
         """
-        silent = (self._anim_toggle, self._top_toggle, self._autostart_toggle,
-                  self._remind_combo)
+        silent = (self._pet_toggle, self._anim_toggle, self._top_toggle,
+                  self._autostart_toggle, self._remind_combo)
         prev = [w.blockSignals(True) for w in silent]
         try:
             self._theme_seg.set_value(theme_mode)
@@ -285,6 +293,7 @@ class SettingsDialog(QDialog):
             # 分段控件只在用户点击时发 changed，set_value 天然静音
             self._view_seg.set_value(default_view)
             self.set_skin(skin)
+            self._pet_toggle.setChecked(pet_enabled)
             self._anim_toggle.setChecked(animation)
             self._top_toggle.setChecked(always_top)
             self._autostart_toggle.setChecked(autostart)
@@ -327,6 +336,8 @@ class SettingsDialog(QDialog):
         self._t_lang.setText(tr("界面语言"))
         self._h_lang.setText(tr("切换后立即生效"))
         self._sec_pet.retexts(tr("桌宠"))
+        self._t_pet.setText(tr("显示桌宠"))
+        self._h_pet.setText(tr("关闭后不再出现桌宠，收起看板即隐藏到托盘，常驻开销更低"))
         self._t_anim.setText(tr("待机动画"))
         self._h_anim.setText(tr("漂浮、呼吸、眨眼与全部过渡动效的总开关"))
         self._skin_row_title.setText(tr("皮肤"))

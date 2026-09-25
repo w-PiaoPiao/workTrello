@@ -75,6 +75,7 @@ class AppConfig:
     KEY_LAST_WORKDIR = "dialog/last_workdir"
     KEY_AUTOSTART = "app/autostart"
     KEY_DEFAULT_VIEW = "window/default_view"
+    KEY_PET_ENABLED = "window/pet_enabled"
 
     @classmethod
     def get_expanded_size(cls):
@@ -133,6 +134,15 @@ class AppConfig:
     @classmethod
     def save_always_on_top(cls, on: bool) -> None:
         _settings().setValue(cls.KEY_ALWAYS_ON_TOP, on)
+
+    @classmethod
+    def get_pet_enabled(cls) -> bool:
+        """桌宠显示开关（默认开启；关闭后折叠形态不存在，收起即隐藏到托盘）"""
+        return _settings().value(cls.KEY_PET_ENABLED, True, type=bool)
+
+    @classmethod
+    def save_pet_enabled(cls, on: bool) -> None:
+        _settings().setValue(cls.KEY_PET_ENABLED, on)
 
     @classmethod
     def get_empty_board_ack(cls) -> bool:

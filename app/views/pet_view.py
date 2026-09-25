@@ -726,7 +726,10 @@ class PetView(QWidget):
 
     def nudge(self) -> None:
         """提醒示意：跳一下（专注/动画禁用/已有小动作时跳过；
-        空闲动画运行中会先暂停、结束后恢复）"""
+        空闲动画运行中会先冻结、结束后恢复）
+        """
+        if not self.isVisible():
+            return    # 桌宠被禁用或窗口隐藏：跳了也没人看，别让动画空转
         if not self._animations_enabled or self._focus_mode:
             return
         if self._active_action is not None:
@@ -743,6 +746,8 @@ class PetView(QWidget):
 
     def celebrate(self) -> None:
         """全部完成庆祝：连跳两次后恢复待机"""
+        if not self.isVisible():
+            return    # 桌宠被禁用或窗口隐藏：跳了也没人看，别让动画空转
         if not self._animations_enabled:
             return
         self.stop_idle()
