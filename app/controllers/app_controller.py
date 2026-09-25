@@ -40,6 +40,7 @@ from app.models.importers import board_from_markdown, board_from_trello
 from app.models.quick_syntax import parse_quick_input
 from app.models.workspace import Workspace
 from app.services import autostart
+from app.services.single_instance import InstanceWaker
 from app.services.tray_service import TrayService
 from app.views import motion
 from app.views.board_view import BoardView
@@ -173,6 +174,13 @@ class AppController(QObject):
         # ── 显示 ──────────────────────────────────────────
         self._window.show()
         self._open_in_default_view()
+
+        # ── 单实例唤醒（第二实例双击图标时把本实例界面拉到前台）──
+        # 请求由后台线程发出，经 Qt 信号排队回主线程后执行
+        self._instance_waker = InstanceWaker(AppConfig.DATA_DIR)
+        self._instance_waker.signal_show_requested.connect(
+            self._show_from_second_instance)
+        self._instance_waker.start()
 
     # ── 公共访问 ──────────────────────────────────────────
 
@@ -606,6 +614,10 @@ class AppController(QObject):
         self._board_view.signal_batch_delete.connect(self._on_batch_delete)
         self._board_view.signal_batch_archive.connect(self._on_batch_archive)
         self._board_view.signal_list_collapsed.connect(self._on_list_collapsed)
+        self._board_view.signal_list_fund_watch.connect(
+            self._on_list_fund_watch)
+        self._board_view.signal_list_fund_export.connect(
+            self._on_list_fund_export)
         self._board_view.signal_today_toggled.connect(
             self._on_today_mode_changed)
         self._pet_view.signal_today_list_clicked.connect(
@@ -742,7 +754,8 @@ class AppController(QObject):
         title, fields = parse_quick_input(text)
         return Card(title=title or text.strip(), **fields)
 
-    def _run_card_dialog(self, card: Card | None) -> dict | None:
+    def _run_card_dialog(self, card: Card | None,
+                         fund_init: dict | None = None) -> dict | None:
         """弹出卡片对话框，返回表单结果 dict；取消/关闭返回 None
 
         顺序不能反：先取结果、再销毁。此前想让窗口"关了就销毁"而设了
@@ -754,7 +767,7 @@ class AppController(QObject):
         """
         from app.views.card_dialog import CardDialog
 
-        dialog = CardDialog(card, self._window)
+        dialog = CardDialog(card, self._window, fund_init=fund_init)
         accepted = dialog.exec() == CardDialog.Accepted
         result = dialog.result_card() if accepted else None
         dialog.deleteLater()
@@ -765,7 +778,9 @@ class AppController(QObject):
         if lst is None:
             return
         if not title:
-            result = self._run_card_dialog(None)
+            result = self._run_card_dialog(
+                None,
+                fund_init={"role": "assist"} if lst.fund_watch else None)
             if result is None:
                 return
             self._push_undo()
@@ -777,6 +792,8 @@ class AppController(QObject):
             self._push_undo()
             card = self._make_card_from_text(title)
         lst.cards.insert(0, card)
+        if lst.fund_watch and card.fund is None:
+            card.ensure_fund()   # 资金监视泳道：新建卡自动带监视配置
         board = self._store.load()
         board.invalidate_index()   # 直接改 cards 结构，索引在变更点立即失效
         self._after_data_change(tr("已添加卡片"))
@@ -912,6 +929,8 @@ class AppController(QObject):
                 index -= 1
             index = max(0, min(index, len(target.cards)))
             target.cards.insert(index, moved)
+        if target.fund_watch and moved.fund is None:
+            moved.ensure_fund()   # 拖入资金监视泳道的普通卡自动补配置
         self._after_data_change(None)
 
     # ── 卡片复制 / 附件 / 批量操作（多选） ─────────────────
@@ -982,6 +1001,10 @@ class AppController(QObject):
         if not moved:
             self._undo_stack.pop()
             return
+        if target.fund_watch:
+            for card in moved:
+                if card.fund is None:
+                    card.ensure_fund()   # 批量移入监视泳道同样补配置
         self._after_data_change(
             tr("已移动 {n} 张卡片").format(n=len(moved)))
 
@@ -1190,6 +1213,54 @@ class AppController(QObject):
         else:
             ids.discard(list_id)
         AppConfig.save_collapsed_lists(ids)
+
+    def _on_list_fund_watch(self, list_id: str, enabled: bool) -> None:
+        """切换列表的资金分配监视
+
+        启用时为列内所有卡片补监视配置（默认配合分配、启动日期=今天，
+        可逐卡在对话框里改类型）；关闭只摘列头标记，卡片数据不动。
+        """
+        lst = self._store.load().find_list(list_id)
+        if lst is None or lst.fund_watch == enabled:
+            return
+        self._push_undo()
+        lst.fund_watch = enabled
+        if enabled:
+            for card in lst.cards:
+                if card.fund is None:
+                    card.ensure_fund()
+        self._after_data_change(
+            tr("已启用资金分配监视") if enabled
+            else tr("已关闭资金分配监视"))
+
+    def _on_list_fund_export(self, list_id: str) -> None:
+        """导出资金监视泳道为 Excel（行=卡片，列=类型/备注/各环节办理日期）"""
+        from app.services.fund_export import build_rows, export_xlsx
+
+        lst = self._store.load().find_list(list_id)
+        if lst is None:
+            return
+        if not build_rows(lst):
+            self._notify(tr("泳道内暂无资金卡片，未导出"))
+            return
+        from PySide6.QtCore import QStandardPaths
+        desktop = QStandardPaths.writableLocation(
+            QStandardPaths.DesktopLocation)
+        default_name = f"资金分配监视_{date.today():%Y%m%d}.xlsx"
+        path, _ = QFileDialog.getSaveFileName(
+            self._window, tr("导出资金分配记录"),
+            str(Path(desktop) / default_name),
+            tr("Excel 工作簿 (*.xlsx)"))
+        if not path:
+            return
+        try:
+            n = export_xlsx(lst, path)
+        except Exception as e:   # noqa: BLE001 — 磁盘/权限/占用等写盘失败统一提示
+            logger.warning("导出资金记录失败: %s", e)
+            self._show_error(tr("导出失败：{err}").format(err=e))
+            return
+        self._notify(tr("已导出 {n} 张卡片").format(n=n))
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).parent)))
 
     # ── 数据变更后的统一刷新 ──────────────────────────────
 
@@ -1689,8 +1760,8 @@ class AppController(QObject):
                     continue
                 delta = c.due_delta(today)
                 if delta is None:
-                    continue
-                if delta < 0:
+                    kind = None
+                elif delta < 0:
                     kind, label = "overdue", tr("已逾期")
                 elif delta == 0:
                     kind, label = "today", tr("今天截止")
@@ -1698,12 +1769,31 @@ class AppController(QObject):
                     kind = f"adv{delta}"
                     label = tr("{n} 天后截止").format(n=delta)
                 else:
-                    continue
-                key = f"{c.id}:{c.due_date}:{kind}"
-                if key in log_for_today:
-                    continue
-                log_for_today.add(key)
-                items.append((c.title, label))
+                    kind = None
+                if kind is not None:
+                    key = f"{c.id}:{c.due_date}:{kind}"
+                    if key not in log_for_today:
+                        log_for_today.add(key)
+                        items.append((c.title, label))
+                # 资金分配监视：两道期限（启动 +14/+30 天）并入同套分档，
+                # 键带 fund 前缀与普通截止互不干扰
+                for n, (dl, limit) in enumerate(c.fund_deadlines(), 1):
+                    fdelta = (dl - today).days
+                    if fdelta < 0:
+                        fkind, flabel = "overdue", tr("已逾期")
+                    elif fdelta == 0:
+                        fkind, flabel = "today", tr("今天到期")
+                    elif 0 < fdelta <= advance:
+                        fkind = f"adv{fdelta}"
+                        flabel = tr("还剩 {n} 天").format(n=fdelta)
+                    else:
+                        continue
+                    dlabel = tr("2周期限") if limit == 14 else tr("30日期限")
+                    key = f"{c.id}:fund{n}:{dl.isoformat()}:{fkind}"
+                    if key in log_for_today:
+                        continue
+                    log_for_today.add(key)
+                    items.append((c.title, dlabel + flabel))
         # 清旧日志（只留今天与昨天）：必须无条件执行——放在"无新提醒就
         # 早退"之后会让旧条目在无提醒的日子永不修剪，日志越积越大
         keep = (today.isoformat(),
@@ -2031,6 +2121,16 @@ class AppController(QObject):
 
     def _on_tray_hide(self) -> None:
         self._window.hide_to_tray()
+
+    def _show_from_second_instance(self) -> None:
+        """第二个实例请求亮出界面（用户双击了应用图标）
+
+        常驻托盘时窗口整个隐藏，再次双击若只得到"已在运行"的提示，观感
+        与闪退无异。这里按默认形态亮出窗口并拉到前台；已展开时仅激活。
+        """
+        self._open_in_default_view()
+        self._window.raise_()
+        self._window.activateWindow()
 
     def _open_in_default_view(self) -> None:
         """把刚显示出来的窗口落到"默认打开形态"偏好对应的形态

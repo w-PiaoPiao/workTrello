@@ -1,13 +1,14 @@
 """
 卡片编辑对话框：标题 / 备注（Markdown 预览）/ 清单 / 标签色 / 截止日期 /
-重复 / 优先级 / 工作目录 / 附件 / 完成勾选
+重复 / 优先级 / 资金分配监视（角色·支线类型·启动日期·环节与办理时间）/
+工作目录 / 附件 / 完成勾选
 """
 
 from __future__ import annotations
 
 import tempfile
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from PySide6.QtCore import QDate, QSize, Qt, QUrl
@@ -20,7 +21,6 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
-    QComboBox,
     QDateEdit,
     QDialog,
     QFileDialog,
@@ -31,16 +31,26 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
 from app.config import AppConfig, workdir_start_dir
 from app.i18n import label_display, repeat_display, tr
-from app.models.board import Card
+from app.models.board import (
+    FUND_KIND_LABELS,
+    FUND_ROLES,
+    FUND_STEP_TEMPLATES,
+    Card,
+    compute_fund_step_days,
+    fund_steps_for_kind,
+)
 from app.models.markdown_lite import render_markdown
+from app.views.controls import ComboBox, DateEdit, SpinBox
 from app.views.theme import AppTheme
+
+# 资金环节行"未填"办理时间的哨兵日期：等于 minimumDate 时显示 "—"
+_FUND_DATE_SENTINEL = QDate(2000, 1, 1)
 
 
 def _selector_button_style(c: dict) -> str:
@@ -119,7 +129,7 @@ def _primary_button_style(c: dict) -> str:
 
 
 def _dialog_style(c: dict) -> str:
-    """对话框自身的 QSS（标题/输入错误态/滚动区透明）"""
+    """对话框自身的 QSS（标题/输入错误态/滚动区透明/资金监视区）"""
     return f"""
         QDialog {{ background: {c['bg_primary']}; }}
         QScrollArea#cardFormScroll, QWidget#cardFormHost {{
@@ -132,6 +142,23 @@ def _dialog_style(c: dict) -> str:
         }}
         QLineEdit[error="true"] {{
             border: 1.5px solid {c['danger']};
+        }}
+        QLabel#fundHintLabel {{
+            color: {c['text_secondary']};
+            font-size: 11px;
+            background: transparent;
+        }}
+        QWidget#fundStepRow {{
+            background: transparent;
+            border-radius: 6px;
+        }}
+        QWidget#fundStepRow[current="true"] {{
+            background: {c['accent_soft']};
+        }}
+        QLabel#fundStepName {{
+            color: {c['text_primary']};
+            font-size: 12px;
+            background: transparent;
         }}
     """
 
@@ -178,7 +205,10 @@ class CardDialog(QDialog):
     此前宽度被 setFixedWidth(420) 锁死：最大宽=最小宽=420，只能纵向拉。
     """
 
-    def __init__(self, card: Card | None = None, parent=None):
+    def __init__(self, card: Card | None = None, parent=None,
+                 fund_init: dict | None = None):
+        """fund_init：资金监视泳道新建卡片时的初始配置标记（非 None 即
+        显示资金分配监视区）；编辑已有卡时由 card.fund 决定，无需传入"""
         super().__init__(parent)
         self.setWindowTitle(tr("编辑卡片") if card else tr("新建卡片"))
         self.setModal(True)
@@ -318,10 +348,7 @@ class CardDialog(QDialog):
         cap4 = QLabel(tr("截止日期"))
         cap4.setProperty("cap", True)
         row.addWidget(cap4, 0, 0)
-        self._due_edit = QDateEdit()
-        self._due_edit.setCalendarPopup(True)
-        self._due_edit.setDisplayFormat("yyyy-MM-dd")
-        self._due_edit.setCurrentSection(QDateEdit.MonthSection)
+        self._due_edit = DateEdit()   # 滚轮/触控板滑动不改值（防悬停误触）
         # 截止日期可选：新建/无日期默认"未设置"，提交 due_date=None，不再默认今天。
         # 未设置态显示灰色"未设置"文字（而非禁用的日期框），设置后才是日期选择框
         has_due = card is not None and bool(card.due_date)
@@ -375,7 +402,7 @@ class CardDialog(QDialog):
         form.addWidget(cap5)
         repeat_row = QHBoxLayout()
         repeat_row.setSpacing(6)
-        self._repeat_combo = QComboBox()
+        self._repeat_combo = ComboBox()   # 滚轮不切项（防悬停误触）
         self._repeat_combo.setCursor(Qt.PointingHandCursor)
         for key in AppConfig.REPEAT_ORDER:
             self._repeat_combo.addItem(repeat_display(key) or tr("不重复"), key)
@@ -383,7 +410,7 @@ class CardDialog(QDialog):
             self._on_repeat_changed)
         repeat_row.addWidget(self._repeat_combo)
         # 自定义间隔天数（仅 repeat=custom 时可见）
-        self._repeat_interval_spin = QSpinBox()
+        self._repeat_interval_spin = SpinBox()   # 滚轮不改值（防悬停误触）
         self._repeat_interval_spin.setRange(1, 365)
         self._repeat_interval_spin.setSuffix(tr(" 天"))
         self._repeat_interval_spin.setToolTip(tr("每 N 天重复一次"))
@@ -423,6 +450,13 @@ class CardDialog(QDialog):
         self._priority_choices[selected_p].setChecked(True)
         priority_row.addStretch(1)
         form.addLayout(priority_row)
+
+        # 资金分配监视（fund 卡 / 资金监视泳道新建时显示）
+        self._fund_show = bool((card.fund if card else None) or fund_init)
+        self._fund_rows: list[dict] = []   # [{"row","check","name","date","clear","step"}]
+        if self._fund_show:
+            self._build_fund_section(form, (card.fund if card else None)
+                                     or fund_init or {})
 
         # 工作目录（可选）：常在外接移动硬盘上，对话框只存路径不校验
         # 存在性——是否可达交给打开动作现场判断
@@ -525,6 +559,14 @@ class CardDialog(QDialog):
             chip.reapply()
         for btn in self._priority_choices.values():
             btn.setStyleSheet(_selector_button_style(c))
+        # 资金监视区：单选药丸与行内清除钮重下配色（构建期快照会过期）
+        if self._fund_show:
+            for btn in self._fund_role_btns.values():
+                btn.setStyleSheet(_selector_button_style(c))
+            for btn in self._fund_kind_btns.values():
+                btn.setStyleSheet(_selector_button_style(c))
+            for entry in self._fund_rows:
+                entry["clear"].setStyleSheet(_remove_button_style(c))
         self._due_none_label.setStyleSheet(f"""
             QLabel {{
                 color: {c['text_disabled']};
@@ -760,6 +802,230 @@ class CardDialog(QDialog):
         for key, btn in self._priority_choices.items():
             btn.setChecked(btn is self.sender())
 
+    # ── 资金分配监视 ──────────────────────────────────────
+
+    def _build_fund_section(self, form: QVBoxLayout, base: dict) -> None:
+        """构建资金分配监视编辑区：角色 / 支线类型 / 启动日期 / 期限预览 /
+        环节列表（牵头）/ 环节耗时统计"""
+        c = AppTheme.colors()
+        fund = base if isinstance(base, dict) else {}
+        role = fund.get("role") if fund.get("role") in FUND_ROLES else "assist"
+        kind = (fund.get("kind") if fund.get("kind") in FUND_STEP_TEMPLATES
+                else "regular")
+        start = fund.get("start_date")
+        try:
+            start = date.fromisoformat(start) if start else date.today()
+        except (TypeError, ValueError):
+            start = date.today()
+        steps_raw = fund.get("steps")
+        steps = (steps_raw if isinstance(steps_raw, list) else [])
+        # 表单工作副本：交互就地写进 steps（行控件经 lambda 持引用），
+        # 保存时由 result_card 统一收集
+        self._fund = {"role": role, "kind": kind,
+                      "start_date": start.isoformat(),
+                      "steps": [dict(s) for s in steps if isinstance(s, dict)]}
+
+        cap_f = QLabel(tr("资金分配监视"))
+        cap_f.setProperty("cap", True)
+        form.addWidget(cap_f)
+
+        # 角色单选：牵头分配（监视环节）/ 配合分配（仅两道期限提醒）
+        role_row = QHBoxLayout()
+        role_row.setSpacing(6)
+        self._fund_role_btns: dict[str, QPushButton] = {}
+        for key, name in (("lead", tr("牵头分配")), ("assist", tr("配合分配"))):
+            btn = QPushButton(name)
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setStyleSheet(_selector_button_style(c))
+            btn.clicked.connect(self._on_fund_role_clicked)
+            self._fund_role_btns[key] = btn
+            role_row.addWidget(btn)
+        self._fund_role_btns[role].setChecked(True)
+        role_row.addStretch(1)
+        form.addLayout(role_row)
+
+        # 牵头支线类型（仅牵头可见；切换时同名环节保留进度）
+        self._fund_kind_cap = QLabel(tr("牵头类型"))
+        self._fund_kind_cap.setProperty("cap", True)
+        form.addWidget(self._fund_kind_cap)
+        self._fund_kind_btns: dict[str, QPushButton] = {}
+        kind_row = QHBoxLayout()
+        kind_row.setSpacing(6)
+        for key in FUND_STEP_TEMPLATES:
+            btn = QPushButton(tr(FUND_KIND_LABELS[key]))
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setStyleSheet(_selector_button_style(c))
+            btn.clicked.connect(self._on_fund_kind_clicked)
+            self._fund_kind_btns[key] = btn
+            kind_row.addWidget(btn)
+        self._fund_kind_btns[kind].setChecked(True)
+        kind_row.addStretch(1)
+        self._fund_kind_row = QWidget()
+        self._fund_kind_row.setLayout(kind_row)
+        form.addWidget(self._fund_kind_row)
+
+        # 启动日期 + 两道自动期限预览（启动日期变化联动刷新）
+        start_row = QHBoxLayout()
+        start_row.setSpacing(6)
+        cap_s = QLabel(tr("启动日期"))
+        cap_s.setProperty("cap", True)
+        start_row.addWidget(cap_s)
+        self._fund_start_edit = DateEdit()   # 滚轮/触控板滑动不改值
+        self._fund_start_edit.setDate(QDate(start.year, start.month,
+                                            start.day))
+        self._fund_start_edit.dateChanged.connect(
+            self._on_fund_start_changed)
+        start_row.addWidget(self._fund_start_edit)
+        start_row.addStretch(1)
+        form.addLayout(start_row)
+        self._fund_deadlines_label = QLabel()
+        self._fund_deadlines_label.setObjectName("fundHintLabel")
+        form.addWidget(self._fund_deadlines_label)
+
+        # 环节列表（仅牵头）：[完成] 环节名 [办理时间] [✕清除]
+        self._fund_steps_host = QWidget()
+        self._fund_steps_layout = QVBoxLayout(self._fund_steps_host)
+        self._fund_steps_layout.setContentsMargins(0, 0, 0, 0)
+        self._fund_steps_layout.setSpacing(3)
+        form.addWidget(self._fund_steps_host)
+
+        # 环节耗时（有办理时间的数据行才显示）
+        self._fund_days_label = QLabel()
+        self._fund_days_label.setObjectName("fundHintLabel")
+        self._fund_days_label.setWordWrap(True)
+        form.addWidget(self._fund_days_label)
+
+        self._rebuild_fund_steps()
+        self._refresh_fund_deadlines_label()
+        self._refresh_fund_days_label()
+        self._apply_fund_role_state()
+
+    def _on_fund_role_clicked(self) -> None:
+        for key, btn in self._fund_role_btns.items():
+            btn.setChecked(btn is self.sender())
+        self._fund["role"] = next(
+            k for k, b in self._fund_role_btns.items() if b.isChecked())
+        self._apply_fund_role_state()
+
+    def _apply_fund_role_state(self) -> None:
+        """配合分配：隐藏支线类型与环节区（只留启动日期与期限预览）"""
+        lead = self._fund["role"] == "lead"
+        self._fund_kind_cap.setVisible(lead)
+        self._fund_kind_row.setVisible(lead)
+        self._fund_steps_host.setVisible(lead)
+        self._fund_days_label.setVisible(lead)
+
+    def _on_fund_kind_clicked(self) -> None:
+        for key, btn in self._fund_kind_btns.items():
+            btn.setChecked(btn is self.sender())
+        kind = next(k for k, b in self._fund_kind_btns.items()
+                    if b.isChecked())
+        if kind == self._fund["kind"]:
+            return
+        self._fund["kind"] = kind
+        self._fund["steps"] = fund_steps_for_kind(kind, self._fund["steps"])
+        self._rebuild_fund_steps()
+        self._refresh_fund_days_label()
+
+    def _on_fund_start_changed(self, qdate: QDate) -> None:
+        self._fund["start_date"] = qdate.toString("yyyy-MM-dd")
+        self._refresh_fund_deadlines_label()
+        self._refresh_fund_days_label()
+
+    def _refresh_fund_deadlines_label(self) -> None:
+        start = self._fund_start_edit.date()
+        self._fund_deadlines_label.setText(
+            tr("自动期限：2周期限 {d1} · 30日期限 {d2}").format(
+                d1=start.addDays(14).toString("yyyy-MM-dd"),
+                d2=start.addDays(30).toString("yyyy-MM-dd")))
+
+    def _rebuild_fund_steps(self) -> None:
+        """按当前支线环节序列重建行；第一个未完成环节高亮为当前环节"""
+        while self._fund_steps_layout.count():
+            item = self._fund_steps_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        self._fund_rows.clear()
+        for step in self._fund["steps"]:
+            row = QWidget()
+            row.setObjectName("fundStepRow")
+            lay = QHBoxLayout(row)
+            lay.setContentsMargins(6, 2, 6, 2)
+            lay.setSpacing(6)
+            check = QCheckBox()
+            check.setChecked(bool(step.get("done")))
+            name = QLabel(step.get("name", ""))
+            name.setObjectName("fundStepName")
+            date_edit = DateEdit()   # 滚轮/触控板滑动不改值（防悬停误触）
+            date_edit.setMinimumDate(_FUND_DATE_SENTINEL)
+            date_edit.setSpecialValueText("—")   # 哨兵值显示为"未填"
+            d = step.get("date")
+            qd = QDate.fromString(d, "yyyy-MM-dd") if d else _FUND_DATE_SENTINEL
+            date_edit.setDate(qd if qd.isValid() else _FUND_DATE_SENTINEL)
+            check.toggled.connect(
+                lambda on, s=step, de=date_edit:
+                self._on_fund_step_toggle(s, on, de))
+            date_edit.dateChanged.connect(
+                lambda _qd, s=step, de=date_edit:
+                self._on_fund_step_date(s, de))
+            clear = QPushButton("✕")
+            clear.setFixedSize(22, 22)
+            clear.setFlat(True)
+            clear.setCursor(Qt.PointingHandCursor)
+            clear.setToolTip(tr("清除该环节办理时间"))
+            clear.setStyleSheet(_remove_button_style(AppTheme.colors()))
+            clear.clicked.connect(
+                lambda _=False, de=date_edit: de.setDate(_FUND_DATE_SENTINEL))
+            lay.addWidget(check)
+            lay.addWidget(name, 1)
+            lay.addWidget(date_edit)
+            lay.addWidget(clear)
+            self._fund_steps_layout.addWidget(row)
+            self._fund_rows.append({"row": row, "check": check,
+                                    "date": date_edit, "clear": clear,
+                                    "step": step})
+        self._refresh_fund_current_row()
+
+    def _on_fund_step_toggle(self, step: dict, on: bool,
+                             date_edit: QDateEdit) -> None:
+        step["done"] = on
+        if on and date_edit.date() == _FUND_DATE_SENTINEL:
+            # 勾选完成而未填办理时间：默认今天（dateChanged 会回写 step）
+            date_edit.setDate(QDate.currentDate())
+        self._refresh_fund_current_row()
+        self._refresh_fund_days_label()
+
+    def _on_fund_step_date(self, step: dict, date_edit: QDateEdit) -> None:
+        step["date"] = (None if date_edit.date() == _FUND_DATE_SENTINEL
+                        else date_edit.date().toString("yyyy-MM-dd"))
+        self._refresh_fund_days_label()
+
+    def _refresh_fund_current_row(self) -> None:
+        """第一个未完成环节行高亮（动态属性 current 驱动 QSS）"""
+        current_set = False
+        for entry in self._fund_rows:
+            is_current = not entry["check"].isChecked() and not current_set
+            if is_current:
+                current_set = True
+            row = entry["row"]
+            if row.property("current") != is_current:
+                row.setProperty("current", is_current)
+                style = row.style()
+                style.unpolish(row)
+                style.polish(row)
+
+    def _refresh_fund_days_label(self) -> None:
+        """环节耗时统计：办理时间逐环节差值（首环节以启动日期为基准）"""
+        days = compute_fund_step_days(self._fund["steps"],
+                                      self._fund["start_date"])
+        spent = [f"{name} {n}{tr('天')}" for name, n in days if n is not None]
+        self._fund_days_label.setText(
+            (tr("环节耗时：") + tr(" → ").join(spent)) if spent else "")
+
     def _apply_due_state(self) -> None:
         """按当前 _due_cleared 切换：未设置=灰字标签，已设置=日期选择框"""
         self._due_edit.setVisible(not self._due_cleared)
@@ -850,9 +1116,10 @@ class CardDialog(QDialog):
     # ── 结果 ──────────────────────────────────────────────
 
     def result_card(self) -> dict:
-        """收集表单内容，返回卡片字段 dict（清除日期后 due_date 为 None）"""
+        """收集表单内容，返回卡片字段 dict（清除日期后 due_date 为 None；
+        显示过资金监视区时带 fund 键，未显示则不带、不触碰原有配置）"""
         labels = [chip.key() for chip in self._label_chips if chip.isChecked()]
-        return {
+        out = {
             "title": self._title_edit.text().strip(),
             "notes": self._notes_edit.toPlainText().strip(),
             "labels": labels,
@@ -868,3 +1135,12 @@ class CardDialog(QDialog):
             "checklist": self._collect_checklist(),
             "attachments": [dict(a) for a in self._attachments],
         }
+        if self._fund_show:
+            out["fund"] = {
+                "role": self._fund["role"],
+                "kind": self._fund["kind"],
+                "start_date":
+                    self._fund_start_edit.date().toString("yyyy-MM-dd"),
+                "steps": [dict(s) for s in self._fund["steps"]],
+            }
+        return out

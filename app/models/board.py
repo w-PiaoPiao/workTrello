@@ -70,6 +70,116 @@ def normalize_attachments(raw) -> list[dict]:
     return out
 
 
+# ── 资金分配监视 ─────────────────────────────────────────────
+# 牵头分配三条支线的环节模板。建卡时把对应序列快照存进卡片，
+# 之后模板调整不影响已有卡片的环节记录。
+FUND_STEP_TEMPLATES: dict[str, list[str]] = {
+    "regular": [                            # 常务会：全部完整环节
+        "收集分配方案", "汇总上会材料", "上会", "出会议纪要",
+        "财政去函", "财政复函", "报分管", "分管批复",
+        "送律师", "律师法律意见", "法规处法律意见", "征求司法局意见",
+        "司法局回复", "报政府常务会", "商市财政局代上会",
+        "会签下达文件", "资金文件下达", "资金入库追加",
+    ],
+    "branch": [                             # 分管：分管批复后财政二次去函
+        "收集分配方案", "汇总上会材料", "上会", "出会议纪要",
+        "财政去函", "财政复函", "报分管", "分管批复",
+        "财政二次去函", "会签下达文件", "资金文件下达", "资金入库追加",
+    ],
+    "finance": [                            # 财政：财政去函后直接会签下达
+        "收集分配方案", "汇总上会材料", "上会", "出会议纪要",
+        "财政去函", "会签下达文件", "资金文件下达", "资金入库追加",
+    ],
+}
+FUND_ROLES = ("lead", "assist")             # 牵头分配 / 配合分配
+FUND_KIND_LABELS = {"regular": "常务会", "branch": "分管", "finance": "财政"}
+FUND_DEADLINE_DAYS = (14, 30)               # 启动后 2 周 / 30 天两道期限
+
+
+def normalize_fund(raw) -> dict | None:
+    """资金分配监视字段容错解析；无效输入返回 None
+
+    结构：{"role", "kind", "start_date"(ISO 或 None),
+           "steps": [{"name", "done", "date"(ISO 或 None)}]}
+    """
+    if not isinstance(raw, dict) or not raw:
+        return None
+    role = raw.get("role")
+    if role not in FUND_ROLES:
+        role = "assist"
+    kind = raw.get("kind")
+    if kind not in FUND_STEP_TEMPLATES:
+        kind = "regular"
+    start = str(raw.get("start_date") or "").strip() or None
+    if start is not None:
+        try:
+            date.fromisoformat(start)
+        except ValueError:
+            start = None
+    steps_raw = raw.get("steps")
+    steps: list[dict] = []
+    if isinstance(steps_raw, list):
+        for entry in steps_raw:
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("name", "")).strip()
+            if not name:
+                continue
+            step_date = str(entry.get("date") or "").strip() or None
+            if step_date is not None:
+                try:
+                    date.fromisoformat(step_date)
+                except ValueError:
+                    step_date = None
+            steps.append({"name": name,
+                          "done": bool(entry.get("done", False)),
+                          "date": step_date})
+    return {"role": role, "kind": kind, "start_date": start,
+            "steps": steps}
+
+
+def fund_steps_for_kind(kind: str,
+                        prev_steps: list[dict] | None = None) -> list[dict]:
+    """按支线模板生成环节序列快照；prev_steps 中同名环节的完成状态与
+    办理时间保留（切换支线类型不丢进度）。模型层与卡片对话框共用。"""
+    if kind not in FUND_STEP_TEMPLATES:
+        raise ValueError(f"未知支线类型: {kind}")
+    old = {s.get("name"): s for s in (prev_steps or [])
+           if isinstance(s, dict)}
+    return [
+        {"name": name,
+         "done": bool(old.get(name, {}).get("done", False)),
+         "date": old.get(name, {}).get("date")}
+        for name in FUND_STEP_TEMPLATES[kind]
+    ]
+
+
+def compute_fund_step_days(steps: list[dict],
+                           start: str | None) -> list[tuple[str, int | None]]:
+    """各环节耗时（天）：本环节办理日期 − 上一环节基准（上一环节办理日期，
+    首环节以启动日期为基准）；缺办理日期或无基准的环节耗时为 None。
+    模型层与卡片对话框共用。"""
+    prev: date | None = None
+    if start:
+        try:
+            prev = date.fromisoformat(start)
+        except ValueError:
+            prev = None
+    out: list[tuple[str, int | None]] = []
+    for s in steps:
+        cur: date | None = None
+        if s.get("date"):
+            try:
+                cur = date.fromisoformat(s["date"])
+            except ValueError:
+                cur = None
+        days = max(0, (cur - prev).days) if (cur and prev) else None
+        out.append((str(s.get("name", "")), days))
+        if cur is not None:
+            prev = cur
+    return out
+
+
 @dataclass
 class Card:
     """看板卡片"""
@@ -91,6 +201,9 @@ class Card:
     checklist: list[dict] = field(default_factory=list)  # 清单项 [{"text","done"}]
     attachments: list[dict] = field(default_factory=list)  # 附件 [{"id","name","path","is_image"}]
     repeat_interval: int = 1            # 自定义重复的间隔天数（repeat="custom" 时生效）
+    # 资金分配监视配置（normalize_fund 结构；None=普通卡片）。
+    # 牵头分配监视环节进度，配合分配仅两道期限提醒
+    fund: dict | None = None
     # due_delta 解析缓存：(due_date, today_ordinal, delta|None)。
     # 自校验：due_date 一变即失配重算，无需写路径显式失效。
     # 一次数据变更管线里同一张卡会被 due_delta 问 3~4 次，缓存后只解析一次
@@ -117,6 +230,7 @@ class Card:
                           for it in self.checklist],
             "attachments": [dict(a) for a in self.attachments],
             "repeat_interval": self.repeat_interval,
+            "fund": normalize_fund(self.fund),
         }
 
     @classmethod
@@ -164,6 +278,7 @@ class Card:
             checklist=normalize_checklist(data.get("checklist")),
             attachments=normalize_attachments(data.get("attachments")),
             repeat_interval=max(1, min(365, interval)),
+            fund=normalize_fund(data.get("fund")),
         )
 
     def set_done(self, done: bool) -> None:
@@ -188,6 +303,8 @@ class Card:
             self.checklist = normalize_checklist(data["checklist"])
         if "attachments" in data:
             self.attachments = normalize_attachments(data["attachments"])
+        if "fund" in data:
+            self.fund = normalize_fund(data["fund"])
         try:
             priority = int(data.get("priority", self.priority) or 0)
         except (TypeError, ValueError):
@@ -276,6 +393,106 @@ class Card:
         self.done_at = None
         return True
 
+    # ── 资金分配监视（fund 非 None 时生效）──────────────────
+
+    def ensure_fund(self) -> dict:
+        """确保带资金分配监视配置（默认：配合分配、启动日期=今天），
+        返回配置 dict（就地生效）"""
+        if self.fund is None:
+            self.fund = {"role": "assist", "kind": "regular",
+                         "start_date": date.today().isoformat(),
+                         "steps": []}
+        return self.fund
+
+    def fund_steps(self) -> list[dict]:
+        """监视的环节序列（按快照返回，不按角色过滤——配合分配通常无
+        steps，但角色切换前残留的 steps 仍在，是否展示由视图按角色决定）"""
+        if not self.fund:
+            return []
+        return self.fund.get("steps", [])
+
+    def fund_progress(self) -> tuple[int, int]:
+        """环节进度：(已完成数, 总数)；无环节返回 (0, 0)"""
+        steps = self.fund_steps()
+        if not steps:
+            return (0, 0)
+        return (sum(1 for s in steps if s.get("done")), len(steps))
+
+    def fund_current_step(self) -> dict | None:
+        """第一个未完成环节；全部完成（或无环节）返回 None"""
+        for s in self.fund_steps():
+            if not s.get("done"):
+                return s
+        return None
+
+    def fund_deadlines(self) -> list[tuple[date, int]]:
+        """两道期限 [(到期日, 期限天数)]；未启用/未设启动日期返回空"""
+        if not self.fund or not self.fund.get("start_date"):
+            return []
+        try:
+            start = date.fromisoformat(self.fund["start_date"])
+        except ValueError:
+            return []
+        return [(start + timedelta(days=n), n)
+                for n in FUND_DEADLINE_DAYS]
+
+    def fund_next_deadline(self, today: date) -> tuple[date, int, int] | None:
+        """卡面徽标关注的期限 (到期日, 距今天数, 期限天数)
+
+        有已过期的取最近过期的一道（超期状态优先于下一道日期展示，
+        与普通截止"逾期"的展示语义一致）；全都未过期取最早的一道。
+        未启用返回 None。
+        """
+        deadlines = self.fund_deadlines()
+        if not deadlines:
+            return None
+        overdue = [(d, limit) for d, limit in deadlines
+                   if (d - today).days < 0]
+        if overdue:
+            d, limit = overdue[-1]
+        else:
+            d, limit = deadlines[0]
+        return (d, (d - today).days, limit)
+
+    def fund_step_days(self) -> list[tuple[str, int | None]]:
+        """各环节耗时（天）：本环节办理日期 − 上一环节基准
+        （上一环节办理日期，首环节以启动日期为基准）。
+        缺办理日期或无基准的环节耗时为 None"""
+        if not self.fund:
+            return []
+        return compute_fund_step_days(self.fund_steps(),
+                                      self.fund.get("start_date"))
+
+    def fund_total_days(self) -> int | None:
+        """流程总用时（天）：最后填写的环节办理日期 − 启动日期；
+        无任何办理日期或未启用返回 None"""
+        if not self.fund or not self.fund.get("start_date"):
+            return None
+        try:
+            start = date.fromisoformat(self.fund["start_date"])
+        except ValueError:
+            return None
+        last: date | None = None
+        for s in self.fund_steps():
+            if not s.get("date"):
+                continue
+            try:
+                d = date.fromisoformat(s["date"])
+            except ValueError:
+                continue
+            if last is None or d > last:
+                last = d
+        return None if last is None else max(0, (last - start).days)
+
+    def switch_fund_kind(self, kind: str) -> None:
+        """切换牵头支线类型：按模板重建环节序列，
+        保留同名环节的完成状态与办理时间"""
+        if kind not in FUND_STEP_TEMPLATES:
+            return
+        fund = self.ensure_fund()
+        fund["kind"] = kind
+        fund["steps"] = fund_steps_for_kind(kind, fund.get("steps"))
+
 
 @dataclass
 class BoardList:
@@ -284,11 +501,13 @@ class BoardList:
     title: str
     id: str = field(default_factory=_new_id)
     cards: list[Card] = field(default_factory=list)
+    fund_watch: bool = False   # 资金分配监视泳道（列内卡片自动带 fund 配置）
 
     def to_dict(self) -> dict:
         return {
             "id": self.id,
             "title": self.title,
+            "fund_watch": self.fund_watch,
             "cards": [c.to_dict() for c in self.cards],
         }
 
@@ -309,6 +528,7 @@ class BoardList:
             title=title,
             id=str(data.get("id") or _new_id()),
             cards=cards,
+            fund_watch=bool(data.get("fund_watch", False)),
         )
 
 

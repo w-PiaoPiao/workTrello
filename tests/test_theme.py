@@ -24,7 +24,7 @@ from PySide6.QtWidgets import QApplication
 
 _qapp = QApplication.instance() or QApplication([])
 
-from app.views.theme import AppTheme
+from app.views.theme import AppTheme, to_qcolor
 
 
 class ThemePaletteTest(unittest.TestCase):
@@ -95,6 +95,44 @@ class ThemePaletteTest(unittest.TestCase):
         finally:
             c["scroll_handle"] = old
         self.assertIn(old, AppTheme.global_qss())
+
+
+class ToQColorTest(unittest.TestCase):
+    """to_qcolor：主题色字符串的健壮解析
+
+    回归背景：色表里的半透明色是 QSS 才支持的 rgba() 语法，QColor 直接
+    构造会得到无效色、Qt 画成纯黑——分段控件选中高亮块、开关关闭态轨道
+    曾因此整块发黑。
+    """
+
+    def test_parses_hex_and_named(self):
+        c = to_qcolor("#2F6BFF")
+        self.assertEqual((c.red(), c.green(), c.blue()), (47, 107, 255))
+        self.assertEqual(to_qcolor("white").name(), QColor("white").name())
+
+    def test_parses_css_rgb_and_rgba(self):
+        c = to_qcolor("rgba(47, 107, 255, 0.12)")
+        self.assertEqual((c.red(), c.green(), c.blue()), (47, 107, 255))
+        self.assertEqual(c.alpha(), round(0.12 * 255))
+        c = to_qcolor("rgba(128, 128, 128, 0.30)")
+        self.assertEqual(c.alpha(), round(0.3 * 255))
+        c = to_qcolor("rgb(10, 20, 30)")
+        self.assertEqual((c.red(), c.green(), c.blue(), c.alpha()),
+                         (10, 20, 30, 255))
+
+    def test_invalid_falls_back_transparent(self):
+        c = to_qcolor("不是颜色")
+        self.assertFalse(c.isValid() and c.alpha() == 255)
+        self.assertEqual(c.alpha(), 0)   # 全透明兜底，绝不画成黑色
+
+    def test_color_table_rgba_keys_parse(self):
+        """色表里全部 rgba 键经 to_qcolor 必须是有效色（防回归护栏）"""
+        from app.config import AppConfig
+        for table in (AppConfig.COLORS, AppConfig.DARK_COLORS):
+            for key, value in table.items():
+                if str(value).startswith(("rgba", "rgb")):
+                    self.assertTrue(to_qcolor(value).isValid(),
+                                    f"{key}={value!r} 解析失败")
 
 
 if __name__ == "__main__":

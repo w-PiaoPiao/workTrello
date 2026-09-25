@@ -60,6 +60,12 @@ def main():
     _lock = QLockFile(str(AppConfig.DATA_DIR / "instance.lock"))
     _lock.setStaleLockTime(5000)
     if not _lock.tryLock(100):
+        # 已有实例在跑：优先唤醒它把界面亮出来（常驻托盘时窗口整个隐藏，
+        # 只弹"已在运行"的提示观感与闪退无异）；唤醒通道不可用再弹提示框
+        from app.services.single_instance import InstanceWaker
+
+        if InstanceWaker(AppConfig.DATA_DIR).wake():
+            sys.exit(0)
         from PySide6.QtWidgets import QMessageBox
         QMessageBox.warning(None, AppConfig.APP_NAME, "应用已在运行，请查看系统托盘。")
         sys.exit(0)

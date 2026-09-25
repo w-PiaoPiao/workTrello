@@ -19,7 +19,13 @@ from pathlib import Path
 os.environ["PET_BOARD_DATA_DIR"] = tempfile.mkdtemp()
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.models.board import Board, BoardList, BoardStore, Card
+from app.models.board import (
+    FUND_STEP_TEMPLATES,
+    Board,
+    BoardList,
+    BoardStore,
+    Card,
+)
 from app.models.json_io import (
     SNAPSHOT_KEEP,
     StoreError,
@@ -251,6 +257,168 @@ class CardTest(unittest.TestCase):
                          .in_today_focus(today))
 
 
+class CardFundTest(unittest.TestCase):
+    """资金分配监视：fund 字段序列化、期限计算、环节进度与耗时"""
+
+    def _lead_card(self) -> Card:
+        card = Card(title="2026年度专项资金分配", fund={
+            "role": "lead", "kind": "finance",
+            "start_date": "2026-09-01",
+            "steps": [{"name": "收集分配方案", "done": True,
+                       "date": "2026-09-04"},
+                      {"name": "汇总上会材料", "done": True,
+                       "date": "2026-09-08"},
+                      {"name": "上会", "done": False, "date": None},
+                      {"name": "出会议纪要", "done": False, "date": None},
+                      {"name": "财政去函", "done": False, "date": None},
+                      {"name": "会签下达文件", "done": False, "date": None},
+                      {"name": "资金文件下达", "done": False, "date": None},
+                      {"name": "资金入库追加", "done": False, "date": None}],
+        })
+        return card
+
+    def test_fund_step_templates_shape(self):
+        # 三条支线的约定：常务会全环节；分管批复后二次去函；财政去函后直签
+        self.assertEqual(len(FUND_STEP_TEMPLATES["regular"]), 18)
+        self.assertEqual(len(FUND_STEP_TEMPLATES["branch"]), 12)
+        self.assertEqual(len(FUND_STEP_TEMPLATES["finance"]), 8)
+        self.assertEqual(FUND_STEP_TEMPLATES["branch"][8], "财政二次去函")
+        self.assertNotIn("财政复函", FUND_STEP_TEMPLATES["finance"])
+        self.assertNotIn("财政复函",
+                         FUND_STEP_TEMPLATES["branch"][9:])   # 二次去函后无复函
+        # 尾段三个环节三线一致
+        for kind in ("regular", "branch", "finance"):
+            self.assertEqual(FUND_STEP_TEMPLATES[kind][-3:],
+                             ["会签下达文件", "资金文件下达", "资金入库追加"])
+
+    def test_ensure_fund_defaults(self):
+        card = Card(title="新卡")
+        self.assertIsNone(card.fund)
+        fund = card.ensure_fund()
+        self.assertEqual(fund["role"], "assist")
+        self.assertEqual(fund["kind"], "regular")
+        self.assertEqual(fund["start_date"], date.today().isoformat())
+        self.assertEqual(fund["steps"], [])
+        self.assertIs(card.fund, fund)              # 就地生效
+        again = card.ensure_fund()
+        self.assertIs(again, fund)                  # 幂等，不覆盖已有配置
+
+    def test_fund_roundtrip_and_normalize(self):
+        card = self._lead_card()
+        card2 = Card.from_dict(card.to_dict())
+        self.assertEqual(card2.fund["role"], "lead")
+        self.assertEqual(card2.fund["kind"], "finance")
+        self.assertEqual(card2.fund["start_date"], "2026-09-01")
+        self.assertEqual(card2.fund["steps"][0],
+                         {"name": "收集分配方案", "done": True,
+                          "date": "2026-09-04"})
+
+    def test_fund_normalize_rejects_garbage(self):
+        self.assertIsNone(Card.from_dict({"title": "x"}).fund)
+        self.assertIsNone(Card.from_dict(
+            {"title": "x", "fund": "垃圾"}).fund)
+        # 非法枚举回退默认、非法日期置空、非 dict 环节剔除
+        fund = Card.from_dict({"title": "x", "fund": {
+            "role": "boss", "kind": "weekly", "start_date": "不是日期",
+            "steps": [{"name": "上会", "done": "yes", "date": "9月1日"},
+                      "垃圾", {"name": ""}]
+        }}).fund
+        self.assertEqual(fund["role"], "assist")
+        self.assertEqual(fund["kind"], "regular")
+        self.assertIsNone(fund["start_date"])
+        self.assertEqual(fund["steps"],
+                         [{"name": "上会", "done": True, "date": None}])
+
+    def test_apply_fund_key(self):
+        card = Card(title="任务")
+        card.apply({"fund": {"role": "assist", "start_date": "2026-09-01"}})
+        self.assertEqual(card.fund["role"], "assist")
+        self.assertEqual(card.fund["kind"], "regular")   # 缺省 kind 补全
+        card.apply({"title": "改名"})                     # 不带 fund 键：保持原状
+        self.assertIsNotNone(card.fund)
+
+    def test_fund_progress_and_current_step(self):
+        card = self._lead_card()
+        self.assertEqual(card.fund_progress(), (2, 8))
+        self.assertEqual(card.fund_current_step()["name"], "上会")
+        # 全部完成 → None；无环节（配合）→ (0, 0) / None
+        for s in card.fund["steps"]:
+            s["done"] = True
+        self.assertIsNone(card.fund_current_step())
+        self.assertEqual(card.fund_progress(), (8, 8))
+        assist = Card(title="配合", fund={"role": "assist"})
+        self.assertEqual(assist.fund_progress(), (0, 0))
+        self.assertIsNone(assist.fund_current_step())
+        self.assertEqual(Card(title="普通").fund_progress(), (0, 0))
+
+    def test_fund_deadlines(self):
+        card = self._lead_card()
+        self.assertEqual(card.fund_deadlines(),
+                         [(date(2026, 9, 15), 14), (date(2026, 10, 1), 30)])
+        # 未设启动日期 / 未启用 → 空
+        card.fund["start_date"] = None
+        self.assertEqual(card.fund_deadlines(), [])
+        self.assertEqual(Card(title="普通").fund_deadlines(), [])
+
+    def test_fund_next_deadline(self):
+        card = self._lead_card()
+        # 两道都未到 → 最早的一道
+        d, delta, limit = card.fund_next_deadline(date(2026, 9, 6))
+        self.assertEqual((d, delta, limit), (date(2026, 9, 15), 9, 14))
+        # 只有第一道过期 → 超期展示优先于下一道日期（徽标语义）
+        d, delta, limit = card.fund_next_deadline(date(2026, 9, 20))
+        self.assertEqual((d, delta, limit), (date(2026, 9, 15), -5, 14))
+        # 两道都已过期 → 最近过期的一道（最后一道）
+        d, delta, limit = card.fund_next_deadline(date(2026, 10, 20))
+        self.assertEqual((d, delta, limit), (date(2026, 10, 1), -19, 30))
+        self.assertIsNone(Card(title="普通").fund_next_deadline(
+            date(2026, 9, 6)))
+
+    def test_fund_step_days(self):
+        card = self._lead_card()
+        days = dict(card.fund_step_days())
+        # 首环节以启动日期为基准：9/1 → 9/4 = 3 天；9/4 → 9/8 = 4 天
+        self.assertEqual(days["收集分配方案"], 3)
+        self.assertEqual(days["汇总上会材料"], 4)
+        self.assertIsNone(days["上会"])               # 未填办理时间
+        # 无启动日期 → 首环节无基准，后续环节级联上一环节仍可计算
+        card.fund["start_date"] = None
+        days = dict(card.fund_step_days())
+        self.assertIsNone(days["收集分配方案"])
+        self.assertEqual(days["汇总上会材料"], 4)
+
+    def test_fund_total_days(self):
+        card = self._lead_card()
+        self.assertEqual(card.fund_total_days(), 7)   # 9/1 → 9/8
+        for s in card.fund["steps"]:
+            s["date"] = None
+        self.assertIsNone(card.fund_total_days())     # 无任何办理日期
+
+    def test_switch_fund_kind_keeps_shared_steps(self):
+        """切换支线：按模板重建环节，同名环节保留完成状态与办理时间"""
+        card = self._lead_card()                      # finance，前两环已办
+        card.switch_fund_kind("branch")
+        names = [s["name"] for s in card.fund["steps"]]
+        self.assertEqual(names, FUND_STEP_TEMPLATES["branch"])
+        self.assertEqual(card.fund["kind"], "branch")
+        kept = {s["name"]: s for s in card.fund["steps"]}
+        self.assertTrue(kept["收集分配方案"]["done"])
+        self.assertEqual(kept["收集分配方案"]["date"], "2026-09-04")
+        self.assertTrue(kept["汇总上会材料"]["done"])
+        self.assertFalse(kept["财政二次去函"]["done"])
+        # 非法 kind 忽略
+        card.switch_fund_kind("weekly")
+        self.assertEqual(card.fund["kind"], "branch")
+
+    def test_switch_fund_kind_initializes_fund(self):
+        card = Card(title="普通卡")
+        card.switch_fund_kind("regular")
+        self.assertIsNotNone(card.fund)
+        self.assertEqual(card.fund["role"], "assist")   # ensure_fund 默认配合
+        self.assertEqual([s["name"] for s in card.fund["steps"]],
+                         FUND_STEP_TEMPLATES["regular"])
+
+
 class BoardListTest(unittest.TestCase):
     def test_roundtrip_with_cards(self):
         lst = BoardList(title="进行中")
@@ -267,6 +435,14 @@ class BoardListTest(unittest.TestCase):
             "cards": [{"title": "有效"}, {"title": ""}, "垃圾", 123],
         })
         self.assertEqual(len(lst.cards), 1)
+
+    def test_fund_watch_roundtrip(self):
+        lst = BoardList(title="资金分配", fund_watch=True)
+        lst2 = BoardList.from_dict(lst.to_dict())
+        self.assertTrue(lst2.fund_watch)
+        # 旧数据无该键 → False
+        self.assertFalse(BoardList.from_dict(
+            {"title": "普通列"}).fund_watch)
 
 
 class BoardTest(unittest.TestCase):

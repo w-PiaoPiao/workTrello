@@ -15,7 +15,7 @@ import tempfile
 import unittest
 from datetime import date, timedelta
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import PropertyMock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ["PET_BOARD_DATA_DIR"] = tempfile.mkdtemp()
@@ -23,7 +23,7 @@ os.environ["PET_BOARD_DATA_DIR"] = tempfile.mkdtemp()
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from PySide6.QtCore import QCoreApplication, QEvent, QTimer
-from PySide6.QtGui import QKeySequence
+from PySide6.QtGui import QDesktopServices, QKeySequence
 from PySide6.QtWidgets import QApplication, QLabel, QMessageBox
 
 _qapp = QApplication.instance() or QApplication([])
@@ -939,6 +939,217 @@ class ControllerFeatureTest(unittest.TestCase):
                 patch.object(AppConfig, "save_remind_log"):
             self.c._check_due_dates()
         notify.assert_not_called()
+
+    # ── 资金分配监视泳道 ──────────────────────────────────
+
+    @staticmethod
+    def _fund(role: str = "assist", start: str | None = None) -> dict:
+        return {"role": role, "kind": "regular",
+                "start_date": start or date.today().isoformat(),
+                "steps": []}
+
+    def test_fund_watch_toggle_ensures_cards(self):
+        """启用监视：列内所有卡补 fund 配置（默认配合+今天），新建卡自动
+        补齐；关闭只摘列头标记，卡片配置保留"""
+        self._reset()
+        lst = self._list()
+        try:
+            self.c._on_card_add(lst.id, "卡A")
+            self.c._on_list_fund_watch(lst.id, True)
+            self.assertTrue(lst.fund_watch)
+            for x in lst.cards:
+                self.assertIsNotNone(x.fund)
+                self.assertEqual(x.fund["role"], "assist")
+                self.assertEqual(x.fund["start_date"],
+                                 date.today().isoformat())
+            # 监视泳道里新建卡也自动带配置
+            self.c._on_card_add(lst.id, "卡B")
+            self.assertIsNotNone(lst.cards[0].fund)
+        finally:
+            self.c._on_list_fund_watch(lst.id, False)
+        self.assertFalse(lst.fund_watch)
+        self.assertIsNotNone(lst.cards[0].fund)
+
+    def test_card_move_into_fund_list_ensures_fund(self):
+        """普通卡拖入监视泳道自动补配置"""
+        self._reset()
+        board = self.c._store.load()
+        board.lists[0].cards.append(Card(title="普通卡"))
+        self.c._after_data_change(None)
+        board.lists[1].fund_watch = True
+        try:
+            card_id = board.lists[0].cards[0].id
+            self.c._on_card_move(card_id, board.lists[1].id, 0)
+            moved = board.lists[1].cards[0]
+            self.assertIsNotNone(moved.fund)
+            self.assertEqual(moved.fund["start_date"],
+                             date.today().isoformat())
+        finally:
+            board.lists[1].fund_watch = False
+
+    def test_fund_export_menu_visible_only_on_watch_list(self):
+        """「导出 Excel…」菜单项仅资金监视泳道可见"""
+        self._reset()
+        board = self.c._store.load()
+        # 不依赖既有列表数量（前面用例可能删过列）：自建普通对照列
+        normal = BoardList(title="普通列")
+        board.lists.append(normal)
+        board.lists[0].fund_watch = True
+        self.c._after_data_change(None)
+        try:
+            headers = {col._lst.id: col._header
+                       for col in self.c._board_view._columns}
+            self.assertTrue(
+                headers[board.lists[0].id]._act_fund_export.isVisible())
+            self.assertFalse(
+                headers[normal.id]._act_fund_export.isVisible())
+        finally:
+            board.lists[0].fund_watch = False
+            board.lists.remove(normal)
+            self.c._after_data_change(None)
+
+    def test_fund_export_writes_xlsx(self):
+        """导出动作：保存对话框路径落盘、通知带数量、打开所在文件夹"""
+        from app.services.fund_export import FUND_EXPORT_STEPS
+        self._reset()
+        board = self.c._store.load()
+        board.lists[0].cards.append(Card(title="资金卡X"))
+        board.lists[0].cards[0].ensure_fund()
+        self.c._after_data_change(None)
+        out = Path(tempfile.mkdtemp()) / "导出.xlsx"
+        notes: list[str] = []
+        orig_notify = self.c._notify
+        self.c._notify = notes.append
+        try:
+            with patch("app.controllers.app_controller.QFileDialog") as fdlg, \
+                    patch("app.controllers.app_controller.QDesktopServices") as qds:
+                fdlg.getSaveFileName.return_value = (str(out), "")
+                self.c._on_list_fund_export(self._list().id)
+        finally:
+            self.c._notify = orig_notify
+        self.assertTrue(out.exists())
+        self.assertEqual(len(notes), 1)
+        self.assertIn("已导出 1 张卡片", notes[0])
+        qds.openUrl.assert_called_once()   # 打开所在文件夹
+        from openpyxl import load_workbook
+        ws = load_workbook(out).active
+        self.assertEqual(ws.cell(row=2, column=1).value, "资金卡X")
+        self.assertEqual(ws.max_column, 3 + len(FUND_EXPORT_STEPS))
+
+    def test_fund_export_empty_list_blocked(self):
+        """空泳道导出：提示未导出，不弹保存对话框"""
+        self._reset()
+        board = self.c._store.load()
+        board.lists[0].fund_watch = True
+        self.c._after_data_change(None)
+        notes: list[str] = []
+        orig_notify = self.c._notify
+        self.c._notify = notes.append
+        try:
+            with patch("app.controllers.app_controller.QFileDialog") as dlg:
+                self.c._on_list_fund_export(self._list().id)
+            dlg.assert_not_called()
+            self.assertEqual(len(notes), 1)
+            self.assertIn("暂无资金卡片", notes[0])
+        finally:
+            self.c._notify = orig_notify
+            board.lists[0].fund_watch = False
+            self.c._after_data_change(None)
+
+    def test_fund_deadline_reminds_like_due(self):
+        """两道期限与普通截止同一套分档（提前 N 天/当天/逾期），键带
+        fund 前缀独立去重"""
+        self._reset()
+        lst = self._list()
+        self.c._on_card_add(lst.id, "资金卡A")
+        lst.cards[0].fund = self._fund()
+        self.c._after_data_change(None)
+        # 两道期限（+14/+30 天）都在提醒窗口外（advance=0）→ 不提醒
+        with patch.object(self.c._tray, "show_notification") as notify, \
+                patch.object(AppConfig, "get_remind_log",
+                             return_value={}), \
+                patch.object(AppConfig, "save_remind_log"):
+            self.c._check_due_dates()
+        notify.assert_not_called()
+        # advance=20：仅 2周期限（14 天后）进入提前提醒窗口
+        log_saved: dict = {}
+
+        def fake_save(log):
+            log_saved.clear()
+            log_saved.update(log)
+
+        with patch.object(self.c._tray, "show_notification") as notify, \
+                patch.object(AppConfig, "get_remind_log",
+                             return_value={}), \
+                patch.object(AppConfig, "save_remind_log",
+                             side_effect=fake_save), \
+                patch.object(AppConfig, "get_remind_advance",
+                             return_value=20):
+            self.c._check_due_dates()
+        notify.assert_called_once()
+        text = notify.call_args.args[0]
+        self.assertIn("资金卡A", text)
+        self.assertIn("2周期限", text)
+        self.assertNotIn("30日期限", text)
+        # 当天签名已入库：重复检查不触发通知、不写日志
+        with patch.object(self.c._tray, "show_notification") as notify2, \
+                patch.object(AppConfig, "get_remind_log",
+                             return_value=log_saved), \
+                patch.object(AppConfig, "save_remind_log") as save2, \
+                patch.object(AppConfig, "get_remind_advance",
+                             return_value=20):
+            self.c._check_due_dates()
+        notify2.assert_not_called()
+        save2.assert_not_called()
+
+    def test_fund_deadline_today_and_overdue(self):
+        """期限当天「今天到期」、逾期「已逾期」；聚合只显示前 2 条，
+        第三条折成"等 N 项"（文案分支在下一个用例单独验证）"""
+        self._reset()
+        lst = self._list()
+        # 先加逾期卡再加当天卡：_on_card_add 插列表顶部，最终顺序
+        # [资金当天, 资金逾期]，让"今天到期"落在聚合展示的前 2 条内
+        self.c._on_card_add(lst.id, "资金逾期")
+        card_over = lst.cards[0]
+        self.c._on_card_add(lst.id, "资金当天")
+        card_today = lst.cards[0]
+        # 启动日 = 14 天前 → 2周期限 = 今天；30日期限还有 16 天
+        card_today.fund = self._fund(
+            start=(date.today() - timedelta(days=14)).isoformat())
+        # 启动日 = 31 天前 → 两道都过期 → 各自提醒（两条）
+        card_over.fund = self._fund(
+            start=(date.today() - timedelta(days=31)).isoformat())
+        self.c._after_data_change(None)
+        with patch.object(self.c._tray, "show_notification") as notify, \
+                patch.object(AppConfig, "get_remind_log",
+                             return_value={}), \
+                patch.object(AppConfig, "save_remind_log"):
+            self.c._check_due_dates()
+        notify.assert_called_once()
+        text = notify.call_args.args[0]
+        self.assertIn("2周期限今天到期", text)
+        self.assertIn("2周期限已逾期", text)
+        # 通知聚合共 3 条(资金逾期两道 + 资金当天一道),"等 N 项"显示总数
+        self.assertIn("等 3 项", text)
+
+    def test_fund_deadline_second_limit_label(self):
+        """第二道期限（30日期限）的到期文案与普通截止同日呈现"""
+        self._reset()
+        lst = self._list()
+        self.c._on_card_add(lst.id, "资金卡B")
+        # 启动日 = 30 天前 → 2周期限已逾期、30日期限 = 今天，恰好两条
+        lst.cards[0].fund = self._fund(
+            start=(date.today() - timedelta(days=30)).isoformat())
+        self.c._after_data_change(None)
+        with patch.object(self.c._tray, "show_notification") as notify, \
+                patch.object(AppConfig, "get_remind_log",
+                             return_value={}), \
+                patch.object(AppConfig, "save_remind_log"):
+            self.c._check_due_dates()
+        notify.assert_called_once()
+        text = notify.call_args.args[0]
+        self.assertIn("2周期限已逾期", text)
+        self.assertIn("30日期限今天到期", text)
 
     # ── 重复任务 ──────────────────────────────────────────
 

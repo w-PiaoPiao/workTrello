@@ -15,7 +15,6 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QComboBox,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -28,6 +27,7 @@ from PySide6.QtWidgets import (
 from app.config import AppConfig
 from app.i18n import label_display, tr
 from app.models.quick_syntax import parse_quick_input
+from app.views.controls import ComboBox
 from app.views.theme import AppTheme
 
 
@@ -284,7 +284,7 @@ class BulkAddDialog(QDialog):
         list_cap = QLabel(tr("添加到列表："))
         list_cap.setProperty("cap", True)
         row.addWidget(list_cap)
-        self._combo = QComboBox()
+        self._combo = ComboBox()   # 滚轮不切项（防悬停误触）
         self._combo.addItems(list_names)
         row.addWidget(self._combo, 1)
         row.addWidget(self._count_label)

@@ -10,11 +10,44 @@ from __future__ import annotations
 from PySide6.QtCore import (QPointF, QEasingCurve, QEvent, QRectF, Qt,
                             QVariantAnimation, Signal)
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import QAbstractButton, QButtonGroup, QFrame, QHBoxLayout, QPushButton
+from PySide6.QtWidgets import (QAbstractButton, QButtonGroup, QComboBox,
+                               QDateEdit, QFrame, QHBoxLayout, QPushButton,
+                               QSpinBox)
 
 from app.config import AppConfig
 from app.views import motion
-from app.views.theme import AppTheme
+from app.views.theme import AppTheme, to_qcolor
+
+
+class _WheelIgnoreMixin:
+    """滚轮/触控板滑动不再改值，事件穿透给父级（滚动区继续滚动）
+
+    Qt 的 QAbstractSpinBox/QComboBox 默认对**悬停**（无需焦点）的滚轮
+    事件直接增减值——mac 触控板双指滑动划过资金环节列表时，18 个办理
+    日期框会被误改（Windows 鼠标滚轮同理，行为在 Qt 层跨平台一致）。
+    日历弹窗、键盘上下键、下拉列表仍是完整的调值入口。
+    """
+
+    def wheelEvent(self, event) -> None:
+        event.ignore()   # 不消费：父级（如对话框的滚动区）接手继续滚动
+
+
+class DateEdit(_WheelIgnoreMixin, QDateEdit):
+    """带日历弹窗的日期框（yyyy-MM-dd），滚轮/触控板滑动不改值"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCalendarPopup(True)
+        self.setDisplayFormat("yyyy-MM-dd")
+        self.setCurrentSection(QDateEdit.MonthSection)
+
+
+class ComboBox(_WheelIgnoreMixin, QComboBox):
+    """滚轮/触控板滑动不切项的下拉框（点开列表选择）"""
+
+
+class SpinBox(_WheelIgnoreMixin, QSpinBox):
+    """滚轮/触控板滑动不改值的数字框（键盘上下键/直接输入可用）"""
 
 
 def _lerp_rect(a: QRectF, b: QRectF, t: float) -> QRectF:
@@ -33,7 +66,14 @@ class ToggleSwitch(QAbstractButton):
         self.setCheckable(True)
         self.setCursor(Qt.PointingHandCursor)
         self._pos = 0.0        # 滑块位置 0..1（动画插值）
-        self._anim: QVariantAnimation | None = None
+        # 动画单实例复用（构造一次，随控件析构）：此前每次切换临时新建
+        # QVariantAnimation 并 deleteLater，而点击路径在 C++ click() 内部
+        # 同步走到这里——真机 cocoa 下会触发 PySide6 的 override 失效段
+        # 错误（点击开关整只闪退，表现为"圆点没反应"），复用从结构上消除
+        self._anim = QVariantAnimation(self)
+        self._anim.setDuration(120)
+        self._anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._anim.valueChanged.connect(self._set_pos)
         self.setFixedSize(44, 26)
 
     def _set_pos(self, v: float) -> None:
@@ -47,10 +87,12 @@ class ToggleSwitch(QAbstractButton):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         c = AppTheme.colors()
-        track = QColor(c["accent"] if (self.isChecked() or self._pos > 0.5)
-                       else c["mask_hover"])
+        # 色值可能含半透明 rgba()（mask/mask_hover），须走 to_qcolor：
+        # QColor 直接构造解析失败会画成纯黑（关闭态轨道曾整条发黑）
+        track = to_qcolor(c["accent"] if (self.isChecked() or self._pos > 0.5)
+                          else c["mask_hover"])
         if not self.isEnabled():
-            track = QColor(c["mask"])
+            track = to_qcolor(c["mask"])
         painter.setPen(Qt.NoPen)
         painter.setBrush(track)
         painter.drawRoundedRect(QRectF(0, 0, self.width(), self.height()),
@@ -63,22 +105,15 @@ class ToggleSwitch(QAbstractButton):
         painter.end()
 
     def _animate_to(self, target: float) -> None:
-        if self._anim is not None:
+        if self._anim.state() == QVariantAnimation.Running:
             self._anim.stop()
         if not motion.enabled():
             # "暂停动画"总开关：开关滑块同样瞬时落位（此前只有本控件漏检）
             self._set_pos(target)
             return
-        anim = QVariantAnimation(self)
-        anim.setDuration(120)
-        anim.setEasingCurve(QEasingCurve.OutCubic)
-        start, end = self._pos, target
-        anim.setStartValue(start)
-        anim.setEndValue(end)
-        anim.valueChanged.connect(self._set_pos)
-        anim.finished.connect(anim.deleteLater)
-        self._anim = anim
-        anim.start()
+        self._anim.setStartValue(self._pos)
+        self._anim.setEndValue(target)
+        self._anim.start()
 
     def nextCheckState(self) -> None:   # 点击时走这里（覆盖默认翻转）
         self.setChecked(not self.isChecked())
@@ -135,8 +170,16 @@ class SegmentedControl(QFrame):
             self._buttons[value] = btn
             lay.addWidget(btn)
         self._pill = QRectF()            # 仅动画期间有效：插值中的高亮块几何
+        self._pill_from = QRectF()       # 动画插值的起/终点（_move_pill 设定）
+        self._pill_to = QRectF()
         self._selected: str | None = None
-        self._pill_anim: QVariantAnimation | None = None
+        # 同 ToggleSwitch：动画单实例复用，不在 C++ 点击路径内新建/销毁
+        # QObject（PySide6 真机 cocoa 下会触发 override 失效段错误）
+        self._pill_anim = QVariantAnimation(self)
+        self._pill_anim.setDuration(AppConfig.SEGMENT_PILL_MS)
+        self._pill_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._pill_anim.valueChanged.connect(self._on_pill_tick)
+        self._pill_anim.finished.connect(self._on_pill_done)
 
     # ── 高亮块 ────────────────────────────────────────────
 
@@ -151,7 +194,7 @@ class SegmentedControl(QFrame):
         容器的 resizeEvent 里、也不保证任何时点能补上，缓存值会停在中间态
         （macOS 实测偏 2px，CI 抓到）。动画期间才用插值。
         """
-        if self._pill_anim is not None:
+        if self._pill_anim.state() == QVariantAnimation.Running:
             return QRectF(self._pill)
         btn = self._buttons.get(self._selected) if self._selected else None
         return QRectF(btn.geometry()) if btn is not None else QRectF()
@@ -163,9 +206,8 @@ class SegmentedControl(QFrame):
         start = self._paint_rect()          # 此刻 _selected 仍是旧值
         self._selected = value
         target = QRectF(btn.geometry())
-        if self._pill_anim is not None:
+        if self._pill_anim.state() == QVariantAnimation.Running:
             self._pill_anim.stop()
-            self._pill_anim = None
         # 无起点（布局还没跑过）/ 原地 / 非用户点击 / "暂停动画"总开关：
         # 一律瞬时落位，把几何交回"绘制时现取"
         if (start.isNull() or start == target or not animate
@@ -173,29 +215,18 @@ class SegmentedControl(QFrame):
             self._pill = QRectF()
             self.update()
             return
-        anim = QVariantAnimation(self)
-        anim.setDuration(AppConfig.SEGMENT_PILL_MS)
-        anim.setEasingCurve(QEasingCurve.OutCubic)
-        anim.setStartValue(0.0)
-        anim.setEndValue(1.0)
-        anim.valueChanged.connect(
-            lambda t: self._set_anim_pill(_lerp_rect(start, target, float(t))))
-
-        def _done() -> None:
-            # 终点交还给按钮自己：动画的值只是过渡，最终几何以布局为准
-            self._pill_anim = None
-            self._pill = QRectF()
-            self.update()
-            anim.deleteLater()
-
-        anim.finished.connect(_done)
-        self._pill_anim = anim
+        self._pill_from, self._pill_to = start, target
         self._pill = start          # 起播首帧就有几何，不留空窗
-        anim.start()
+        self._pill_anim.start()
 
-    def _set_anim_pill(self, rect: QRectF) -> None:
+    def _on_pill_tick(self, t: float) -> None:
         """动画推进：只改插值几何"""
-        self._pill = rect
+        self._pill = _lerp_rect(self._pill_from, self._pill_to, float(t))
+        self.update()
+
+    def _on_pill_done(self) -> None:
+        # 终点交还给按钮自己：动画的值只是过渡，最终几何以布局为准
+        self._pill = QRectF()
         self.update()
 
     def paintEvent(self, event) -> None:
@@ -207,9 +238,10 @@ class SegmentedControl(QFrame):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         c = AppTheme.colors()
-        # 描边居中在路径上：内缩半个笔宽，否则边框会被按钮盒子裁掉一半
-        painter.setPen(QPen(QColor(c["accent"]), 1.5))
-        painter.setBrush(QColor(c["accent_soft"]))
+        # accent_soft 是半透明 rgba() 色值：QColor 直接构造会解析失败画成
+        # 纯黑（选中高亮块曾整块发黑），必须走 to_qcolor
+        painter.setPen(QPen(to_qcolor(c["accent"]), 1.5))
+        painter.setBrush(to_qcolor(c["accent_soft"]))
         r = AppConfig.UI_RADIUS_PILL
         painter.drawRoundedRect(rect.adjusted(0.75, 0.75, -0.75, -0.75), r, r)
         painter.end()

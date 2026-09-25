@@ -10,14 +10,43 @@ from __future__ import annotations
 
 import inspect
 import logging
+import re
 import weakref
 
 from PySide6.QtGui import QColor, QPalette
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Qt, Signal
 
 from app.config import AppConfig
 
 logger = logging.getLogger(__name__)
+
+# css rgb()/rgba() 解析（QColor 只认 #hex 与命名色，见 to_qcolor）
+_CSS_COLOR_RE = re.compile(
+    r"^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*"
+    r"(?:,\s*([0-9.]+)\s*)?\)$")
+
+
+def to_qcolor(spec) -> QColor:
+    """主题色字符串 → QColor：支持 #hex 与 QSS 同款 css rgb()/rgba()
+
+    色表里的半透明色（accent_soft / mask / glass / bg_panel 等）是 QSS
+    才支持的 rgba() 语法，QColor 直接构造会得到**无效色**，Qt 把无效色
+    画成纯黑——分段控件选中高亮块、开关关闭态轨道曾因此整块发黑。自绘
+    代码取主题色一律经由本函数；解析失败按全透明兜底并记日志。
+    """
+    if isinstance(spec, QColor):
+        return QColor(spec)
+    text = str(spec).strip()
+    m = _CSS_COLOR_RE.match(text)
+    if m:
+        r, g, b = (int(m.group(i)) for i in (1, 2, 3))
+        alpha = float(m.group(4)) if m.group(4) else 1.0
+        return QColor(r, g, b, max(0, min(255, round(alpha * 255))))
+    color = QColor(text)
+    if not color.isValid():
+        logger.warning("无法解析主题色 %r，按全透明处理", text)
+        color = QColor(Qt.transparent)
+    return color
 
 
 def _default_dark() -> bool:

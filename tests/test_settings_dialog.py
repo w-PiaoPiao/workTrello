@@ -13,7 +13,7 @@ os.environ["PET_BOARD_DATA_DIR"] = tempfile.mkdtemp()
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from PySide6.QtCore import QRectF
+from PySide6.QtCore import QRectF, QVariantAnimation
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -51,6 +51,11 @@ class ControlsTest(unittest.TestCase):
         _qapp.processEvents()
         return seg
 
+    @staticmethod
+    def _pill_running(seg) -> bool:
+        """动画是否运行中（动画对象自复用改造后常驻，不能以 None 判断）"""
+        return seg._pill_anim.state() == QVariantAnimation.Running
+
     def test_segmented_pill_sits_on_selection_without_animating(self):
         """set_value 是"同步真实偏好"，高亮块必须瞬时落位
 
@@ -61,7 +66,7 @@ class ControlsTest(unittest.TestCase):
         seg = self._seg()
         seg.set_value("b")
         self.assertEqual(seg._selected, "b")
-        self.assertIsNone(seg._pill_anim)              # 不播动画
+        self.assertFalse(self._pill_running(seg))     # 不播动画
         self.assertEqual(seg._paint_rect(),
                          QRectF(seg._buttons["b"].geometry()))
 
@@ -73,14 +78,14 @@ class ControlsTest(unittest.TestCase):
         board_rect = QRectF(seg._buttons["b"].geometry())
         self.assertEqual(seg._paint_rect(), pet_rect)
         seg._buttons["b"].click()
-        self.assertIsNotNone(seg._pill_anim)           # 播动画，不是瞬时跳
+        self.assertTrue(self._pill_running(seg))      # 播动画，不是瞬时跳
         QTest.qWait(AppConfig.SEGMENT_PILL_MS // 4)
         mid = QRectF(seg._pill)
-        self.assertIsNotNone(seg._pill_anim)           # 仍在滑动途中
+        self.assertTrue(self._pill_running(seg))      # 仍在滑动途中
         self.assertLessEqual(pet_rect.x(), mid.x())
         self.assertLessEqual(mid.x(), board_rect.x())
         QTest.qWait(AppConfig.SEGMENT_PILL_MS + 150)
-        self.assertIsNone(seg._pill_anim)
+        self.assertFalse(self._pill_running(seg))
         self.assertEqual(seg._paint_rect(), board_rect)
 
     def test_segmented_pill_tracks_button_geometry_without_cache(self):
@@ -117,7 +122,7 @@ class ControlsTest(unittest.TestCase):
         try:
             motion.set_enabled(False)
             seg._buttons["b"].click()
-            self.assertIsNone(seg._pill_anim)
+            self.assertFalse(self._pill_running(seg))
             self.assertEqual(seg._paint_rect(),
                              QRectF(seg._buttons["b"].geometry()))
         finally:

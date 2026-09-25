@@ -61,7 +61,7 @@ from PySide6.QtWidgets import (
 
 from app.config import AppConfig
 from app.i18n import label_display, repeat_display, tr
-from app.models.board import BoardList, Card
+from app.models.board import FUND_KIND_LABELS, BoardList, Card
 from app.views import motion
 from app.views.notes_popover import (
     hide_notes_popover,
@@ -397,6 +397,53 @@ def _fmt_due(due: str) -> tuple[str, bool]:
     return f"{d.month}/{d.day}", False
 
 
+def _fund_deadline_name(limit: int) -> str:
+    """期限天数 → 徽标短名（14 天 = 2周期限，30 天 = 30日期限）"""
+    return tr("2周期限") if limit == 14 else tr("30日期限")
+
+
+def _fmt_fund_deadline(card: Card) -> tuple[str, str] | None:
+    """资金卡期限徽标 → (文本, 主题色键)；未启用/未设启动日期返回 None
+
+    取下一道未到期期限显示日期；当天红色；已逾期显示超期天数（红色），
+    两道都过期时取最后一道（30日期限）。
+    """
+    nd = card.fund_next_deadline(date.today())
+    if nd is None:
+        return None
+    d, delta, limit = nd
+    name = _fund_deadline_name(limit)
+    if delta < 0:
+        return f"{name}{tr('超 {n} 天').format(n=-delta)}", "danger"
+    if delta == 0:
+        return f"{name}{tr('今天到期')}", "danger"
+    return f"{name} {d.month}/{d.day}", "accent"
+
+
+def _fmt_fund_role(card: Card) -> str:
+    """资金卡角色徽标：牵头·常务会 / 牵头·分管 / 牵头·财政 / 配合"""
+    fund = card.fund or {}
+    if fund.get("role") == "lead":
+        kind = FUND_KIND_LABELS.get(fund.get("kind"), "")
+        return f"{tr('牵头')}·{tr(kind)}" if kind else tr("牵头")
+    return tr("配合")
+
+
+def _fmt_fund_steps_line(card: Card) -> str:
+    """tooltip 用的一行流程摘要：进度 + 当前环节（全完显示已完成）"""
+    if (card.fund or {}).get("role") != "lead":
+        # 配合分配不监视环节（steps 可能残留，展示层按角色屏蔽）
+        return tr("资金分配监视（配合）：仅 2 次期限提醒")
+    done, total = card.fund_progress()
+    if not total:
+        return tr("资金分配监视：未配置环节")
+    head = tr("资金分配流程 {done}/{total}").format(done=done, total=total)
+    cur = card.fund_current_step()
+    if cur is None:
+        return f"{head} · {tr('全部环节已完成')}"
+    return f"{head} · {tr('当前：{name}').format(name=cur['name'])}"
+
+
 class _CardCheckButton(QPushButton):
     """自绘勾选框（替代 ☐/☑ 字形，跨平台渲染一致）
 
@@ -652,12 +699,17 @@ class CardWidget(QFrame):
         """
         c = self._card
         return (c.title, c.done, c.due_date,
-                date.today().toordinal() if c.due_date else 0,
+                date.today().toordinal() if (c.due_date or c.fund) else 0,
                 bool(c.notes), bool(c.workdir),
                 tuple(c.labels), c.priority, c.repeat, c.pomodoros,
                 tuple((it.get("text"), bool(it.get("done")))
                       for it in c.checklist),
-                len(c.attachments))
+                len(c.attachments),
+                # 资金分配监视：期限徽标同样是相对文案（超 N 天），跨天须重建
+                (c.fund["role"], c.fund["kind"], c.fund.get("start_date"),
+                 tuple((s.get("name"), bool(s.get("done")), s.get("date"))
+                       for s in c.fund.get("steps", [])))
+                if c.fund else None)
 
     def reapply_style(self) -> None:
         """主题切换后同步卡片内部状态，不重建子控件（保留悬停状态）
@@ -765,6 +817,19 @@ class CardWidget(QFrame):
                 meta_items.append(
                     (mark, {1: "danger", 2: "warning",
                             3: "accent"}.get(card.priority, "accent"), False))
+        # 资金分配监视徽标（期限最关键，放在普通截止之前防 4 枚上限截断）
+        if card.fund:
+            fund_dl = _fmt_fund_deadline(card)
+            if fund_dl is not None:
+                meta_items.append((fund_dl[0], fund_dl[1], False))
+            meta_items.append((_fmt_fund_role(card), "accent", False))
+            # 进度徽标仅牵头卡展示（配合分配不监视环节，steps 残留不算数）
+            if card.fund.get("role") == "lead":
+                f_done, f_total = card.fund_progress()
+                if f_total:
+                    meta_items.append(
+                        (f"🧭 {f_done}/{f_total}",
+                         "success" if f_done == f_total else "accent", False))
         if card.due_date:
             text, overdue = _fmt_due(card.due_date)
             meta_items.append((text, "danger" if overdue else "accent", False))
@@ -957,6 +1022,16 @@ class CardWidget(QFrame):
             names = [label_display(k) for k in self._card.labels]
             parts.append(tr("标签：") + tr("、").join(names))
         parts.extend(text for text, _key, _is_notes in self._meta_items_cache)
+        # 资金分配监视：流程摘要 + 环节耗时明细（徽章行放不下的信息在这里看全）
+        if self._card.fund:
+            parts.append(_fmt_fund_steps_line(self._card))
+            days = self._card.fund_step_days()
+            spent = [f"{name} {n}{tr('天')}" for name, n in days if n is not None]
+            if spent:
+                parts.append(tr("环节耗时：") + tr(" → ").join(spent))
+            total_days = self._card.fund_total_days()
+            if total_days is not None:
+                parts.append(tr("流程总用时：{n} 天").format(n=total_days))
         if self._card.labels:
             # 左缘色条是"按标签过滤"的命中区，此前零提示：点卡片最左端
             # 会触发全板过滤，而用户并不知道刚才发生了什么
@@ -1257,6 +1332,8 @@ class ListHeader(QWidget):
 
     signal_title_changed = Signal(str, str)   # list_id, new_title
     signal_delete_requested = Signal(str)     # list_id
+    signal_fund_watch = Signal(str, bool)     # list_id, enabled 资金分配监视
+    signal_fund_export = Signal(str)          # list_id 导出资金记录 Excel
 
     def __init__(self, board_list: BoardList, parent=None):
         super().__init__(parent)
@@ -1273,6 +1350,12 @@ class ListHeader(QWidget):
         dot.setFixedSize(8, 8)
         dot.setStyleSheet(f"background: {accent}; border-radius: 4px;")
         layout.addWidget(dot)
+
+        # 资金分配监视泳道徽记（启用监视的列才显示）
+        self._fund_mark = QLabel("💰")
+        self._fund_mark.setToolTip(tr("资金分配监视泳道"))
+        self._fund_mark.setVisible(board_list.fund_watch)
+        layout.addWidget(self._fund_mark)
 
         self._title_label = _TitleLabel(board_list.title, self)
         self._title_label.setObjectName("listTitle")
@@ -1300,14 +1383,29 @@ class ListHeader(QWidget):
         self._menu = QMenu(self)
         self._act_rename = QAction(tr("重命名"), self._menu)
         self._act_delete = QAction(tr("删除列表"), self._menu)
+        self._act_fund_watch = QAction(tr("资金分配监视"), self._menu)
+        self._act_fund_watch.setCheckable(True)
+        self._act_fund_watch.setChecked(board_list.fund_watch)
+        # 导出 Excel（仅资金监视泳道可见）
+        self._act_fund_export = QAction(tr("导出 Excel…"), self._menu)
+        self._act_fund_export.setVisible(board_list.fund_watch)
         self._menu.addAction(self._act_rename)
+        self._menu.addAction(self._act_fund_watch)
+        self._menu.addAction(self._act_fund_export)
         self._menu.addAction(self._act_delete)
         self._act_rename.triggered.connect(self._start_rename)
         self._act_delete.triggered.connect(
             lambda: self.signal_delete_requested.emit(self._lst.id))
+        self._act_fund_watch.toggled.connect(self._on_fund_watch_toggled)
+        self._act_fund_export.triggered.connect(
+            lambda: self.signal_fund_export.emit(self._lst.id))
         # 菜单关闭后按光标实际位置决定是否保持点亮（避免菜单开着时误熄灭）
         self._menu.aboutToHide.connect(
             lambda: self._menu_btn.set_active(self.underMouse()))
+
+    def _on_fund_watch_toggled(self, checked: bool) -> None:
+        self._fund_mark.setVisible(checked)
+        self.signal_fund_watch.emit(self._lst.id, checked)
 
     def _show_menu(self) -> None:
         self._menu.exec(self._menu_btn.mapToGlobal(
@@ -1350,6 +1448,11 @@ class ListHeader(QWidget):
         """增量刷新：重指向模型对象并同步标题文本"""
         self._lst = board_list
         self._title_label.setText(board_list.title)
+        # 资金监视标记与菜单勾选随模型同步（setChecked 同值不触发 toggled，
+        # 不会与 _on_fund_watch_toggled 成环）
+        self._fund_mark.setVisible(board_list.fund_watch)
+        self._act_fund_watch.setChecked(board_list.fund_watch)
+        self._act_fund_export.setVisible(board_list.fund_watch)
 
     def reapply_theme(self) -> None:
         """主题切换后同步头部状态（配色由看板级样式表统一下发）"""
@@ -1362,6 +1465,9 @@ class ListHeader(QWidget):
         """语言切换：刷新列头菜单与提示文案"""
         self._act_rename.setText(tr("重命名"))
         self._act_delete.setText(tr("删除列表"))
+        self._act_fund_watch.setText(tr("资金分配监视"))
+        self._act_fund_export.setText(tr("导出 Excel…"))
+        self._fund_mark.setToolTip(tr("资金分配监视泳道"))
         self._collapse_btn.setToolTip(tr("折叠 / 展开列表"))
         self._menu_btn.setToolTip(tr("列表操作"))
 
@@ -1746,6 +1852,8 @@ class ListColumn(QFrame):
     signal_drag_blocked = Signal()             # 过滤态下拖拽被拒（→ 看板 toast）
     signal_list_move = Signal(str, str, bool)  # moved_list_id, target_list_id, insert_before
     signal_collapsed_changed = Signal(str, bool)  # list_id, collapsed
+    signal_fund_watch = Signal(str, bool)      # list_id, enabled 资金分配监视
+    signal_fund_export = Signal(str)           # list_id 导出资金记录 Excel
 
     COLLAPSED_HEIGHT = 52        # 折叠态高度（仅剩标题栏）
 
@@ -1783,6 +1891,8 @@ class ListColumn(QFrame):
         self._header = ListHeader(board_list, self)
         self._header.signal_title_changed.connect(self.signal_title_changed)
         self._header.signal_delete_requested.connect(self.signal_delete_list)
+        self._header.signal_fund_watch.connect(self.signal_fund_watch)
+        self._header.signal_fund_export.connect(self.signal_fund_export)
         root.addWidget(self._header)
 
         # 卡片滚动区
@@ -2528,6 +2638,8 @@ class BoardView(QWidget):
     signal_list_title_changed = Signal(str, str)
     signal_list_delete = Signal(str)
     signal_list_collapsed = Signal(str, bool)   # list_id, collapsed
+    signal_list_fund_watch = Signal(str, bool)  # list_id, enabled 资金分配监视
+    signal_list_fund_export = Signal(str)       # list_id 导出资金记录 Excel
     signal_close_requested = Signal()           # 窗口 ✕：最小化到托盘（不退出）
     signal_zoom_requested = Signal()
     signal_card_pomo = Signal(str)              # card_id
@@ -3536,6 +3648,8 @@ class BoardView(QWidget):
             lambda: self.show_toast(
                 tr("过滤/搜索状态下卡片不可拖拽，清除过滤后可拖动")))
         col.signal_collapsed_changed.connect(self.signal_list_collapsed)
+        col.signal_fund_watch.connect(self.signal_list_fund_watch)
+        col.signal_fund_export.connect(self.signal_list_fund_export)
         self._columns.append(col)
         # 恢复上次折叠状态（save=False 不触发持久化回调；建列时不播动画）
         if collapsed_ids is None:

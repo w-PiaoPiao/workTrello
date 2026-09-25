@@ -271,6 +271,112 @@ class BoardViewRefreshTest(unittest.TestCase):
         self.assertNotEqual(cw._content_fingerprint(), no_notes,
                             "notes 的有/无未参与指纹")
 
+    # ── 资金分配监视徽标 ──────────────────────────────────
+
+    @staticmethod
+    def _fund(steps=None, start=None, role="lead", kind="finance") -> dict:
+        return {"role": role, "kind": kind,
+                "start_date": start or date.today().isoformat(),
+                "steps": steps if steps is not None else []}
+
+    def test_fund_badges_render(self):
+        """资金卡徽标：角色类型 / 进度 / 下一道期限日期"""
+        start = date.today() - timedelta(days=20)   # fund1 已超 6 天
+        card = Card(title="资金卡", fund=self._fund(
+            start=start.isoformat(),
+            steps=[{"name": "收集分配方案", "done": True, "date": None},
+                   {"name": "汇总上会材料", "done": False, "date": None}]))
+        lists = make_lists([("资金", [])])
+        lists[0].cards.append(card)
+        self.view.refresh(lists)
+        cw = self.view._columns[0]._card_widgets[0]
+        badges = self._badges(cw)
+        self.assertIn("牵头·财政", badges)
+        self.assertIn("🧭 1/2", badges)
+        # 有已过期期限 → 超期展示优先于下一道日期
+        self.assertIn("2周期限超 6 天", badges)
+        self.assertIn("danger", [tone for _b, tone in cw._meta_badges])
+
+    def test_fund_overdue_badge_turns_danger(self):
+        """两道期限都过期：徽标显示超期天数并转 danger 色"""
+        start = date.today() - timedelta(days=40)   # fund2 已超 10 天
+        card = Card(title="资金卡", fund=self._fund(
+            role="assist", start=start.isoformat()))
+        lists = make_lists([("资金", [])])
+        lists[0].cards.append(card)
+        self.view.refresh(lists)
+        cw = self.view._columns[0]._card_widgets[0]
+        badges = self._badges(cw)
+        self.assertIn("30日期限超 10 天", badges)
+        self.assertIn("danger", [tone for _b, tone in cw._meta_badges])
+
+    def test_fund_deadline_badge_follows_day_change(self):
+        """期限徽标是相对文案：跨天后必须重建（指纹含 fund + 今天）"""
+        today = date.today()
+        start = today - timedelta(days=14)          # fund1 = 今天到期
+        card = Card(title="资金卡", fund=self._fund(
+            role="assist", start=start.isoformat()))
+        lists = make_lists([("资金", [])])
+        lists[0].cards.append(card)
+        self.view.refresh(lists)
+        cw = self.view._columns[0]._card_widgets[0]
+        self.assertIn("2周期限今天到期", self._badges(cw))
+        with patch.object(board_view, "date",
+                          frozen_date(today + timedelta(days=1))):
+            self.view.refresh(lists)
+        self.assertIn("2周期限超 1 天", self._badges(cw), "跨天后徽标未刷新")
+
+    def test_fund_progress_change_refreshes_badge(self):
+        """勾选环节后进度徽标立即刷新（指纹覆盖 steps）"""
+        card = Card(title="资金卡", fund=self._fund(
+            steps=[{"name": "收集分配方案", "done": False, "date": None},
+                   {"name": "汇总上会材料", "done": False, "date": None}]))
+        lists = make_lists([("资金", [])])
+        lists[0].cards.append(card)
+        self.view.refresh(lists)
+        cw = self.view._columns[0]._card_widgets[0]
+        self.assertIn("🧭 0/2", self._badges(cw))
+        card.fund["steps"][0]["done"] = True
+        self.view.refresh(lists)
+        self.assertIn("🧭 1/2", self._badges(cw), "环节进度变化后徽标未刷新")
+
+    def test_fund_tooltip_contains_flow_and_days(self):
+        """tooltip 汇总流程摘要与环节耗时明细"""
+        card = Card(title="资金卡", fund=self._fund(
+            start="2026-09-01",
+            steps=[{"name": "收集分配方案", "done": True,
+                    "date": "2026-09-04"},
+                   {"name": "汇总上会材料", "done": False, "date": None}]))
+        lists = make_lists([("资金", [])])
+        lists[0].cards.append(card)
+        self.view.refresh(lists)
+        cw = self.view._columns[0]._card_widgets[0]
+        tip = cw.toolTip()
+        self.assertIn("资金分配流程 1/2", tip)
+        self.assertIn("当前：汇总上会材料", tip)
+        self.assertIn("收集分配方案 3天", tip)
+
+    def test_assist_fund_hides_progress_badge(self):
+        """配合分配不监视环节：即使切换前残留 steps，也不显示进度徽标"""
+        card = Card(title="配合卡", fund=self._fund(
+            role="assist",
+            steps=[{"name": "收集分配方案", "done": True, "date": None}]))
+        lists = make_lists([("资金", [])])
+        lists[0].cards.append(card)
+        self.view.refresh(lists)
+        cw = self.view._columns[0]._card_widgets[0]
+        self.assertNotIn("🧭 1/1", self._badges(cw))
+        self.assertIn("配合", self._badges(cw))
+
+    def test_assist_fund_tooltip_mentions_deadline_only(self):
+        """配合卡 tooltip：无环节进度，仅期限提示"""
+        card = Card(title="配合卡", fund=self._fund(role="assist"))
+        lists = make_lists([("资金", [])])
+        lists[0].cards.append(card)
+        self.view.refresh(lists)
+        cw = self.view._columns[0]._card_widgets[0]
+        self.assertIn("仅 2 次期限提醒", cw.toolTip())
+
     def test_due_badge_follows_day_change(self):
         """跨天且数据一字未改：截止徽标文案必须跟着重建
 

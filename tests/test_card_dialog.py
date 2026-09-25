@@ -11,7 +11,7 @@ import re
 import sys
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -87,6 +87,94 @@ class DueDateOptionalTest(unittest.TestCase):
         self.assertFalse(dlg._due_cleared)
         dlg._due_edit.setDate(QDate(2026, 10, 1))
         self.assertEqual(dlg.result_card()["due_date"], "2026-10-01")
+        dlg.deleteLater()
+
+
+class FundSectionTest(unittest.TestCase):
+    """资金分配监视编辑区：显示条件、支线切换保留进度、环节勾选与期限预览"""
+
+    def _lead_card(self, kind: str = "finance") -> Card:
+        card = Card(title="资金卡")
+        card.switch_fund_kind(kind)
+        card.fund["role"] = "lead"          # ensure_fund 默认配合，此处测牵头
+        card.fund["start_date"] = "2026-09-01"
+        return card
+
+    def test_plain_card_hides_fund_section(self):
+        """普通卡（无 fund、无 fund_init）：不显示监视区，result 不带 fund 键"""
+        dlg = CardDialog(None)
+        self.assertFalse(dlg._fund_show)
+        self.assertNotIn("fund", dlg.result_card())
+        dlg.deleteLater()
+
+    def test_fund_init_shows_section_with_defaults(self):
+        """监视泳道新建（fund_init 标记）：显示区，默认配合 + 启动=今天"""
+        dlg = CardDialog(None, fund_init={"role": "assist"})
+        self.assertTrue(dlg._fund_show)
+        fund = dlg.result_card()["fund"]
+        self.assertEqual(fund["role"], "assist")
+        self.assertEqual(fund["start_date"], date.today().isoformat())
+        self.assertEqual(fund["steps"], [])
+        dlg.deleteLater()
+
+    def test_edit_lead_card_roundtrip(self):
+        """编辑牵头卡：类型选中、环节行数正确、result 完整回传"""
+        card = self._lead_card("finance")
+        card.fund["steps"][0].update(done=True, date="2026-09-04")
+        dlg = CardDialog(card)
+        self.assertTrue(dlg._fund_show)
+        self.assertEqual(len(dlg._fund_rows), 8)
+        self.assertTrue(dlg._fund_kind_btns["finance"].isChecked())
+        result = dlg.result_card()["fund"]
+        self.assertEqual(result["kind"], "finance")
+        self.assertEqual(result["start_date"], "2026-09-01")
+        self.assertTrue(result["steps"][0]["done"])
+        self.assertEqual(result["steps"][0]["date"], "2026-09-04")
+        dlg.deleteLater()
+
+    def test_kind_switch_preserves_shared_steps(self):
+        """支线切换：环节行按模板重建，同名环节保留完成状态与办理时间"""
+        card = self._lead_card("finance")
+        card.fund["steps"][0].update(done=True, date="2026-09-04")
+        dlg = CardDialog(card)
+        dlg._fund_kind_btns["branch"].click()
+        self.assertEqual(len(dlg._fund_rows), 12)
+        self.assertTrue(dlg._fund["steps"][0]["done"])
+        self.assertEqual(dlg._fund["steps"][0]["date"], "2026-09-04")
+        self.assertFalse(dlg._fund["steps"][8]["done"])   # 财政二次去函
+        self.assertEqual(dlg.result_card()["fund"]["kind"], "branch")
+        dlg.deleteLater()
+
+    def test_step_toggle_fills_today_and_rehighlights(self):
+        """勾选环节自动填办理时间=今天；当前环节高亮随之后移"""
+        card = self._lead_card("finance")
+        dlg = CardDialog(card)
+        first, second = dlg._fund_rows[0], dlg._fund_rows[1]
+        self.assertIsNone(first["step"]["date"])
+        first["check"].setChecked(True)
+        self.assertTrue(first["step"]["done"])
+        self.assertEqual(first["step"]["date"], date.today().isoformat())
+        dlg.deleteLater()
+
+    def test_deadline_label_follows_start(self):
+        """启动日期变化联动期限预览（+14 / +30 天）"""
+        dlg = CardDialog(None, fund_init={"role": "assist"})
+        dlg._fund_start_edit.setDate(QDate(2026, 9, 1))
+        text = dlg._fund_deadlines_label.text()
+        self.assertIn("2026-09-15", text)
+        self.assertIn("2026-10-01", text)
+        dlg.deleteLater()
+
+    def test_role_switch_hides_steps_keeps_data(self):
+        """切配合：环节区隐藏但 steps 数据保留，result 角色为 assist"""
+        card = self._lead_card("regular")
+        dlg = CardDialog(card)
+        self.assertTrue(dlg._fund_steps_host.isVisibleTo(dlg))
+        dlg._fund_role_btns["assist"].click()
+        self.assertFalse(dlg._fund_steps_host.isVisibleTo(dlg))
+        result = dlg.result_card()["fund"]
+        self.assertEqual(result["role"], "assist")
+        self.assertEqual(len(result["steps"]), 18)   # 数据不丢
         dlg.deleteLater()
 
 

@@ -15,7 +15,6 @@ from PySide6.QtCore import QRectF, QUrl, Qt, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QIcon, QLinearGradient, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
-    QComboBox,
     QDialog,
     QFrame,
     QHBoxLayout,
@@ -28,7 +27,7 @@ from PySide6.QtWidgets import (
 
 from app.config import AppConfig
 from app.i18n import skin_display, tr
-from app.views.controls import SegmentedControl, ToggleSwitch
+from app.views.controls import ComboBox, SegmentedControl, ToggleSwitch
 from app.views.theme import AppTheme
 
 _ABOUT_LINE = "桌宠形态的轻量任务看板：今日聚焦、番茄钟、归档与导出。"
@@ -212,7 +211,7 @@ class SettingsDialog(QDialog):
 
         # 提醒
         self._sec_remind = _Section(tr("提醒"))
-        self._remind_combo = QComboBox()
+        self._remind_combo = ComboBox()   # 滚轮不切项（防悬停误触改设置）
         self._remind_combo.setCursor(Qt.PointingHandCursor)
         for value, label in ((0, tr("不提前（仅当天与逾期）")),
                              (1, tr("提前 1 天")), (2, tr("提前 2 天")),
