@@ -7,6 +7,8 @@ winreg，macOS/Linux 实现按显式传入的临时路径落盘。命令构造�
 "打包版/源码运行"两种形态。
 """
 
+from __future__ import annotations
+
 import os
 import plistlib
 import sys
