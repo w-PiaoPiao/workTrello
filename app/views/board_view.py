@@ -493,12 +493,22 @@ class _CardCheckButton(QPushButton):
             painter.drawPath(path)
         else:
             # 未完成：圆角方框，悬停变主题色
-            color = QColor(c["accent"] if self.underMouse()
-                           else c["text_disabled"])
-            painter.setPen(QPen(color, 1.5))
+            # 未完成：圆角方框，悬停变主题色
+            hex_color = c["accent"] if self.underMouse() else c["text_disabled"]
+            pen = _CHECK_BOX_PENS.get(hex_color)
+            if pen is None:
+                pen = QPen(QColor(hex_color), 1.5)
+                _CHECK_BOX_PENS[hex_color] = pen
+            painter.setPen(pen)
             painter.setBrush(Qt.NoBrush)
             painter.drawRoundedRect(box, radius, radius)
         painter.end()
+
+
+# 未完成态勾选框画笔按颜色 hex 缓存：paintEvent 每帧新建 QPen 纯重复
+# （hex 键随主题切换自动换 key，同 _CHECK_PEN 的类常量范式，但颜色取自
+# 主题调色板，不能一次性定为类常量）
+_CHECK_BOX_PENS: dict[str, QPen] = {}
 
 
 class CardWidget(QFrame):
@@ -518,6 +528,10 @@ class CardWidget(QFrame):
     signal_card_ctrl_clicked = Signal(str)      # card_id（Ctrl/Cmd+单击 多选）
     signal_card_shift_clicked = Signal(str)     # card_id（Shift+单击 范围多选）
     signal_drag_blocked = Signal()              # 过滤态下拖拽被拒（提示入口）
+
+    # 标签色条前景色按 hex 字符串缓存：QColor(十六进制解析) 每帧每条
+    # 纯重复，key 数量有限（LABEL_COLORS 的 fg 值域）；主题切换换 key 自动生效
+    _label_fg_cache: dict[str, QColor] = {}
 
     def __init__(self, card: Card, parent=None):
         super().__init__(parent)
@@ -866,7 +880,11 @@ class CardWidget(QFrame):
             # 用标签的饱和前景色（fg）而非浅底色，保证色条醒目；
             # 深浅主题下同一饱和色都清晰
             _, fg = AppConfig.LABEL_COLORS.get(key, ("#E5E7EB", "#374151"))
-            painter.fillRect(QRectF(x, 0, 4, self.height()), QColor(fg))
+            color = self._label_fg_cache.get(fg)
+            if color is None:
+                color = QColor(fg)
+                self._label_fg_cache[fg] = color
+            painter.fillRect(QRectF(x, 0, 4, self.height()), color)
             x += 4.0
         painter.end()
 
@@ -1585,21 +1603,24 @@ class _ThemeToggleButton(QPushButton):
             self._mode = mode
             self.update()
 
-    # 月亮两段路径按控件尺寸缓存：paintEvent 每次重建 QPainterPath 纯浪费
-    _moon_path_cache: dict[tuple[int, int], tuple[QPainterPath, QPainterPath]] = {}
+    # 月牙路径（含 subtracted 结果）按控件尺寸缓存：paintEvent 每次重建
+    # QPainterPath + 布尔运算纯浪费
+    _moon_path_cache: dict[tuple[int, int], QPainterPath] = {}
 
-    def _moon_paths(self) -> tuple[QPainterPath, QPainterPath]:
+    def _moon_path(self) -> QPainterPath:
+        """月牙路径按尺寸缓存：连 subtracted 布尔运算结果一并缓存，
+        paintEvent 每帧只取不建"""
         key = (self.width(), self.height())
-        paths = self._moon_path_cache.get(key)
-        if paths is None:
+        path = self._moon_path_cache.get(key)
+        if path is None:
             cx, cy = key[0] / 2, key[1] / 2
             full = QPainterPath()
             full.addEllipse(cx - 5.5, cy - 5.5, 11.0, 11.0)
             cut = QPainterPath()
             cut.addEllipse(cx - 1.5, cy - 8.0, 11.0, 11.0)
-            paths = (full, cut)
-            self._moon_path_cache[key] = paths
-        return paths
+            path = full.subtracted(cut)
+            self._moon_path_cache[key] = path
+        return path
 
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
@@ -1610,10 +1631,10 @@ class _ThemeToggleButton(QPushButton):
         glyph = QColor(c["text_primary"])
         if self._mode == "light":
             # 浅色态显示月亮（点击切深色）
-            full, cut = self._moon_paths()
+            moon = self._moon_path()
             painter.setPen(Qt.NoPen)
             painter.setBrush(glyph)
-            painter.drawPath(full.subtracted(cut))
+            painter.drawPath(moon)
         else:
             # 深色态显示太阳（点击切浅色）
             painter.setPen(Qt.NoPen)
@@ -1846,9 +1867,17 @@ class ListColumn(QFrame):
         self.refresh_cards()
 
     def set_visible_cards(self, visible_cards: list[Card] | None) -> None:
-        """搜索过滤：只更新可见卡片子集（内容相同则跳过，避免逐键刷新）"""
-        if self._visible_cards == visible_cards:
-            return
+        """搜索过滤：只更新可见卡片子集（可见集相同则跳过，避免逐键刷新）
+
+        短路比较按 id 序而非 dataclass 全字段深比较：Card 的 checklist/
+        attachments 是深列表，逐键输入时每列全量深比较比渲染还贵；
+        这里只负责"哪些卡可见"，字段级变更由 refresh_cards 的内容指纹兜底。
+        None（未过滤）与 []（过滤后为空）语义不同（拖放开关），不视为相同。
+        """
+        old = self._visible_cards
+        if (old is None) == (visible_cards is None):
+            if old is None or [c.id for c in old] == [c.id for c in visible_cards]:
+                return
         self._visible_cards = visible_cards
         self.setAcceptDrops(visible_cards is None)
         self.refresh_cards()

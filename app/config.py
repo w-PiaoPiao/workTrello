@@ -310,6 +310,8 @@ class AppConfig:
     PET_JUMP_HEIGHT = 12
     PET_IDLE_ACTION_MIN_MS = 6000
     PET_IDLE_ACTION_MAX_MS = 14000
+    PET_IDLE_FPS_TICK_MS = 33   # 空闲漂浮/呼吸的驱动帧间隔（≈30fps）：秒级
+    #                             缓动 30fps 视觉无差，常驻重绘开销减半
 
     # 展开态（看板）
     BOARD_WIDTH = 1080

@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import math
 import random
 import time
 
@@ -117,6 +118,20 @@ class PetCanvas(QWidget):
         self.update()
         QTimer.singleShot(140, self.update)
         self._schedule_blink()
+
+    def set_idle_pose(self, offset_y: float, scale: float) -> bool:
+        """直接落定空闲姿态（不逐属性 update，由调用方合并一次重绘）
+
+        空闲驱动每帧调用；值未变时返回 False，省掉一次重绘调度。
+        """
+        changed = False
+        if offset_y != self._offset_y:
+            self._offset_y = offset_y
+            changed = True
+        if scale != self._scale:
+            self._scale = scale
+            changed = True
+        return changed
 
     def reset_transform(self) -> None:
         self._offset_y = 0.0
@@ -401,7 +416,6 @@ class PetView(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
-        self._float_delta = AppConfig.PET_FLOAT_DELTA
         base = AppConfig.PET_WIDTH - 2 * AppConfig.PET_CANVAS_MARGIN
         self._pet_canvas = PetCanvas(base, self)
 
@@ -422,7 +436,19 @@ class PetView(QWidget):
         self._action_timer = QTimer(self)
         self._action_timer.setSingleShot(True)
         self._action_timer.timeout.connect(self._do_random_action)
-        self._build_idle_animations()
+        # 漂浮 + 呼吸合并为单定时器自驱动（设计权衡见 _idle_tick）：
+        # 此前是两条 60fps 的 QPropertyAnimation 常驻循环，桌宠态即闲置态，
+        # 实测桌宠可见时全进程 10-17% 单核，是应用最大的稳态负载——
+        # 秒级缓动降到 ~30fps 视觉无差，常驻开销直接减半；且两动画每帧
+        # 各自 setter+update，合并后一帧只调度一次重绘
+        self._idle_timer = QTimer(self)
+        self._idle_timer.setInterval(AppConfig.PET_IDLE_FPS_TICK_MS)
+        self._idle_timer.timeout.connect(self._idle_tick)
+        self._float_t = 0.0         # 漂浮相位（循环毫秒）
+        self._breath_t = 0.0        # 呼吸相位（循环毫秒）
+        self._float_frozen = False  # 小动作/提醒跳跃期间冻结漂浮
+        self._breath_frozen = False # 悬停弹跳期间冻结呼吸
+        self._last_tick = 0.0
 
         # 右键菜单
         self._context_menu = QMenu(self)
@@ -473,31 +499,50 @@ class PetView(QWidget):
 
         AppTheme.register(self.reapply_theme)
 
-    # ── 空闲动画 ──────────────────────────────────────────
+    # ── 空闲动画（漂浮 + 呼吸，30fps 自驱动） ─────────────
 
-    def _build_idle_animations(self) -> None:
-        self._float_anim = QSequentialAnimationGroup(self)
-        points = (0.0, float(self._float_delta), 0.0,
-                  float(-self._float_delta), 0.0)
-        for i in range(len(points) - 1):
-            anim = QPropertyAnimation(self._pet_canvas, b"offsetY", self)
-            anim.setDuration(AppConfig.PET_FLOAT_MS)
-            anim.setStartValue(points[i])
-            anim.setEndValue(points[i + 1])
-            anim.setEasingCurve(QEasingCurve.InOutSine)
-            self._float_anim.addAnimation(anim)
-        self._float_anim.setLoopCount(-1)
+    # 关键帧复刻原 QSequentialAnimationGroup 的分段 InOutSine 插值：
+    # 漂浮 0→+δ→0→-δ→0 四段循环，呼吸 1→1.05→1 两段循环
+    _FLOAT_KEYPOINTS = (0.0, float(AppConfig.PET_FLOAT_DELTA), 0.0,
+                        float(-AppConfig.PET_FLOAT_DELTA), 0.0)
+    _FLOAT_PERIOD_MS = AppConfig.PET_FLOAT_MS * (len(_FLOAT_KEYPOINTS) - 1)
+    _BREATH_KEYPOINTS = (1.0, 1.0 + AppConfig.PET_BREATH_RATIO, 1.0)
+    _BREATH_PERIOD_MS = AppConfig.PET_BREATH_MS * (len(_BREATH_KEYPOINTS) - 1)
 
-        grow = 1.0 + AppConfig.PET_BREATH_RATIO
-        self._breath_anim = QSequentialAnimationGroup(self)
-        for start, end in ((1.0, grow), (grow, 1.0)):
-            anim = QPropertyAnimation(self._pet_canvas, b"scale", self)
-            anim.setDuration(AppConfig.PET_BREATH_MS)
-            anim.setStartValue(start)
-            anim.setEndValue(end)
-            anim.setEasingCurve(QEasingCurve.InOutSine)
-            self._breath_anim.addAnimation(anim)
-        self._breath_anim.setLoopCount(-1)
+    @staticmethod
+    def _loop_value(t_ms: float, seg_ms: int, keypoints) -> float:
+        """分段 InOutSine 循环插值（t_ms 已取模到 [0, 周期)）"""
+        n = len(keypoints) - 1
+        seg = min(int(t_ms // seg_ms), n - 1)
+        t = (t_ms - seg * seg_ms) / seg_ms
+        eased = 0.5 * (1.0 - math.cos(math.pi * t))   # Qt InOutSine
+        a, b = keypoints[seg], keypoints[seg + 1]
+        return a + (b - a) * eased
+
+    def _idle_tick(self) -> None:
+        """一帧同时推进漂浮与呼吸，合并为一次重绘
+
+        漂浮/呼吸各自独立冻结（小动作冻结漂浮、悬停冻结呼吸），等价于
+        原先对单条动画 pause/resume，且赋值天然幂等——不再有"对未暂停
+        动画 resume"的 Qt 警告噪音。dt 钳单步上限：系统睡眠唤醒后相位
+        不跳变，只是从原相位继续走。
+        """
+        now = time.monotonic()
+        dt = min(now - self._last_tick, 0.1) * 1000.0
+        self._last_tick = now
+        canvas = self._pet_canvas
+        y = canvas._offset_y
+        s = canvas._scale
+        if not self._float_frozen:
+            self._float_t = (self._float_t + dt) % self._FLOAT_PERIOD_MS
+            y = self._loop_value(self._float_t, AppConfig.PET_FLOAT_MS,
+                                 self._FLOAT_KEYPOINTS)
+        if not self._breath_frozen:
+            self._breath_t = (self._breath_t + dt) % self._BREATH_PERIOD_MS
+            s = self._loop_value(self._breath_t, AppConfig.PET_BREATH_MS,
+                                 self._BREATH_KEYPOINTS)
+        if canvas.set_idle_pose(y, s):
+            canvas.update()
 
     def _make_tilt_action(self) -> QSequentialAnimationGroup:
         group = QSequentialAnimationGroup(self)
@@ -551,7 +596,7 @@ class PetView(QWidget):
             self._active_action = self._make_tilt_action()
         else:
             self._active_action = self._make_jump_action()
-            self._float_anim.pause()
+            self._float_frozen = True   # 跳跃全程由动作接管垂直位移
         self._active_action.finished.connect(self._on_action_finished)
         self._active_action.start()
 
@@ -560,10 +605,10 @@ class PetView(QWidget):
         self._active_action = None
         if group is not None:
             group.deleteLater()
-        self._float_anim.resume()
+        self._float_frozen = False
         # 仅空闲动画仍在播放时才排下一次小动作；
         # stop_idle 触发本回调时 float 已停止，不应再拉起定时器
-        if self._float_anim.state() == QAbstractAnimation.Running:
+        if self._idle_timer.isActive():
             self._schedule_random_action()
 
     # ── 悬停反馈 ──────────────────────────────────────────
@@ -576,7 +621,7 @@ class PetView(QWidget):
             return
         if self._hover_anim is None or \
                 self._hover_anim.state() != QAbstractAnimation.Running:
-            self._breath_anim.pause()
+            self._breath_frozen = True
             group = QSequentialAnimationGroup(self)
             for start, end, dur in ((1.0, 1.12, AppConfig.HOVER_UP_MS),
                                     (1.12, 1.0, AppConfig.HOVER_DOWN_MS)):
@@ -592,7 +637,7 @@ class PetView(QWidget):
         super().enterEvent(event)
 
     def _on_hover_finished(self) -> None:
-        self._breath_anim.resume()
+        self._breath_frozen = False
         group = self._hover_anim
         self._hover_anim = None
         if group is not None:
@@ -630,14 +675,20 @@ class PetView(QWidget):
     def start_idle(self) -> None:
         if not self._animations_enabled:
             return
-        self._float_anim.start()
-        self._breath_anim.start()
+        # 相位清零：桌宠重新亮相时从漂浮原点/自然体态起步
+        self._float_t = 0.0
+        self._breath_t = 0.0
+        self._float_frozen = False
+        self._breath_frozen = False
+        self._last_tick = time.monotonic()
+        self._idle_timer.start()
         self._pet_canvas.set_blink_enabled(True)
         self._schedule_random_action()
 
     def stop_idle(self) -> None:
-        self._float_anim.stop()
-        self._breath_anim.stop()
+        self._idle_timer.stop()
+        self._float_frozen = False
+        self._breath_frozen = False
         self._action_timer.stop()
         self._pet_canvas.set_blink_enabled(False)
         if self._active_action is not None:
@@ -680,8 +731,8 @@ class PetView(QWidget):
             return
         if self._active_action is not None:
             return
-        if self._float_anim.state() == QAbstractAnimation.Running:
-            self._float_anim.pause()
+        if self._idle_timer.isActive():
+            self._float_frozen = True
         group = self._make_jump_action()
         self._active_action = group
         group.finished.connect(self._on_action_finished)
