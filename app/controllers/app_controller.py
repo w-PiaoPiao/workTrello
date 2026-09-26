@@ -1734,10 +1734,29 @@ class AppController(QObject):
 
     # ── 撤销 / 重做 ───────────────────────────────────────
 
+    def _undo_limit_for(self, doc: dict) -> int:
+        """按快照体量自适应的保留步数（20 → 10 → 5）
+
+        每步撤销是全板深拷贝：几卡的小板 20 步无感；几百卡的大板单步
+        序列化达 MB 级，20 步常驻内存可观。按最新一步的 JSON 体量收缩，
+        总驻留约 ≤5MB。体量以新快照近似整栈（同一块板，步间差异小）。
+        """
+        try:
+            size = len(json.dumps(doc, ensure_ascii=False,
+                                  separators=(",", ":")))
+        except (TypeError, ValueError):
+            return AppConfig.UNDO_LIMIT
+        if size > 1_000_000:
+            return 5
+        if size > 300_000:
+            return 10
+        return AppConfig.UNDO_LIMIT
+
     def _push_undo(self) -> None:
         """在变更前保存看板快照（撤销恢复用）；新变更会清空重做栈"""
-        self._undo_stack.append(self._store.load().to_dict())
-        del self._undo_stack[:-AppConfig.UNDO_LIMIT]
+        doc = self._store.load().to_dict()
+        self._undo_stack.append(doc)
+        del self._undo_stack[:-self._undo_limit_for(doc)]
         self._redo_stack.clear()
 
     def _on_undo_requested(self, notify_empty: bool = False) -> None:
@@ -1745,8 +1764,9 @@ class AppController(QObject):
             if notify_empty:
                 self._notify(tr("没有可撤销的操作"))
             return
-        self._redo_stack.append(self._store.load().to_dict())
-        del self._redo_stack[:-AppConfig.UNDO_LIMIT]
+        doc = self._store.load().to_dict()
+        self._redo_stack.append(doc)
+        del self._redo_stack[:-self._undo_limit_for(doc)]
         doc = self._undo_stack.pop()
         self._store.replace_board(Board.from_dict(doc))
         self._after_data_change(None)
@@ -1758,8 +1778,9 @@ class AppController(QObject):
             if notify_empty:
                 self._notify(tr("没有可重做的操作"))
             return
-        self._undo_stack.append(self._store.load().to_dict())
-        del self._undo_stack[:-AppConfig.UNDO_LIMIT]
+        doc = self._store.load().to_dict()
+        self._undo_stack.append(doc)
+        del self._undo_stack[:-self._undo_limit_for(doc)]
         doc = self._redo_stack.pop()
         self._store.replace_board(Board.from_dict(doc))
         self._after_data_change(None)

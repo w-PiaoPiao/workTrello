@@ -455,11 +455,17 @@ class _CardCheckButton(QPushButton):
     _P0 = (3.6, 8.2)     # 对勾折点序列（相对勾选框左上角）
     _P1 = (7.0, 11.4)
     _P2 = (12.6, 4.6)
+    # 两段折线长度为常量（P 序列恒定）：paintEvent 每帧 math.hypot 纯浪费
+    _P01 = math.hypot(_P1[0] - _P0[0], _P1[1] - _P0[1])
+    _P12 = math.hypot(_P2[0] - _P1[0], _P2[1] - _P1[1])
     # 完成态画笔常量：paintEvent 每帧新建 QPen + cap/join 设置纯重复，
     # QPen 是值语义，setPen 内部拷贝，多控件共享安全
     _CHECK_PEN = QPen(QColor("#FFFFFF"), 1.8)
     _CHECK_PEN.setCapStyle(Qt.RoundCap)
     _CHECK_PEN.setJoinStyle(Qt.RoundJoin)
+    # 完整对勾路径缓存（(0,0) 原点，绘制时 translate 到框左上角）：
+    # 完成态 progress 恒为 1，逐帧新建 QPainterPath 纯重复
+    _CHECK_PATH_FULL: QPainterPath | None = None
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -519,25 +525,34 @@ class _CardCheckButton(QPushButton):
             painter.setBrush(QColor(c["success"]))
             painter.drawRoundedRect(box, radius, radius)
             painter.setPen(self._CHECK_PEN)
-            bx, by = box.left(), box.top()
-            p0 = QPointF(bx + self._P0[0], by + self._P0[1])
-            p1 = QPointF(bx + self._P1[0], by + self._P1[1])
-            p2 = QPointF(bx + self._P2[0], by + self._P2[1])
-            l1 = math.hypot(self._P1[0] - self._P0[0],
-                            self._P1[1] - self._P0[1])
-            l2 = math.hypot(self._P2[0] - self._P1[0],
-                            self._P2[1] - self._P1[1])
-            d = self._check_progress * (l1 + l2)
-            path = QPainterPath()
-            path.moveTo(p0)
-            if d <= l1:
-                t = (d / l1) if l1 > 0 else 1.0
-                path.lineTo(p0 + (p1 - p0) * t)
+            total = self._P01 + self._P12
+            d = self._check_progress * total
+            if d >= total:
+                # 动画结束后的常态：直接用缓存完整路径
+                if _CardCheckButton._CHECK_PATH_FULL is None:
+                    path = QPainterPath(QPointF(*_CardCheckButton._P0))
+                    path.lineTo(QPointF(*_CardCheckButton._P1))
+                    path.lineTo(QPointF(*_CardCheckButton._P2))
+                    _CardCheckButton._CHECK_PATH_FULL = path
+                painter.save()
+                painter.translate(box.topLeft())
+                painter.drawPath(_CardCheckButton._CHECK_PATH_FULL)
+                painter.restore()
             else:
-                t = ((d - l1) / l2) if l2 > 0 else 1.0
-                path.lineTo(p1)
-                path.lineTo(p1 + (p2 - p1) * t)
-            painter.drawPath(path)
+                bx, by = box.left(), box.top()
+                p0 = QPointF(bx + self._P0[0], by + self._P0[1])
+                p1 = QPointF(bx + self._P1[0], by + self._P1[1])
+                p2 = QPointF(bx + self._P2[0], by + self._P2[1])
+                path = QPainterPath()
+                path.moveTo(p0)
+                if d <= self._P01:
+                    t = (d / self._P01) if self._P01 > 0 else 1.0
+                    path.lineTo(p0 + (p1 - p0) * t)
+                else:
+                    t = ((d - self._P01) / self._P12) if self._P12 > 0 else 1.0
+                    path.lineTo(p1)
+                    path.lineTo(p1 + (p2 - p1) * t)
+                painter.drawPath(path)
         else:
             # 未完成：圆角方框，悬停变主题色
             # 未完成：圆角方框，悬停变主题色
@@ -1301,18 +1316,41 @@ class CardWidget(QFrame):
 
 
 def _begin_list_drag(source: QWidget, board_list: BoardList) -> None:
-    """启动整列拖拽：抓 source 的截图作拖影，MIME_LIST 携带列表 id
+    """启动整列拖拽：限高缩略拖影 + MIME_LIST 携带列表 id
 
     列头与列身（空白处）共用同一入口：两处都是"搬走整列"的手势，只是一处
     从标题抓、一处从列内空白抓。
+
+    拖影不再 grab() 整列：几百卡的长列位图可达数 MB 且每次起拖都现截，
+    低配机上起拖有顿挫感。改为"列头截图 + 限高灰底"的缩略 ghost——
+    拖拽要传达的只是"这一列正在移动"，卡片明细本来就看不见（半透明）。
     """
     mime = QMimeData()
     mime.setData(MIME_LIST, board_list.id.encode("utf-8"))
     drag = QDrag(source)
     drag.setMimeData(mime)
+    max_h = AppConfig.LIST_DRAG_GHOST_MAX_H
     pixmap = source.grab()
+    if pixmap.height() > max_h:
+        # 列头原样保留，其余以圆角灰底补足到 max_h：视觉上是"缩短的列"
+        header = getattr(source, "_header", None)
+        header_h = header.height() if header is not None else 0
+        header_h = min(max(header_h, 0), max_h)
+        ghost = QPixmap(pixmap.width(), max_h)
+        ghost.fill(Qt.transparent)
+        painter = QPainter(ghost)
+        painter.setRenderHint(QPainter.Antialiasing)
+        if header_h > 0:
+            painter.drawPixmap(0, 0,
+                               pixmap.copy(0, 0, pixmap.width(), header_h))
+        body = QRect(0, header_h, pixmap.width(), max_h - header_h)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(128, 128, 128, 60))
+        painter.drawRoundedRect(body.adjusted(4, 2, -4, -4), 8, 8)
+        painter.end()
+        pixmap = ghost
     drag.setPixmap(pixmap)
-    drag.setHotSpot(QPoint(pixmap.width() // 2, pixmap.height() // 2))
+    drag.setHotSpot(QPoint(pixmap.width() // 2, min(20, pixmap.height() // 2)))
     drag.exec(Qt.MoveAction)
 
 
