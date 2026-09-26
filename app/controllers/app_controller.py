@@ -277,8 +277,6 @@ class AppController(QObject):
 
     def _preserve_good_copy(self) -> None:
         """把最近好副本（.prev）复制为带时间戳的保留文件，防止被后续落盘轮转覆盖"""
-        import shutil
-
         prev = json_io.good_prev_copy(self._store.path)
         if prev is None:
             return
@@ -2083,7 +2081,8 @@ class AppController(QObject):
     def _on_export(self, fmt: str) -> None:
         board = self._store.load()
         default = Path(str(AppConfig.DATA_DIR)) / \
-            f"桌宠看板导出_{date.today():%Y%m%d}.{fmt}"
+            tr("桌宠看板导出_{date}").format(date=f"{date.today():%Y%m%d}") \
+            + f".{fmt}"
         path, _ = QFileDialog.getSaveFileName(
             self._window, tr("导出看板"), str(default),
             "Markdown (*.md)" if fmt == "md" else "CSV (*.csv)")

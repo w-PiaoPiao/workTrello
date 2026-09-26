@@ -97,8 +97,13 @@ class AppConfig:
 
     @classmethod
     def get_theme_mode(cls) -> str:
-        """上次主题模式；缺省 "system" 表示跟随系统深浅色"""
-        return _settings().value(cls.KEY_THEME_MODE, "system")
+        """上次主题模式；缺省/损坏回退 "system"（跟随系统深浅色）
+
+        与 get_language 等其他偏好同一白名单范式：QSettings 值被改坏时
+        设置页主题分段会出现"无选中"且静默回退浅色，这里统一兜底。
+        """
+        mode = _settings().value(cls.KEY_THEME_MODE, "system")
+        return mode if mode in ("system", "light", "dark") else "system"
 
     @classmethod
     def save_theme_mode(cls, mode: str) -> None:

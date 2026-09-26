@@ -754,6 +754,27 @@ class CardWidget(QFrame):
 
     # ── 构建 UI ───────────────────────────────────────────
 
+    def _sync_accessible_name(self) -> None:
+        """给卡片与勾选框登记可读名（屏幕阅读器）
+
+        卡片是 StrongFocus 的键盘导航核心，但自绘控件对屏幕阅读器是
+        不透明黑盒；accessibleName 用"标题+关键状态"一句话描述。
+        rebuild 与 set_done（勾选不触发 rebuild）两个刷新点都会调。
+        """
+        c = self._card
+        states = []
+        if c.done:
+            states.append(tr("已完成"))
+        if c.due_date:
+            states.append(c.due_date)
+        if c.priority:
+            states.append(AppConfig.PRIORITY_MARKS.get(c.priority, ""))
+        name = c.title + (("（" + "，".join(states) + "）") if states else "")
+        self.setAccessibleName(name)
+        if self._check_btn is not None:
+            self._check_btn.setAccessibleName(
+                tr("完成 {title}").format(title=c.title))
+
     def rebuild(self) -> None:
         # 清空旧布局：递归清空并让旧子件立刻脱离卡片，
         # 否则子布局里的控件会变成孤儿继续叠加渲染
@@ -776,6 +797,8 @@ class CardWidget(QFrame):
         self._more_badge = None
         self._fit_state = ()
         self._fit_width = None   # 徽章重建后宽度取舍必须重算
+
+        self._sync_accessible_name()
 
         card = self._card
         # 配色统一由 BoardView 的整块样式表下发（#cardFrame 等选择器），
@@ -814,7 +837,7 @@ class CardWidget(QFrame):
         self._delete_btn.setFixedSize(AppConfig.CARD_DELETE_BTN_H,
                                       AppConfig.CARD_DELETE_BTN_H)
         self._delete_btn.setCursor(Qt.PointingHandCursor)
-        self._delete_btn.setToolTip("删除卡片")
+        self._delete_btn.setToolTip(tr("删除卡片"))
         self._delete_btn.clicked.connect(
             lambda: self.signal_delete_requested.emit(self._card.id))
         # ✕ 是子控件：光标停在它上面时父卡的 Leave 会故意留住按钮（见

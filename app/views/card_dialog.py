@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import uuid
 from datetime import date, datetime
@@ -780,9 +781,14 @@ class CardDialog(QDialog):
             self._notify_empty_clipboard()
             return
         fd, tmp = tempfile.mkstemp(suffix=".png", prefix="petboard_paste_")
-        import os
         os.close(fd)
         if not image.save(tmp, "PNG"):
+            # 写盘失败（磁盘满等）：清掉 mkstemp 留下的空壳文件再返回，
+            # 否则临时目录会积累 0 字节残留
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
             return
         self._attachments.append({
             "id": uuid.uuid4().hex,

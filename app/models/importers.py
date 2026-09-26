@@ -188,6 +188,17 @@ def board_from_markdown(text: str, fallback_title: str = "") -> tuple[Board, str
         m = _RE_MD_INDENT.match(raw)
         if m and current_card is not None:
             note_line = m.group(1).strip()
+            sub_done = _RE_MD_TODO_DONE.match(note_line)
+            sub_open = None if sub_done else _RE_MD_TODO_OPEN.match(note_line)
+            if sub_done or sub_open:
+                # 缩进的清单项行（本应用导出格式即为 6 空格缩进）：
+                # 还原为上一张卡的 checklist，而非备注——否则导出→导入
+                # 往返一次清单结构就降级成纯文本
+                sub_text = (sub_done or sub_open).group(1).strip()
+                if sub_text:
+                    current_card.checklist.append(
+                        {"text": sub_text, "done": sub_done is not None})
+                continue
             if note_line:
                 current_card.notes = (current_card.notes + "\n"
                                       if current_card.notes else "") + note_line

@@ -8,7 +8,10 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal
+import math
+
+from PySide6.QtCore import QPoint, QPointF, QRect, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -28,6 +31,57 @@ from app.views.theme import AppTheme
 
 _ROW_MIN_H = 42
 _MAX_POP_H = 330
+
+
+class _StarButton(QPushButton):
+    """矢量五角星按钮：替代 ⭐/☆ 字形文本
+
+    项目自绘按钮已统一因"部分平台缺字形渲染成豆腐块"改矢量绘制
+    （board_view 的勾选框/删除键同款理由），今日浮窗的星标按钮是
+    漏网的一处；顺带获得主题色跟随（星标态=主题 accent）。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._starred = False
+        self._hover = False
+
+    def set_starred(self, on: bool) -> None:
+        self._starred = on
+        self.update()
+
+    def enterEvent(self, event) -> None:
+        self._hover = True
+        super().enterEvent(event)
+        self.update()
+
+    def leaveEvent(self, event) -> None:
+        self._hover = False
+        super().leaveEvent(event)
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        c = AppTheme.colors()
+        cx, cy = self.width() / 2, self.height() / 2
+        r_out = min(self.width(), self.height()) * 0.40
+        r_in = r_out * 0.45
+        path = QPolygonF()
+        for i in range(10):
+            ang = math.radians(-90 + i * 36)
+            r = r_out if i % 2 == 0 else r_in
+            path.append(QPointF(cx + r * math.cos(ang),
+                                cy + r * math.sin(ang)))
+        if self._starred:
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(c["accent"]))
+        else:
+            painter.setPen(QPen(QColor(c["accent"] if self._hover
+                                       else c["text_disabled"]), 1.4))
+            painter.setBrush(Qt.NoBrush)
+        painter.drawPolygon(path)
+        painter.end()
 
 
 def _fmt_due_short(due: str) -> str:
@@ -97,7 +151,7 @@ class _PopRow(QFrame):
         lay.addWidget(self._badge)
 
         # 星标开关：行内一键加入/移出今日（到期卡可主动加星，星标卡可移出）
-        self._star_btn = QPushButton()
+        self._star_btn = _StarButton()
         self._star_btn.setFixedSize(24, 24)
         self._star_btn.setCursor(Qt.PointingHandCursor)
         self._star_btn.setFlat(True)
@@ -123,7 +177,7 @@ class _PopRow(QFrame):
             self._badge.show()
         else:
             self._badge.hide()
-        self._star_btn.setText("⭐" if card.starred else "☆")
+        self._star_btn.set_starred(card.starred)
         self._star_btn.setToolTip(tr("移出今日") if card.starred else tr("加入今日"))
 
     def reapply_theme(self) -> None:
