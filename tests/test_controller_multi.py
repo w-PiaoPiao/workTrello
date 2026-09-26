@@ -178,7 +178,7 @@ class ControllerMultiBoardTest(unittest.TestCase):
         self.assertEqual(card.attachments, result["attachments"])
 
     def test_materialize_removes_only_library_files(self):
-        """移除附件：库内文件清理；用户原文件与既有库文件不受牵连"""
+        """移除附件：只摘引用不删文件（撤销可恢复），库外文件绝不动"""
         self._reset()
         self.c._on_card_add(self._list().id, "附件卡")
         card = self._list().cards[0]
@@ -194,18 +194,53 @@ class ControllerMultiBoardTest(unittest.TestCase):
             {"id": "ext", "name": "外链.png", "path": str(user_file),
              "is_image": True},
         ]
-        # 只保留 keep：ext 的路径在库外（模拟旧数据/复制失败的外链）→ 不删
+        # 只保留 keep：ext 的路径在库外 → 摘引用，文件绝不动
         result = {"attachments": [card.attachments[0]]}
         self.c._materialize_attachments(card, result)
         card.apply(result)
         self.assertTrue(user_file.exists())       # 库外文件绝不动
-        self.assertTrue(lib_file.exists())        # keep 的库内文件保留
-        # 再把 keep 也移除：这次才清理库内文件
+        self.assertTrue(lib_file.exists())        # 移除也不立即删文件
+        # 再把 keep 也移除：引用清空，文件仍保留（撤销可恢复）
         self.c._materialize_attachments(card, {"attachments": []})
         card.apply({"attachments": []})
-        self.assertFalse(lib_file.exists())
+        self.assertTrue(lib_file.exists())
         self.assertTrue(user_file.exists())
         self.assertEqual(card.attachments, [])
+
+    def test_gc_orphan_attachments_keeps_referenced(self):
+        """退出 GC：无引用的附件目录回收；仍被引用（含跨卡共享）的保留"""
+        self._reset()
+        self.c._on_card_add(self._list().id, "附件卡A")
+        self.c._on_card_add(self._list().id, "附件卡B")
+        # 新卡头插：按标题取卡，避免位置索引踩空
+        cards = self._list().cards
+        card_a = next(c for c in cards if c.title == "附件卡A")
+        card_b = next(c for c in cards if c.title == "附件卡B")
+        root = AppConfig.DATA_DIR / "attachments"
+        ref_dir = root / card_a.id          # card_a 引用的目录
+        ref_dir.mkdir(parents=True, exist_ok=True)
+        (ref_dir / "a.png").write_bytes(b"a")
+        shared_dir = root / "cafe0001"      # 已删除卡留下的目录，但被 B 共享引用
+        shared_dir.mkdir(parents=True, exist_ok=True)
+        (shared_dir / "shared.png").write_bytes(b"s")
+        orphan_dir = root / "dead0002"      # 无人引用 → 回收
+        orphan_dir.mkdir(parents=True, exist_ok=True)
+        (orphan_dir / "x.png").write_bytes(b"x")
+        card_a.attachments = [
+            {"id": "a1", "name": "a.png", "path": str(ref_dir / "a.png")},
+        ]
+        card_b.attachments = [
+            {"id": "b1", "name": "shared.png",
+             "path": str(shared_dir / "shared.png")},   # 复制卡共享原卡目录
+        ]
+        # GC 读磁盘上的板文件判定引用：先把内存模型落盘（真实退出路径数据已在盘上）
+        self.c._store.mark_dirty()
+        self.c._store.flush()
+        self.c._gc_orphan_attachments()
+        self.assertTrue((ref_dir / "a.png").exists())
+        self.assertTrue((shared_dir / "shared.png").exists(),
+                        "被其他卡共享引用的目录被误删")
+        self.assertFalse(orphan_dir.exists())
 
     def test_materialize_failed_copy_keeps_pending(self):
         """复制失败（源文件不存在）：保留 pending 并报错，不中断保存"""

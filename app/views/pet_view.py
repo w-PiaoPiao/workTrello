@@ -615,33 +615,36 @@ class PetView(QWidget):
 
     def enterEvent(self, event: QEvent) -> None:
         # 待机动画开关关掉时不做悬停弹跳（与随机小动作/庆祝同一判据；
-        # 此前只有悬停这一条漏检，"暂停动画"下仍会放大回弹）
-        if not self._animations_enabled:
+        # 此前只有悬停这一条漏检，"暂停动画"下仍会放大回弹）。
+        # 专注/睡觉态同理：睡觉的桌宠不该被悬停"惊醒"蹦一下
+        if not self._animations_enabled or self._focus_mode:
             super().enterEvent(event)
             return
         if self._hover_anim is None or \
                 self._hover_anim.state() != QAbstractAnimation.Running:
             self._breath_frozen = True
-            group = QSequentialAnimationGroup(self)
-            for start, end, dur in ((1.0, 1.12, AppConfig.HOVER_UP_MS),
-                                    (1.12, 1.0, AppConfig.HOVER_DOWN_MS)):
-                anim = QPropertyAnimation(self._pet_canvas, b"scale", self)
-                anim.setDuration(dur)
-                anim.setStartValue(start)
-                anim.setEndValue(end)
-                anim.setEasingCurve(QEasingCurve.OutCubic)
-                group.addAnimation(anim)
+            group = self._hover_anim
+            if group is None:
+                # 动画单实例复用（构造一次，随控件析构）：与 controls.
+                # ToggleSwitch 同款教训——事件回调里临时新建动画对象，
+                # 真机 cocoa 下有 PySide6 override 失效段错误前科
+                group = QSequentialAnimationGroup(self)
+                for start, end, dur in ((1.0, 1.12, AppConfig.HOVER_UP_MS),
+                                        (1.12, 1.0, AppConfig.HOVER_DOWN_MS)):
+                    anim = QPropertyAnimation(self._pet_canvas, b"scale", self)
+                    anim.setDuration(dur)
+                    anim.setStartValue(start)
+                    anim.setEndValue(end)
+                    anim.setEasingCurve(QEasingCurve.OutCubic)
+                    group.addAnimation(anim)
+                self._hover_anim = group
             group.finished.connect(self._on_hover_finished)
-            self._hover_anim = group
             group.start()
         super().enterEvent(event)
 
     def _on_hover_finished(self) -> None:
         self._breath_frozen = False
-        group = self._hover_anim
-        self._hover_anim = None
-        if group is not None:
-            group.deleteLater()
+        # 动画对象保留复用，不 deleteLater（见 enterEvent）
 
     # ── 动画开关 ──────────────────────────────────────────
 
@@ -673,7 +676,11 @@ class PetView(QWidget):
         self.signal_animation_toggled.emit(not paused)
 
     def start_idle(self) -> None:
-        if not self._animations_enabled:
+        if (not self._animations_enabled or self._focus_mode
+                or not self.isVisible()):
+            # 专注中不启动（打瞌睡不该蹦跳，折叠路径会调到这里）；
+            # 不可见（展开态 stack 里藏着 / 隐藏到托盘）不启动，防 30fps
+            # 空转——专注结束的恢复由 set_focus_mode 判 isVisible 决定
             return
         # 相位清零：桌宠重新亮相时从漂浮原点/自然体态起步
         self._float_t = 0.0
@@ -695,8 +702,7 @@ class PetView(QWidget):
             self._active_action.stop()
             self._active_action = None
         if self._hover_anim is not None:
-            self._hover_anim.stop()
-            self._hover_anim = None
+            self._hover_anim.stop()   # finished 回调自行解冻呼吸
         if self._celebrating is not None:
             # 断开 finished 再停，避免回调里重新拉起待机动画
             self._celebrating.finished.disconnect(self._on_celebrate_finished)
@@ -717,6 +723,11 @@ class PetView(QWidget):
         self._focus_mode = on
         if on:
             self.stop_idle()
+        else:
+            # 专注结束重启待机动画：此前只清闭眼态，idle 定时器已停，
+            # 桌宠会定格不动直到下次展开/隐藏（start_idle 内部按
+            # isVisible 过滤，展开态不会空转）
+            self.start_idle()
         self._pet_canvas.set_focus_mode(on)
 
     def _on_skin_triggered(self, key: str) -> None:

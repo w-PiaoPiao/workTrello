@@ -264,12 +264,15 @@ class BoardViewRefreshTest(unittest.TestCase):
             cw._card = card
             self.assertNotEqual(cw._content_fingerprint(), before,
                                 f"字段 {field} 未参与指纹")
-        # notes 只以 bool 参与（正文变化不重建，见 update_from_model）
+        # notes 正文参与指纹（正文变化 → 预览收起 + rebuild，见 update_from_model）
         cw._card = Card(title="A", id="fp-probe", notes="")
         no_notes = cw._content_fingerprint()
         cw._card = Card(title="A", id="fp-probe", notes="有备注了")
         self.assertNotEqual(cw._content_fingerprint(), no_notes,
                             "notes 的有/无未参与指纹")
+        cw._card = Card(title="A", id="fp-probe", notes="换成另一段正文")
+        self.assertNotEqual(cw._content_fingerprint(), no_notes,
+                            "notes 正文变化未参与指纹")
 
     # ── 资金分配监视徽标 ──────────────────────────────────
 

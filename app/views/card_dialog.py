@@ -163,6 +163,22 @@ def _dialog_style(c: dict) -> str:
     """
 
 
+class _CheckItemEdit(QLineEdit):
+    """清单项输入框：按 Enter 新增下一行
+
+    QLineEdit 发出 returnPressed 后事件仍会传播并激活对话框默认按钮
+    （保存）——用户想加下一行却整框关闭。这里吞掉 Return/Enter 只发
+    returnPressed，不触发默认键。
+    """
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self.returnPressed.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 class LabelChip(QPushButton):
     """可勾选的标签色块"""
 
@@ -638,7 +654,7 @@ class CardDialog(QDialog):
         check = QCheckBox()
         check.setChecked(done)
         check.toggled.connect(self._update_check_progress)
-        edit = QLineEdit(text)
+        edit = _CheckItemEdit(text)
         edit.setPlaceholderText(tr("清单项内容"))
         edit.returnPressed.connect(
             lambda: self._add_check_row("", False, focus=True))

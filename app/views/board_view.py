@@ -675,11 +675,11 @@ class CardWidget(QFrame):
         """增量刷新：重指向模型对象；内容指纹未变则跳过重建"""
         self._card = card
         changed = self._fingerprint != self._content_fingerprint()
-        # 备注正文不进指纹（仅 bool 参与），编辑保存后预览会残留旧文本：
-        # 固定预览在本卡任一刷新时收起；悬停预览只在内容真的变了时收，
-        # 否则别处一次无关刷新会把用户正在读的浮层闪掉
-        if notes_pinned_for(card.id) or (
-                changed and notes_popover_anchored_to(self._notes_badge)):
+        # 备注正文在指纹内：固定/悬停预览只在"本卡内容真的变了"时收起
+        # ——全板 refresh 里别的卡的变更（勾选/拖动）不再把用户正在读
+        # 的浮层闪掉；本卡备注被编辑时正文指纹变化，旧文本预览随之收起
+        if changed and (notes_pinned_for(card.id)
+                        or notes_popover_anchored_to(self._notes_badge)):
             notes_popover().hide_now()
         if changed:
             self.rebuild()
@@ -700,7 +700,7 @@ class CardWidget(QFrame):
         c = self._card
         return (c.title, c.done, c.due_date,
                 date.today().toordinal() if (c.due_date or c.fund) else 0,
-                bool(c.notes), bool(c.workdir),
+                c.notes or "", bool(c.workdir),
                 tuple(c.labels), c.priority, c.repeat, c.pomodoros,
                 tuple((it.get("text"), bool(it.get("done")))
                       for it in c.checklist),
@@ -1203,17 +1203,17 @@ class CardWidget(QFrame):
             # 单击（无明显位移）→ 打开编辑对话框 / 多选
             if ((event.position().toPoint() - self._drag_start)
                     .manhattanLength() <= AppConfig.CARD_DRAG_THRESHOLD):
-                key = self._label_key_at(event.position().toPoint())
-                if key is not None:
-                    # 点左缘色条 = 按该标签过滤看板（而非打开编辑）
-                    self.signal_label_clicked.emit(key)
-                elif event.modifiers() & (Qt.ControlModifier
-                                          | Qt.MetaModifier):
-                    # Ctrl/Cmd+单击：加入/移出多选
+                if event.modifiers() & (Qt.ControlModifier | Qt.MetaModifier):
+                    # Ctrl/Cmd+单击：加入/移出多选（优先于色条判定——
+                    # 多选手势不被左缘色条热区抢占）
                     self.signal_card_ctrl_clicked.emit(self._card.id)
                 elif event.modifiers() & Qt.ShiftModifier:
                     # Shift+单击：锚点到本卡的范围多选
                     self.signal_card_shift_clicked.emit(self._card.id)
+                elif (key := self._label_key_at(
+                        event.position().toPoint())) is not None:
+                    # 点左缘色条 = 按该标签过滤看板（而非打开编辑）
+                    self.signal_label_clicked.emit(key)
                 else:
                     self.signal_edit_requested.emit(self._card)
         super().mouseReleaseEvent(event)
@@ -2018,7 +2018,11 @@ class ListColumn(QFrame):
             return
         j = i + step
         if 0 <= j < len(self._card_widgets):
-            self._card_widgets[j].setFocus()
+            w = self._card_widgets[j]
+            w.setFocus()
+            # programmatic setFocus 不会触发 QScrollArea 自动滚动，
+            # 长列里焦点会静默移出可视区，须显式滚到可见
+            self._scroll.ensureWidgetVisible(w)
 
     def set_focusing_card(self, card_id: str | None) -> None:
         for cw in self._card_widgets:
@@ -3124,15 +3128,17 @@ class BoardView(QWidget):
             i = self._columns.index(col)
         except ValueError:
             return False
+        # 同位置 = card 在源列内的行号（card 是源列控件，到目标列找
+        # index 必然 ValueError，此前恒跳目标列第一张）
+        try:
+            k = col._card_widgets.index(card)
+        except ValueError:
+            k = 0
         j = i + (1 if to_next else -1)
         step = 1 if to_next else -1
         while 0 <= j < len(self._columns):
             target = self._columns[j]
             if not target.is_collapsed() and target._card_widgets:
-                try:
-                    k = target._card_widgets.index(card)
-                except ValueError:
-                    k = 0
                 w = target._card_widgets[min(k, len(target._card_widgets) - 1)]
                 w.setFocus()
                 self._scroll.ensureWidgetVisible(w)
@@ -3160,7 +3166,8 @@ class BoardView(QWidget):
         for col in self._columns:
             if col.list_id() == list_id:
                 QTimer.singleShot(
-                    0, lambda c=col: self._scroll.ensureWidgetVisible(c, 12, 0))
+                    0, self,
+                    lambda c=col: self._scroll.ensureWidgetVisible(c, 12, 0))
                 return
 
     def _on_drop_after_last(self, moved_id: str) -> None:

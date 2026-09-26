@@ -290,7 +290,7 @@ class TodayPopover(QWidget):
                 if seq == self._height_seq:
                     self.setFixedHeight(h)
 
-            QTimer.singleShot(AppConfig.CARD_EXIT_ANIM_MS, _apply)
+            QTimer.singleShot(AppConfig.CARD_EXIT_ANIM_MS, self, _apply)
         else:
             self._height_seq = getattr(self, "_height_seq", 0) + 1
             self.setFixedHeight(h)

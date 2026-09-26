@@ -159,6 +159,24 @@ class NotesBadgeTest(unittest.TestCase):
         self.assertFalse(pop.isVisible())
         self.assertFalse(pop.is_pinned())
 
+    def test_unrelated_refresh_keeps_pinned_preview(self):
+        """全板 refresh 路过（本卡指纹未变）不得收掉固定预览
+
+        回归护栏：此前 pinned 分支不查 changed，勾选/拖动别的卡都会把
+        用户固定展示、正在阅读的备注浮层立即收掉。
+        """
+        c1, c2, _c3 = self._cards()
+        press = QMouseEvent(QEvent.Type.MouseButtonPress,
+                            QPoint(0, 0), Qt.LeftButton, Qt.LeftButton,
+                            Qt.NoModifier)
+        c1.eventFilter(c1._notes_badge, press)
+        pop = notes_popover()
+        self.assertTrue(pop.is_pinned())
+        c2.card().title = "别的卡变了"          # 无关变更 → 全板 refresh 路过
+        c1.update_from_model(c1.card())
+        self.assertTrue(pop.isVisible(), "无关刷新把固定预览收掉了")
+        self.assertTrue(pop.is_pinned())
+
     def test_popover_theme_repaint(self):
         """深浅主题切换后浮层可正常绘制"""
         from app.views.theme import AppTheme
@@ -497,16 +515,20 @@ class HoverScopeWatchTest(unittest.TestCase):
         self.assertFalse(pop.isVisible())
 
     def test_unrelated_refresh_keeps_hover_preview(self):
-        """与指纹无关的刷新不打断悬停预览
+        """与本卡指纹无关的刷新不打断悬停预览
 
-        备注正文不进指纹（只 bool 参与）：别处一次无关刷新若顺手收起
-        浮层，用户正在读的备注会莫名闪掉。
+        全板 refresh 会路过每张卡的 update_from_model：别处的变更
+        （勾选别的卡、拖动等）不得把用户正在读的浮层闪掉。
         """
-        c1, *_ = self._cards()
+        c1, c2, _c3 = self._cards()
         pop = self._hover(c1)
+        c2.card().title = "别处刷新时改的标题"   # 改的是别的卡
+        c1.update_from_model(c1.card())          # 本卡指纹未变
+        self.assertTrue(pop.isVisible(), "无关刷新把正在读的浮层闪掉了")
+        # 本卡备注正文变化（指纹变）→ 收起，不展示旧文本
         c1.card().notes = "别处刷新时改的正文"
         c1.update_from_model(c1.card())
-        self.assertTrue(pop.isVisible(), "无关刷新把正在读的浮层闪掉了")
+        self.assertFalse(pop.isVisible(), "本卡正文已变仍显示旧预览")
 
 
 class PopoverUnitTest(unittest.TestCase):

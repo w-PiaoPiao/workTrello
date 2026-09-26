@@ -407,6 +407,7 @@ class AppController(QObject):
         """退出兜底：等在途后台写完成，再把剩余脏数据同步落盘（含 fsync）"""
         self._save_pool.waitForDone(3000)
         self._store.flush()
+        self._gc_orphan_attachments()   # 撤销窗口随会话结束，回收孤儿附件
 
     def _on_save_recovered(self) -> None:
         """落盘恢复成功（worker 线程经信号 queued 回主线程）：重置退避"""
@@ -839,23 +840,13 @@ class AppController(QObject):
 
         - pending 附件（来源是用户原文件/剪贴板临时 PNG）复制进
           <DATA_DIR>/attachments/<card_id>/，路径改写为库内路径
-        - 被移除且路径在库内的旧附件删除文件（用户原文件绝不动）
+        - 被移除的旧附件只摘引用、不删文件：撤销（Ctrl+Z）要能恢复
+          引用并重新打开文件，物理回收统一走退出时的附件 GC
         """
         new_list = result.get("attachments")
         if new_list is None:
             return
         attach_root = (AppConfig.DATA_DIR / "attachments").resolve()
-        old_ids = {a.get("id") for a in card.attachments}
-        kept_ids = {a.get("id") for a in new_list}
-        for old in card.attachments:
-            if old.get("id") in kept_ids:
-                continue
-            p = Path(str(old.get("path", "")))
-            try:
-                if p.exists() and attach_root in p.resolve().parents:
-                    p.unlink()
-            except OSError as e:
-                logger.warning("删除附件文件失败: %s (%s)", p, e)
         for att in new_list:
             if not att.get("pending"):
                 continue
@@ -872,6 +863,51 @@ class AppController(QObject):
                 # 复制失败：保留 pending 标记（不落库路径），提示但不中断
                 logger.warning("附件复制失败: %s -> %s (%s)", src, dest_dir, e)
                 self._show_error(tr("附件复制失败：{err}").format(err=e))
+
+    def _gc_orphan_attachments(self) -> None:
+        """退出时回收孤儿附件目录
+
+        编辑移除附件 / 删除卡片都只摘引用不删文件（撤销窗口内可无损
+        恢复），代价是 attachments/ 逐渐积累无人引用的目录，退出时统一
+        回收。判定按"卡片实际引用的文件所在目录"：复制卡片的附件与
+        原卡共享同一路径，按 card_id 对号会误删仍被引用的目录。
+        """
+        attach_root = (AppConfig.DATA_DIR / "attachments").resolve()
+        if not attach_root.is_dir():
+            return
+        referenced: set[Path] = set()
+        for meta in self._workspace.boards:
+            try:
+                doc = json_io.load_json_doc(self._workspace.board_path(meta.id))
+            except Exception as e:   # noqa: BLE001 — 单板解析失败不碍回收
+                logger.warning("附件 GC 读取看板失败: %s (%s)", meta.id, e)
+                continue
+            for lst in doc.get("lists") or []:
+                if not isinstance(lst, dict):
+                    continue
+                for c in lst.get("cards") or []:
+                    if not isinstance(c, dict):
+                        continue
+                    for att in c.get("attachments") or []:
+                        if not isinstance(att, dict):
+                            continue
+                        try:
+                            referenced.add(
+                                Path(str(att.get("path", ""))).resolve().parent)
+                        except OSError:
+                            continue
+        try:
+            for d in attach_root.iterdir():
+                if d.is_dir():
+                    try:
+                        orphan = d.resolve() not in referenced
+                    except OSError:
+                        continue
+                    if orphan:
+                        shutil.rmtree(d, ignore_errors=True)
+                        logger.info("已回收孤儿附件目录: %s", d.name)
+        except OSError as e:
+            logger.warning("附件目录清理失败: %s (%s)", attach_root, e)
 
     def _on_card_done(self, list_id: str, card_id: str, done: bool) -> None:
         _lst, card = self._store.load().find_card(card_id)
