@@ -58,9 +58,10 @@ def _safe_filename(name: str) -> str:
 
 
 class _FlushNotifier(QObject):
-    """后台落盘失败 → 主线程通知桥（跨线程信号自动 queued 投递）"""
+    """后台落盘结果 → 主线程通知桥（跨线程信号自动 queued 投递）"""
 
     save_failed = Signal(str)
+    save_recovered = Signal()
 
 
 class AppController(QObject):
@@ -106,7 +107,9 @@ class AppController(QObject):
         self._save_pool.setMaxThreadCount(1)
         self._flush_notifier = _FlushNotifier()
         self._flush_notifier.save_failed.connect(self._on_save_failed)
+        self._flush_notifier.save_recovered.connect(self._on_save_recovered)
         self._last_save_error_notify: float | None = None   # 失败气泡去重
+        self._save_fail_streak = 0   # 连续失败计数（重试指数退避）
         if app is not None:
             app.aboutToQuit.connect(self._on_about_to_quit)
 
@@ -394,7 +397,8 @@ class AppController(QObject):
         had_cards = any(lst.cards for lst in board.lists)
         self._store.flush_async(
             self._save_pool,
-            on_error=self._flush_notifier.save_failed.emit)
+            on_error=self._flush_notifier.save_failed.emit,
+            on_success=self._flush_notifier.save_recovered.emit)
         if had_cards and AppConfig.get_empty_board_ack():
             # 标记绝大多数时间缺席：先查再删，省掉每次保存的一次 QSettings remove
             AppConfig.clear_empty_board_ack()
@@ -404,10 +408,20 @@ class AppController(QObject):
         self._save_pool.waitForDone(3000)
         self._store.flush()
 
+    def _on_save_recovered(self) -> None:
+        """落盘恢复成功（worker 线程经信号 queued 回主线程）：重置退避"""
+        self._save_fail_streak = 0
+        self._save_timer.setInterval(AppConfig.SAVE_DEBOUNCE_MS)
+
     def _on_save_failed(self, detail: str) -> None:
         """后台落盘失败（worker 线程经信号 queued 回主线程）"""
         logger.error("保存数据失败: %s", detail)
-        self._schedule_save()    # 静默重试
+        # 指数退避重试：磁盘满/持续失败时按 500ms 无脑重试只会空转轰炸
+        self._save_fail_streak += 1
+        backoff = min(AppConfig.SAVE_DEBOUNCE_MS * 2 ** (
+            self._save_fail_streak - 1), 600_000)   # 上限 10 分钟
+        self._save_timer.setInterval(backoff)
+        self._schedule_save()
         now = time.monotonic()
         last = self._last_save_error_notify
         if last is not None and now - last < 30:
@@ -510,6 +524,8 @@ class AppController(QObject):
         was_current = board_id == self._workspace.current_id
         if was_current:
             self._save_timer.stop()    # 防抖到点会把已删文件写回来
+            # 已提交到保存池的在途写同样作废（worker 里按标记放弃）
+            self._store.discard_pending()
             if self._pomo_card_id is not None:
                 self._pomo_stop()
         if not self._workspace.delete_board(board_id):
@@ -560,7 +576,12 @@ class AppController(QObject):
                                  report: str) -> None:
         if not board.name:
             board.name = fallback_name
-        meta = self._workspace.create_board(name=board.name, board=board)
+        try:
+            meta = self._workspace.create_board(name=board.name, board=board)
+        except json_io.StoreError as e:
+            # 磁盘满/权限问题：写板文件失败不能让导入静默无反馈
+            self._show_error(tr("导入失败：{err}").format(err=e))
+            return
         self._activate_board(
             meta.id,
             notify=tr("已导入看板「{name}」（{report}）").format(

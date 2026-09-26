@@ -57,6 +57,24 @@ def main():
     except Exception as e:
         logging.warning("创建数据目录失败: %s", e)
 
+    # 文件日志：打包版 console=False 看不到 stderr，落盘才能事后定位
+    # （放锁检查之前：第二实例/启动崩溃的场景也要能留下痕迹）
+    log_path = AppConfig.DATA_DIR / "app.log"
+    try:
+        from logging.handlers import RotatingFileHandler
+        _fh = RotatingFileHandler(log_path, maxBytes=1 << 20,
+                                  backupCount=1, encoding="utf-8")
+        _fh.setLevel(logging.DEBUG if debug else logging.WARNING)
+        _fh.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+        logging.getLogger().addHandler(_fh)
+    except OSError as e:
+        logging.warning("日志文件不可用: %s", e)
+
+    # 语言先于任何 UI（含锁冲突提示框）确定（QSettings 已按数据目录定位好）
+    from app import i18n
+    i18n.set_lang(AppConfig.get_language())
+
     _lock = QLockFile(str(AppConfig.DATA_DIR / "instance.lock"))
     _lock.setStaleLockTime(5000)
     if not _lock.tryLock(100):
@@ -67,14 +85,12 @@ def main():
         if InstanceWaker(AppConfig.DATA_DIR).wake():
             sys.exit(0)
         from PySide6.QtWidgets import QMessageBox
-        QMessageBox.warning(None, AppConfig.APP_NAME, "应用已在运行，请查看系统托盘。")
+        QMessageBox.warning(None, AppConfig.APP_NAME,
+                            i18n.tr("应用已在运行，请查看系统托盘。"))
         sys.exit(0)
 
     # ── 全局样式 ──────────────────────────────────────────
     from app.views.theme import AppTheme
-    from app import i18n
-    # 语言先于任何 UI 构造确定（QSettings 已按数据目录定位好）
-    i18n.set_lang(AppConfig.get_language())
     AppTheme.apply()   # 调色板 + QSS + 原生外观一并应用
 
     # ── 启动控制器 ────────────────────────────────────────
@@ -82,7 +98,17 @@ def main():
 
     # 显式挂在 app 上保活：控制器无 Qt 父级，仅靠栈帧局部变量引用
     # 在重构（如提前 return）时容易被回收
-    app._controller = AppController()
+    try:
+        app._controller = AppController()
+    except Exception as e:   # noqa: BLE001 — 打包版（console=False）崩溃必须可见
+        logging.exception("控制器初始化失败")
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.critical(
+            None, AppConfig.APP_NAME,
+            i18n.tr("应用启动失败：{err}").format(
+                err=f"{type(e).__name__}: {e}")
+            + "\n\n" + i18n.tr("详情见日志文件：{path}").format(path=log_path))
+        sys.exit(1)
 
     sys.exit(app.exec())
 

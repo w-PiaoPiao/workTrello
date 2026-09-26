@@ -440,6 +440,10 @@ _zh_en: dict[str, str] = {
         "Board data file error ({detail}). Starting with the default board.",
     "看板数据保存失败，请检查磁盘空间或文件权限":
         "Failed to save board data — check disk space or file permissions",
+    "应用已在运行，请查看系统托盘。":
+        "The app is already running — check the system tray.",
+    "应用启动失败：{err}": "Failed to start: {err}",
+    "详情见日志文件：{path}": "See the log file for details: {path}",
     # ── 多看板 ──
     "切换 / 管理看板": "Switch / manage boards",
     "＋ 新建看板": "＋ New Board",

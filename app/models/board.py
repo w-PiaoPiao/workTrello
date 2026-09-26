@@ -748,6 +748,7 @@ class BoardStore:
         self._board: Board | None = None
         self._dirty = False
         self._flush_seq = 0     # 后台落盘代数（提交/完成配对用）
+        self._discarded = False  # 看板已删除：在途写任务作废，不得写回
         self.problems: list[tuple[str, str]] = []
         self.last_backup_path: Path | None = None
 
@@ -803,7 +804,7 @@ class BoardStore:
 
     def flush(self) -> None:
         """同步落盘（退出兜底 / 测试；脏标记时才写），写入含 fsync"""
-        if not self._dirty or self._board is None:
+        if self._discarded or not self._dirty or self._board is None:
             return
         from app.models.json_io import atomic_write_json
         atomic_write_json(self._path, self._build_doc(),
@@ -811,16 +812,27 @@ class BoardStore:
         self._flush_seq += 1
         self._dirty = False
 
-    def flush_async(self, pool, on_error=None) -> None:
+    def discard_pending(self) -> None:
+        """作废本存储的全部待写任务（看板被删除时调用）
+
+        已提交到保存池、尚未执行的任务在 worker 开头看到标记后直接放弃，
+        不会把已删除的看板文件写回成孤儿；正在执行的写入（毫秒级窗口）
+        管不到，但删除方随后对 boards/ 目录的孤儿收编会兜底。
+        """
+        self._discarded = True
+        self._dirty = False
+
+    def flush_async(self, pool, on_error=None, on_success=None) -> None:
         """后台落盘：主线程只做 to_dict 快照，文件 IO 交单线程池串行执行
 
         - 提交前清脏：快照已取走，期间新编辑会重新 mark_dirty（下一轮
           防抖再写）；写失败在 worker 里恢复脏标记，由失败通知路径重试
         - pool 须为单线程（maxThreadCount=1）：写入请求串行化，杜绝两个
           写入者并发操作同一文件
-        - on_error 在 worker 线程回调（调用方应经 Qt 信号转回主线程）
+        - on_error / on_success 在 worker 线程回调（调用方应经 Qt 信号
+          转回主线程后再碰 UI 对象）
         """
-        if not self._dirty or self._board is None:
+        if self._discarded or not self._dirty or self._board is None:
             return
         from app.models.json_io import atomic_write_json
         doc = self._build_doc()
@@ -831,11 +843,16 @@ class BoardStore:
         path = self._path
 
         def _work() -> None:
+            if self._discarded:
+                return   # 看板已删除：放弃写回，防孤儿文件
             try:
                 atomic_write_json(path, doc)
             except Exception as e:
                 self._dirty = True   # 写失败恢复脏标记，下次防抖重试
                 if on_error is not None:
                     on_error(e)
+                return
+            if on_success is not None:
+                on_success()
 
         pool.start(_work)
