@@ -229,7 +229,7 @@ class ControllerMultiBoardTest(unittest.TestCase):
         old_id = self.c._store_board_id
         self.c._on_card_add(self._list().id, "板A的卡")
         meta = self.c._workspace.create_board(name="板B",
-                                              board=Board(name="板B"))
+                                              board=Board.from_dict({"name": "板B"}))
         self.c._activate_board(meta.id)
         self.assertEqual(self.c._store_board_id, meta.id)
         self.assertEqual(self.c._store.load().lists[0].cards, [])
@@ -244,7 +244,7 @@ class ControllerMultiBoardTest(unittest.TestCase):
         self._reset()
         old_id = self.c._store_board_id
         meta = self.c._workspace.create_board(name="待删",
-                                              board=Board(name="待删"))
+                                              board=Board.from_dict({"name": "待删"}))
         with patch.object(QMessageBox, "question",
                           return_value=QMessageBox.Yes):
             self.c._on_board_delete(meta.id)

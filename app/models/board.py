@@ -557,14 +557,19 @@ class Board:
 
     @classmethod
     def from_dict(cls, data: dict) -> "Board":
-        lists_raw = data.get("lists", [])
-        lists: list[BoardList] = []
-        if isinstance(lists_raw, list):
-            for entry in lists_raw:
-                if not isinstance(entry, dict):
-                    continue
-                lists.append(BoardList.from_dict(entry))
-        if not lists:
+        raw = data.get("lists")
+        if raw is None:
+            # 无 lists 键（新建板/旧格式）：给默认三列
+            lists = [
+                BoardList(title="待办"),
+                BoardList(title="进行中"),
+                BoardList(title="已完成"),
+            ]
+        elif isinstance(raw, list):
+            # 显式空列表 = 用户把列表删光了，尊重其意图（不回填）
+            lists = [BoardList.from_dict(entry)
+                     for entry in raw if isinstance(entry, dict)]
+        else:
             lists = [
                 BoardList(title="待办"),
                 BoardList(title="进行中"),
@@ -723,10 +728,15 @@ class Board:
                 if not c.done or not c.done_at:
                     continue
                 try:
-                    if datetime.fromisoformat(c.done_at) >= cutoff:
-                        n += 1
+                    done = datetime.fromisoformat(c.done_at)
                 except ValueError:
                     continue
+                if done.tzinfo is None:
+                    # 旧格式无时区时间戳：按本地时间解读，否则与带时区
+                    # 的 cutoff 比较直接抛 TypeError
+                    done = done.astimezone(LOCAL_TZ)
+                if done >= cutoff:
+                    n += 1
         return n
 
 

@@ -15,6 +15,7 @@ import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
@@ -86,21 +87,28 @@ def load_json_doc(
 def atomic_write_json(path: Path, data, *, indent: int | None = 2,
                       ensure_ascii: bool = False,
                       durable: bool = False) -> None:
-    """原子写入 JSON 文件（写 .tmp → [fsync] → replace）
+    """原子写入 JSON 文件（写 .tmp → [fsync] → 单次 replace 覆盖）
 
-    写入成功后把上一次的内容轮转为 <文件名>.prev，作为最近一份好副本，
-    供数据文件损坏时恢复。
+    覆盖前先把当前主文件轮转为 <文件名>.prev（硬链接优先、复制兜底），
+    作为最近一份好副本，供数据文件损坏时恢复。
+
+    轮转与覆盖的顺序保证任何时刻主文件都存在：即使进程在两步之间被杀/
+    断电，主文件也还是旧内容（.prev 同步建立），不会出现"主文件缺失
+    只剩 .prev"被加载端当成空文档的窗口。
 
     - indent=None 走紧凑输出：落盘是最高频的全量写，美化输出让体积与
       序列化时间近乎翻倍；导出备份等供人阅读的场景保持缩进
     - durable=True 时 fsync 强制落盘：常规防抖保存省略（OS 缓存 +
       replace 原子性已保证不会产生半截文件，断电最多丢最后一次编辑），
       退出兜底、备份恢复等低频关键写保留
+    - tmp 名带 pid+uuid：主线程直写与后台保存池可能并发写同一目标
+      文件，确定性 tmp 名会让两者写同一个临时文件互相截断
     """
     path.parent.mkdir(parents=True, exist_ok=True)
 
     prev_path = path.with_name(path.name + ".prev")
-    tmp_path = path.with_suffix(".tmp")
+    tmp_path = path.with_name(
+        path.name + f".tmp.{os.getpid()}.{uuid4().hex}")
     try:
         if indent is None:
             content = json.dumps(data, ensure_ascii=ensure_ascii,
@@ -113,9 +121,18 @@ def atomic_write_json(path: Path, data, *, indent: int | None = 2,
             f.flush()
             if durable:
                 os.fsync(f.fileno())
+        # 轮转 .prev：硬链接零拷贝，失败（平台差异/文件占用）降级复制；
+        # 轮转失败只影响备份新鲜度，不阻断本次写入（主文件仍在）
         if path.exists():
-            path.replace(prev_path)
-        tmp_path.replace(path)
+            try:
+                prev_path.unlink(missing_ok=True)
+                os.link(path, prev_path)
+            except OSError:
+                try:
+                    shutil.copy2(path, prev_path)
+                except OSError as e:
+                    logger.warning("轮转 .prev 失败（本次跳过）: %s", e)
+        os.replace(tmp_path, path)
     except OSError as e:
         try:
             tmp_path.unlink(missing_ok=True)

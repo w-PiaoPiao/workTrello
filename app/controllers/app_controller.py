@@ -460,7 +460,9 @@ class AppController(QObject):
         if dlg.exec() != QDialog.Accepted:
             return
         name = dlg.text().strip()
-        meta = self._workspace.create_board(name=name, board=Board(name=name))
+        default_board = Board.from_dict({})
+        default_board.name = name
+        meta = self._workspace.create_board(name=name, board=default_board)
         self._activate_board(meta.id, notify=tr("已新建看板「{name}」").format(
             name=name or tr("我的看板")))
 
@@ -682,7 +684,7 @@ class AppController(QObject):
         if dlg.exec() != QDialog.Accepted:
             return
         title = dlg.text().strip()
-        if title:
+        if title and board.lists:
             self._on_card_add(board.lists[0].id, title)
 
     def _on_bulk_add(self) -> None:
@@ -921,6 +923,13 @@ class AppController(QObject):
         src_list.cards.pop(src_index)
         board.invalidate_index()
         target = board.find_list(target_list_id)
+        if target is None and not board.lists:
+            # 空看板（列表已删光）：无处可放，卡片放回原位，不产生变更
+            src_list.cards.insert(src_index, moved)
+            board.invalidate_index()
+            if self._undo_stack:
+                self._undo_stack.pop()
+            return
         if target is None:
             target = board.lists[0]
             target.cards.append(moved)
