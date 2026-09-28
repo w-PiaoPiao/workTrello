@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ["PET_BOARD_DATA_DIR"] = tempfile.mkdtemp()
@@ -21,6 +22,7 @@ from PySide6.QtTest import QTest
 
 _qapp = None
 
+from app.services import single_instance
 from app.services.single_instance import InstanceWaker
 
 
@@ -74,6 +76,39 @@ class InstanceWakerTest(unittest.TestCase):
         self.assertTrue(self.waker.wake())
         QTest.qWait(300)
         self.assertEqual(self.received, [1])
+
+
+@mock.patch.object(single_instance, "_AF_UNIX_SUPPORTED", False)
+class NoAfUnixDegradationTest(unittest.TestCase):
+    """无 AF_UNIX 平台（Windows 官方 CPython）：start/wake 降级为空操作。
+
+    v0.2.3 在这里漏了守卫，AttributeError 逃出 except OSError，
+    AppController 构造时直接崩——Windows 上一个版本都起不来。
+    替身置 False 让降级分支在所有平台都被跑到，不只依赖 CI 的 Windows 任务。
+    """
+
+    def setUp(self):
+        _app()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.waker = InstanceWaker(Path(self.tmp.name))
+        self.received = []
+        self.waker.signal_show_requested.connect(
+            lambda: self.received.append(1))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_start_is_noop(self):
+        """start 不得抛异常，也不得建立监听（否则 AttributeError 逃逸）"""
+        self.waker.start()
+        self.assertIsNone(self.waker._server)
+        self.assertIsNone(self.waker._notifier)
+
+    def test_wake_returns_false(self):
+        """wake 失败返回 False，调用方（main.py）据此退回提示框路径"""
+        self.waker.start()
+        self.assertFalse(self.waker.wake())
+        self.assertEqual(self.received, [])
 
 
 if __name__ == "__main__":
