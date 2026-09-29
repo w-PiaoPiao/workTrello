@@ -1613,5 +1613,117 @@ class CardDialogRoundTripTest(unittest.TestCase):
         self.assertEqual(self.c._window.findChildren(CardDialog), [])
 
 
+class DataIntegrityRegressionTest(unittest.TestCase):
+    """数据完整性回归：批量完成 × 重复卡 / 同位拖卡 / 番茄撤销 / 导出转义"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.c = AppController()
+        cls.c._ensure_board_ui()
+
+    def _list(self):
+        return self.c._store.load().lists[0]
+
+    def _reset(self):
+        board = self.c._store.load()
+        for lst in board.lists:
+            lst.cards.clear()
+        self.c._after_data_change(None)
+        self.c._undo_stack.clear()
+        self.c._redo_stack.clear()
+
+    def test_batch_done_skips_already_done_repeat_cards(self):
+        """回归：批量"切换完成"把已完成的重复卡再滚一个周期且"复活"为未完成"""
+        self._reset()
+        board = self.c._store.load()
+        repeat = Card(title="重复卡", repeat="daily", due_date="2024-07-01")
+        repeat.set_done(True)
+        board.lists[0].cards.append(repeat)
+        normal = Card(title="普通卡")
+        board.lists[0].cards.append(normal)
+        self.c._after_data_change(None)
+
+        self.c._on_batch_done([repeat.id, normal.id], True)
+        board = self.c._store.load()
+        r = board.find_card(repeat.id)[1]
+        self.assertTrue(r.done)                 # 不被 roll_repeat 复位
+        self.assertEqual(r.due_date, "2024-07-01")   # 不被再滚一个周期
+        self.assertTrue(board.find_card(normal.id)[1].done)
+
+    def test_card_move_same_slot_leaves_no_undo_step(self):
+        """回归：拖回原位产生"什么都没变"的空撤销步 + 脏保存"""
+        self._reset()
+        board = self.c._store.load()
+        for t in ("A", "B", "C"):
+            board.lists[0].cards.append(Card(title=t))
+        self.c._after_data_change(None)
+        self.c._undo_stack.clear()
+
+        b_id = self._list().cards[1].id   # B 在 index 1
+        self.c._on_card_move(b_id, board.lists[0].id, 2)   # 插到第2张之前 = 原位
+        self.assertEqual([x.title for x in self._list().cards],
+                         ["A", "B", "C"])
+        self.assertEqual(self.c._undo_stack, [])   # 不留空撤销步
+
+    def test_edit_dialog_done_rolls_repeat(self):
+        """回归：编辑对话框里勾"标记为已完成"，重复卡也要滚动周期"""
+        self._reset()
+        board = self.c._store.load()
+        card = Card(title="每周", repeat="weekly", due_date="2024-07-01")
+        board.lists[0].cards.append(card)
+        self.c._after_data_change(None)
+
+        result = card.to_dict()
+        result["done"] = True
+        with patch.object(self.c, "_run_card_dialog", return_value=result):
+            self.c._on_card_edit(board.lists[0].id, card.id)
+        board = self.c._store.load()
+        saved = board.find_card(card.id)[1]
+        self.assertFalse(saved.done)                       # roll 后复位
+        self.assertNotEqual(saved.due_date, "2024-07-01")  # 已滚到下一周期
+
+    def test_pomodoro_finish_pushes_undo(self):
+        """回归：番茄计数不入撤销栈，撤销/重做会用旧快照吞掉它"""
+        self._reset()
+        self.c._on_card_add(self._list().id, "专注卡")
+        card_id = self._list().cards[0].id
+        self.c._undo_stack.clear()
+
+        self.c._pomo_card_id = card_id
+        self.c._pomo_stop(finished=True)
+        self.assertEqual(self._list().cards[0].pomodoros, 1)
+        self.c._on_undo_requested(False)
+        self.assertEqual(self._list().cards[0].pomodoros, 0)   # 可撤销
+
+    def test_csv_export_neutralizes_formula_injection(self):
+        """回归：CSV 导出面向 Excel，=+-@ 开头单元格须防公式注入"""
+        import tempfile as _tf
+        board = self.c._store.load()
+        board.lists[0].cards.append(Card(title="=HYPERLINK(\"http://x\", \"点\")"))
+        self.c._after_data_change(None)
+        with _tf.TemporaryDirectory() as d:
+            p = Path(d) / "out.csv"
+            controller_mod.AppController._write_export_csv(p, board)
+            text = p.read_text(encoding="utf-8-sig")
+            self.assertIn("'=HYPERLINK", text)
+
+    def test_md_roundtrip_keeps_handwritten_checklist_lines_as_notes(self):
+        """回归：备注里手写的"- [ ] …"经导出→导入往返不应升级成清单项"""
+        import tempfile as _tf
+        self._reset()
+        board = self.c._store.load()
+        board.lists[0].cards.append(
+            Card(title="记卡", notes="随手记：\n- [ ] 待办式笔记"))
+        self.c._after_data_change(None)
+        with _tf.TemporaryDirectory() as d:
+            p = Path(d) / "out.md"
+            controller_mod.AppController._write_export_md(p, board)
+            from app.models.importers import board_from_markdown
+            board2, _report = board_from_markdown(p.read_text(encoding="utf-8"))
+        card2 = board2.lists[0].cards[0]
+        self.assertEqual(card2.checklist, [])
+        self.assertIn("- [ ] 待办式笔记", card2.notes)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -8,6 +8,7 @@ import csv
 import json
 import logging
 import shutil
+import tempfile
 import time
 import uuid
 from datetime import date, timedelta
@@ -454,6 +455,7 @@ class AppController(QObject):
             self._undo_stack.clear()
             self._redo_stack.clear()
             self._board_view.clear_selection()
+            self._board_view.clear_view_filters()
         board = self._store.load()
         # 每次激活为上一份数据留档（与启动时同一保护）
         json_io.snapshot_board(
@@ -475,7 +477,11 @@ class AppController(QObject):
         name = dlg.text().strip()
         default_board = Board.from_dict({})
         default_board.name = name
-        meta = self._workspace.create_board(name=name, board=default_board)
+        try:
+            meta = self._workspace.create_board(name=name, board=default_board)
+        except json_io.StoreError as e:
+            self._show_error(tr("看板创建失败：{err}").format(err=e))
+            return
         self._activate_board(meta.id, notify=tr("已新建看板「{name}」").format(
             name=name or tr("我的看板")))
 
@@ -528,6 +534,8 @@ class AppController(QObject):
             if self._pomo_card_id is not None:
                 self._pomo_stop()
         if not self._workspace.delete_board(board_id):
+            self._show_error(tr("删除看板失败：{err}").format(
+                err=tr("文件可能被其他程序占用，请稍后重试")))
             return
         if was_current:
             self._store = BoardStore(
@@ -536,6 +544,7 @@ class AppController(QObject):
             self._undo_stack.clear()
             self._redo_stack.clear()
             self._board_view.clear_selection()
+            self._board_view.clear_view_filters()
         self._apply_board_to_ui()
         self._notify(tr("已删除看板"))
 
@@ -680,6 +689,7 @@ class AppController(QObject):
         self._board_view.signal_card_delete.connect(self._on_card_delete)
         self._board_view.signal_card_move.connect(self._on_card_move)
         self._board_view.signal_list_add.connect(self._on_list_add)
+        self._board_view.signal_bulk_add.connect(self._on_bulk_add)
         self._board_view.signal_list_title_changed.connect(
             self._on_list_title_changed)
         self._board_view.signal_list_delete.connect(self._on_list_delete)
@@ -736,6 +746,10 @@ class AppController(QObject):
         self._push_undo()
         new_cards = [self._make_card_from_text(ln) for ln in lines]
         target.cards[0:0] = new_cards   # 保序插入列首（第一行在最上）
+        if target.fund_watch:
+            for card in new_cards:
+                if card.fund is None:
+                    card.ensure_fund()   # 资金监视泳道：批量添加同样自动补配置
         board.invalidate_index()
         self._after_data_change(
             tr("已批量添加 {n} 张卡片").format(n=len(new_cards)))
@@ -816,6 +830,9 @@ class AppController(QObject):
         lst.cards.insert(0, card)
         if lst.fund_watch and card.fund is None:
             card.ensure_fund()   # 资金监视泳道：新建卡自动带监视配置
+        # 过滤态下新建的卡临时豁免过滤：否则"已添加"提示刚落音，
+        # 卡片因不匹配条件在任何列都看不见
+        self._board_view.pin_card_visible(card.id)
         board = self._store.load()
         board.invalidate_index()   # 直接改 cards 结构，索引在变更点立即失效
         self._after_data_change(tr("已添加卡片"))
@@ -830,7 +847,12 @@ class AppController(QObject):
         # 附件先落库（复制文件/清理删除项），失败项保留 pending 不阻塞保存
         self._materialize_attachments(card, result)
         self._push_undo()
+        was_done = card.done
         card.apply(result)
+        if not was_done and card.done:
+            # 与卡片勾选路径（_on_card_done）同语义：重复任务完成即滚到
+            # 下一周期，否则编辑对话框里勾的完成会让旧截止日继续"已逾期"
+            card.roll_repeat()
         self._after_data_change(tr("已保存"))
 
     def _materialize_attachments(self, card: Card, result: dict) -> None:
@@ -857,6 +879,14 @@ class AppController(QObject):
                 shutil.copy2(src, dest)
                 att["path"] = str(dest)
                 att.pop("pending", None)
+                # 粘贴图片的源是临时 PNG：入库后清掉源文件（用户原文件不动）
+                tmp_dir = Path(tempfile.gettempdir())
+                if (src.parent == tmp_dir
+                        and src.name.startswith("petboard_paste_")):
+                    try:
+                        src.unlink()
+                    except OSError:
+                        pass
             except OSError as e:
                 # 复制失败：保留 pending 标记（不落库路径），提示但不中断
                 logger.warning("附件复制失败: %s -> %s (%s)", src, dest_dir, e)
@@ -993,6 +1023,15 @@ class AppController(QObject):
                 index -= 1
             index = max(0, min(index, len(target.cards)))
             target.cards.insert(index, moved)
+        if target is src_list and target.cards.index(moved) == src_index:
+            # 拖回原位：与 _on_list_move 同款短路——回滚快照，不留
+            # "看起来什么都没发生"的空撤销步和脏保存
+            target.cards.pop(src_index)
+            src_list.cards.insert(src_index, moved)
+            board.invalidate_index()
+            if self._undo_stack:
+                self._undo_stack.pop()
+            return
         if target.fund_watch and moved.fund is None:
             moved.ensure_fund()   # 拖入资金监视泳道的普通卡自动补配置
         self._after_data_change(None)
@@ -1036,8 +1075,9 @@ class AppController(QObject):
             _lst, card = board.find_card(cid)
             if card is None or card.archived:
                 continue
-            if card.done != done:
-                n += 1
+            if card.done == done:
+                continue   # 已在目标状态：不能碰，否则重复卡会被再滚一个周期并"复活"为未完成
+            n += 1
             card.set_done(done)
             if done:
                 card.roll_repeat()
@@ -1172,6 +1212,8 @@ class AppController(QObject):
         _lst, card = board.find_card(card_id)
         if card is None:
             return
+        if card.due_date == iso_date:
+            return   # 拖回同一天：不留空撤销步
         self._push_undo()
         card.due_date = iso_date
         self._after_data_change(
@@ -1946,6 +1988,7 @@ class AppController(QObject):
             board = self._store.load()
             _lst, card = board.find_card(card_id)
             if card is not None:
+                self._push_undo()   # 番茄数是真实数据变更：入撤销栈（并清重做栈，防止重做用旧快照吞掉它）
                 card.pomodoros += 1
                 if card.pomodoros % 5 == 0:
                     self._after_data_change(
@@ -2096,8 +2139,7 @@ class AppController(QObject):
         except OSError as e:
             self._show_error(tr("导出失败：{err}").format(err=e))
             return
-        self._tray.show_notification(
-            tr("已导出到 {path}").format(path=path))
+        self._notify(tr("已导出到 {path}").format(path=path))
 
     def _on_export_backup(self) -> None:
         """导出完整看板备份（含归档，可用于日后导入恢复）"""
@@ -2115,8 +2157,7 @@ class AppController(QObject):
         except OSError as e:
             self._show_error(tr("导出失败：{err}").format(err=e))
             return
-        self._tray.show_notification(
-            tr("备份已导出到 {path}").format(path=path))
+        self._notify(tr("备份已导出到 {path}").format(path=path))
 
     def _on_import_backup(self) -> None:
         """从备份导入：整体数据读入并生成为一块新看板（不影响现有看板）"""
@@ -2134,7 +2175,11 @@ class AppController(QObject):
             self._show_error(tr("备份文件无法读取：{err}").format(err=e))
             return
         name = new_board.name or Path(path).stem
-        meta = self._workspace.create_board(name=name, board=new_board)
+        try:
+            meta = self._workspace.create_board(name=name, board=new_board)
+        except json_io.StoreError as e:
+            self._show_error(tr("看板创建失败：{err}").format(err=e))
+            return
         self._activate_board(
             meta.id,
             notify=tr("已导入为新看板「{name}」").format(
@@ -2168,12 +2213,22 @@ class AppController(QObject):
                     lines.append(
                         f"      - [{imark}] {item.get('text', '')}")
                 for ln in c.notes.splitlines():
+                    if ln.lstrip().startswith(("- [", "* [", "+ [")):
+                        # 清单样式行转义：否则导出→导入往返一次，手写的
+                        # "- [ ] 笔记" 会被还原成上一张卡的 checklist
+                        ln = "\\" + ln
                     lines.append(f"      {ln}")
             lines.append("")
         path.write_text("\n".join(lines), encoding="utf-8")
 
     @staticmethod
-    def _write_export_csv(path: Path, board) -> None:
+    def _csv_safe(text: str) -> str:
+        """防 CSV 公式注入：导出明确面向 Excel（utf-8-sig），以 =+-@ 开头
+        的单元格会被当公式执行（=HYPERLINK 等），前置 ' 使其按文本处理"""
+        return "'" + text if text[:1] in ("=", "+", "-", "@") else text
+
+    @classmethod
+    def _write_export_csv(cls, path: Path, board) -> None:
         with path.open("w", encoding="utf-8-sig", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["列表", "标题", "备注", "标签", "截止日期",
@@ -2183,7 +2238,8 @@ class AppController(QObject):
                     if c.archived:
                         continue
                     writer.writerow([
-                        lst.title, c.title, c.notes,
+                        cls._csv_safe(lst.title), cls._csv_safe(c.title),
+                        cls._csv_safe(c.notes),
                         ";".join(c.labels), c.due_date or "",
                         "是" if c.done else "否",
                         AppConfig.PRIORITY_NAMES.get(c.priority, ""),

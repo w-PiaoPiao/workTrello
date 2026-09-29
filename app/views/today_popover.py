@@ -394,7 +394,7 @@ class TodayPopover(QWidget):
         root.setSpacing(6)
 
         head = QHBoxLayout()
-        self._title_label = QLabel("今日待办")
+        self._title_label = QLabel(tr("今日待办"))
         self._title_label.setStyleSheet(
             "font-size: 13px; font-weight: bold; background: transparent;")
         head.addWidget(self._title_label)

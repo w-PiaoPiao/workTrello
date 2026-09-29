@@ -36,7 +36,11 @@ _WEEKDAY_EN = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4,
 _RE_N_DAYS = re.compile(r"(?<![0-9])(\d{1,3})\s*天后")
 _RE_IN_N_DAYS = re.compile(r"\bin\s+(\d{1,3})\s*days?\b", re.IGNORECASE)
 _RE_FULL_DATE = re.compile(r"(?<![0-9])(\d{4})-(\d{1,2})-(\d{1,2})(?![0-9])")
-_RE_MD = re.compile(r"(?<![0-9])(\d{1,2})\s*[月/]\s*(\d{1,2})\s*[日号]?(?![0-9])")
+# "M月D日" 已是强意图信号，允许紧贴汉字（"项目3月4日截止"）；
+# 斜杠形式与分数/比例同形（"进度1/2的人"），要求前面是行首或空白，
+# 且斜杠两侧不写空格——避免把正文里的分数静默吞成截止日
+_RE_MD = re.compile(r"(?<![0-9])(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?(?![0-9])")
+_RE_MD_SLASH = re.compile(r"(?<!\S)(\d{1,2})/(\d{1,2})(?![0-9])")
 _RE_PRIORITY = re.compile(r"(?<![A-Za-z])![pP]([123])\b")
 _RE_TAG = re.compile(r"#([\u4e00-\u9fa5A-Za-z]+)")
 _RE_NEXT_WEEKDAY = re.compile(r"下(?:周|星期|礼拜)([一二三四五六日天])")
@@ -89,6 +93,10 @@ def _parse_due(text: str, today: date) -> tuple[str, str | None]:
         return _cut(text, m), _iso(
             monday + timedelta(days=7 + _WEEKDAY_CH[m.group(1)]))
     m = _RE_MD.search(text)
+    if m:
+        d = _safe_date(today.year, int(m.group(1)), int(m.group(2)))
+        return (_cut(text, m), _iso(d)) if d else (text, None)
+    m = _RE_MD_SLASH.search(text)
     if m:
         d = _safe_date(today.year, int(m.group(1)), int(m.group(2)))
         return (_cut(text, m), _iso(d)) if d else (text, None)

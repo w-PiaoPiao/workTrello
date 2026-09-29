@@ -135,7 +135,7 @@ class NotesPopover(QFrame):
             QFrame#notesPopoverPanel {{
                 background: {c['popover_bg']};
                 border: 1px solid {c['popover_border']};
-                border-radius: 10px;
+                border-radius: {AppConfig.UI_RADIUS_PANEL}px;
             }}
             QLabel#popTitle {{
                 color: {c['text_secondary']};
@@ -172,7 +172,7 @@ class NotesPopover(QFrame):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(Qt.NoPen)
-        base_radius = 10.0
+        base_radius = float(AppConfig.UI_RADIUS_PANEL)
         for i in range(_SHADOW, 0, -1):
             alpha = int(26 * (1 - i / (_SHADOW + 1)) ** 2) + 3
             col = QColor(shadow)

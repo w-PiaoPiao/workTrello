@@ -326,6 +326,7 @@ class _FakeExpandedView:
         self.search_text = ""
         self.search_focus = False
         self.selection_active = False
+        self.focus_returned = False
 
     def finish_rename(self, cancel=False):
         if self.rename_open:
@@ -335,6 +336,9 @@ class _FakeExpandedView:
 
     def search_has_focus(self):
         return self.search_focus
+
+    def return_focus_from_search(self):
+        self.focus_returned = True
 
     def clear_search_if_active(self):
         if self.search_text:
@@ -387,7 +391,10 @@ class EscCollapseChainTest(unittest.TestCase):
         self.assertEqual(self.view.search_text, "")   # 第二下：清搜索
         self.assertEqual(self.w.mode, "expanded")
         self._press_esc()
-        self.assertEqual(self.w.mode, "collapsed")    # 第三下：折叠
+        self.assertTrue(self.view.focus_returned)     # 第三下：退出搜索框
+        self.view.search_focus = False
+        self._press_esc()
+        self.assertEqual(self.w.mode, "collapsed")    # 第四下：折叠
 
     def test_esc_clears_focused_search_before_collapse(self):
         self.view.search_text = "待办"
@@ -396,7 +403,20 @@ class EscCollapseChainTest(unittest.TestCase):
         self.assertEqual(self.view.search_text, "")  # 焦点在搜索框：先清空
         self.assertEqual(self.w.mode, "expanded")
         self._press_esc()
+        # 搜索框已空但焦点仍在：Esc 是"退出搜索框"（归还焦点），不折叠
+        self.assertTrue(self.view.focus_returned)
+        self.assertEqual(self.w.mode, "expanded")
+        self.view.search_focus = False
+        self._press_esc()
         self.assertEqual(self.w.mode, "collapsed")
+
+    def test_esc_empty_focused_search_returns_focus_not_collapse(self):
+        """回归：空搜索框内按 Esc 只退出输入框，不再直接折叠整个看板"""
+        self.view.search_text = ""
+        self.view.search_focus = True
+        self._press_esc()
+        self.assertTrue(self.view.focus_returned)
+        self.assertEqual(self.w.mode, "expanded")
 
     def test_esc_collapses_when_search_text_unfocused(self):
         """回归：搜索有字但焦点不在搜索框时，一下 Esc 即折叠（原需三次）"""

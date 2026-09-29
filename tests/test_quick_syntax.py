@@ -177,5 +177,23 @@ class EnglishShorthandTest(unittest.TestCase):
         self.assertEqual(f["labels"], ["red"])
 
 
+class SlashDateBoundaryTest(unittest.TestCase):
+    """回归：斜杠 M/D 与分数同形，紧贴汉字的分数不再被吞成截止日"""
+
+    def test_fraction_tight_text_not_due(self):
+        title, f = parse_quick_input("进度1/2的人", today=MONDAY)
+        self.assertNotIn("due_date", f)
+        self.assertIn("1/2", title)
+
+    def test_fraction_space_separated_still_ambiguous_kept_tight_only(self):
+        # 紧贴场景（正文分数）被排除；空格分隔的斜杠日期仍然识别
+        _, f = parse_quick_input("9/20 体检", today=MONDAY)
+        self.assertEqual(f["due_date"], "2026-09-20")
+
+    def test_month_day_tight_with_text_still_parsed(self):
+        _, f = parse_quick_input("项目3月4日截止", today=MONDAY)
+        self.assertEqual(f["due_date"], "2026-03-04")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

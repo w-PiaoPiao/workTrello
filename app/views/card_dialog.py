@@ -48,7 +48,7 @@ from app.models.board import (
 )
 from app.models.markdown_lite import render_markdown
 from app.views.controls import ComboBox, DateEdit, SpinBox
-from app.views.theme import AppTheme
+from app.views.theme import AppTheme, primary_button_style
 
 # 资金环节行"未填"办理时间的哨兵日期：等于 minimumDate 时显示 "—"
 _FUND_DATE_SENTINEL = QDate(2000, 1, 1)
@@ -115,18 +115,8 @@ def _remove_button_style(c: dict) -> str:
 
 
 def _primary_button_style(c: dict) -> str:
-    """主操作按钮（保存）"""
-    return f"""
-        QPushButton {{
-            background: {c['accent']};
-            color: white;
-            border: none;
-            border-radius: 8px;
-            padding: 7px 22px;
-            font-weight: bold;
-        }}
-        QPushButton:hover {{ background: {c['accent_hover']}; }}
-    """
+    """主操作按钮（保存）：与全站对话框共用同一份 token 化样式"""
+    return primary_button_style(c)
 
 
 def _dialog_style(c: dict) -> str:
@@ -237,7 +227,10 @@ class CardDialog(QDialog):
         self._ok_btn: QPushButton | None = None
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(20, 18, 20, 16)
+        outer.setContentsMargins(AppConfig.UI_DIALOG_MARGIN_H,
+                                 AppConfig.UI_DIALOG_MARGIN_V,
+                                 AppConfig.UI_DIALOG_MARGIN_H,
+                                 AppConfig.UI_DIALOG_MARGIN_V - 2)
         outer.setSpacing(10)
 
         # 表单主体装进滚动区：清单项/附件/长备注会让内容自然长高，而对话框

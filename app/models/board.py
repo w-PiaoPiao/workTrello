@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from app.i18n import tr
+
 LOCAL_TZ = datetime.now().astimezone().tzinfo
 
 
@@ -513,7 +515,7 @@ class BoardList:
 
     @classmethod
     def from_dict(cls, data: dict) -> "BoardList":
-        title = str(data.get("title", "")).strip() or "未命名列表"
+        title = str(data.get("title", "")).strip() or tr("未命名列表")
         cards_raw = data.get("cards", [])
         cards: list[Card] = []
         if isinstance(cards_raw, list):
@@ -561,9 +563,9 @@ class Board:
         if raw is None:
             # 无 lists 键（新建板/旧格式）：给默认三列
             lists = [
-                BoardList(title="待办"),
-                BoardList(title="进行中"),
-                BoardList(title="已完成"),
+                BoardList(title=tr("待办")),
+                BoardList(title=tr("进行中")),
+                BoardList(title=tr("已完成")),
             ]
         elif isinstance(raw, list):
             # 显式空列表 = 用户把列表删光了，尊重其意图（不回填）
@@ -571,9 +573,9 @@ class Board:
                      for entry in raw if isinstance(entry, dict)]
         else:
             lists = [
-                BoardList(title="待办"),
-                BoardList(title="进行中"),
-                BoardList(title="已完成"),
+                BoardList(title=tr("待办")),
+                BoardList(title=tr("进行中")),
+                BoardList(title=tr("已完成")),
             ]
         return cls(lists=lists,
                    name=str(data.get("name", "") or ""),

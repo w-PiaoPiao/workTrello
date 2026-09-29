@@ -208,7 +208,7 @@ _zh_en: dict[str, str] = {
         "the first column",
     "还没有卡片，点击下方添加": "No cards yet — add one below",
     "没有匹配的卡片": "No matching cards",
-    "过滤/搜索状态下卡片不可拖拽，清除过滤后可拖动":
+    "过滤/搜索状态下不可拖拽，清除过滤后可拖动":
         "Cards can't be dragged while a filter is active — clear it first",
     "点击清除标签过滤": "Click to clear the label filter",
     "标签：": "Labels: ",
@@ -349,6 +349,20 @@ _zh_en: dict[str, str] = {
     "看板还没有列表，先添加一个列表": "No lists yet — add one first",
     "已完成 · 下次 {date}": "Done · next {date}",
     "已完成": "Done",
+    "待办": "To Do",
+    "进行中": "In Progress",
+    "未命名列表": "Untitled List",
+    "日历": "Calendar",
+    "今日待办": "Today",
+    "+ 批量": "+ Bulk",
+    "批量添加卡片：每行一张，支持速记语法":
+        "Bulk add: one card per line, quick syntax supported",
+    "看板创建失败：{err}": "Failed to create board: {err}",
+    "删除看板失败：{err}": "Failed to delete board: {err}",
+    "看板还是空的\n点击右上角「»」→「+ 添加列表」创建第一列":
+        'Board is empty\nClick "»" → "+ Add List" to create the first list',
+    "文件可能被其他程序占用，请稍后重试":
+        "The file may be in use by another program — try again later",
     "全部完成！桌宠为你鼓掌 🎉": "All done! The pet applauds you 🎉",
     "今日已完成 3 张，节奏不错！🌱": "3 done today — nice pace! 🌱",
     "今日已完成 5 张，收工级表现！🏆": "5 done today — outstanding! 🏆",
@@ -453,7 +467,7 @@ _zh_en: dict[str, str] = {
     "完成 {title}": "Complete {title}",
     # ── 多看板 ──
     "切换 / 管理看板": "Switch / manage boards",
-    "＋ 新建看板": "＋ New Board",
+    "+ 新建看板": "+ New Board",
     "新建看板": "New Board",
     "✏ 重命名看板": "✏ Rename Board",
     "重命名看板": "Rename Board",
@@ -482,7 +496,7 @@ _zh_en: dict[str, str] = {
     "导入 Markdown": "Import Markdown",
     # ── 卡片对话框：清单 / 附件 / 预览 / 重复 ──
     "清单": "Checklist",
-    "＋ 添加清单项": "＋ Add item",
+    "+ 添加清单项": "+ Add item",
     "清单项内容": "Checklist item",
     "删除该清单项": "Remove item",
     "{done}/{total} 已完成": "{done}/{total} done",

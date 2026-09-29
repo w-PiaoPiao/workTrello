@@ -638,7 +638,9 @@ class PetView(QWidget):
                     anim.setEasingCurve(QEasingCurve.OutCubic)
                     group.addAnimation(anim)
                 self._hover_anim = group
-            group.finished.connect(self._on_hover_finished)
+                # finished 回调随单实例动画只挂一次：放循环外会随每次
+                # 悬停重复 connect，常驻进程下连接无界累积
+                group.finished.connect(self._on_hover_finished)
             group.start()
         super().enterEvent(event)
 

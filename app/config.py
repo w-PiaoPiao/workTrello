@@ -443,6 +443,8 @@ class AppConfig:
         "mask_hover": "rgba(128, 128, 128, 0.30)",
         # 滚动条把手
         "scroll_handle": "rgba(128, 128, 128, 0.35)",
+        # 空看板引导文字：叠在渐变板底上，必须恒为亮色（两主题板底都压得住）
+        "hint_on_board": "rgba(255, 255, 255, 0.92)",
         "scroll_handle_hover": "rgba(128, 128, 128, 0.55)",
     }
 
@@ -476,6 +478,7 @@ class AppConfig:
         "mask_hover": "rgba(128, 128, 128, 0.30)",
         "scroll_handle": "rgba(128, 128, 128, 0.35)",
         "scroll_handle_hover": "rgba(128, 128, 128, 0.55)",
+        "hint_on_board": "rgba(255, 255, 255, 0.92)",
     }
 
     # ── 卡片标签色板（key → (背景, 文字)）────────────────────

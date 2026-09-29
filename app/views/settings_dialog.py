@@ -122,7 +122,10 @@ class SettingsDialog(QDialog):
         host = QWidget()
         host.setObjectName("settingsHost")
         page = QVBoxLayout(host)
-        page.setContentsMargins(20, 16, 20, 16)
+        page.setContentsMargins(AppConfig.UI_DIALOG_MARGIN_H,
+                                AppConfig.UI_DIALOG_MARGIN_V - 2,
+                                AppConfig.UI_DIALOG_MARGIN_H,
+                                AppConfig.UI_DIALOG_MARGIN_V - 2)
         page.setSpacing(12)
 
         # 外观
@@ -457,20 +460,7 @@ class SettingsDialog(QDialog):
                 font-size: 12px;
             }}
             QPushButton#ghostBtn:hover {{ background: {c['bg_hover']}; }}
-            QComboBox {{
-                background: {c['bg_card']};
-                color: {c['text_primary']};
-                border: 1px solid {c['border']};
-                border-radius: 8px;
-                padding: 5px 10px;
-                font-size: 12px;
-            }}
-            QComboBox QAbstractItemView {{
-                background: {c['bg_card']};
-                color: {c['text_primary']};
-                selection-background-color: {c['accent_soft']};
-                selection-color: {c['accent']};
-            }}
+            /* QComboBox 样式由 AppTheme.global_qss() 统一下发 */
             QPushButton#primaryBtn {{
                 background: {c['accent']};
                 color: white;

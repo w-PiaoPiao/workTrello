@@ -62,7 +62,10 @@ class ShortcutsDialog(QDialog):
         self.setMinimumWidth(420)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(18, 16, 18, 14)
+        root.setContentsMargins(AppConfig.UI_DIALOG_MARGIN_H,
+                        AppConfig.UI_DIALOG_MARGIN_V - 2,
+                        AppConfig.UI_DIALOG_MARGIN_H,
+                        AppConfig.UI_DIALOG_MARGIN_V - 4)
         root.setSpacing(6)
 
         for action, key in _shortcut_rows():
@@ -82,7 +85,7 @@ class ShortcutsDialog(QDialog):
 
         btns = QHBoxLayout()
         btns.addStretch(1)
-        close = QPushButton(tr("完成"))
+        close = QPushButton(tr("关闭"))
         close.setCursor(Qt.PointingHandCursor)
         close.clicked.connect(self.accept)
         btns.addWidget(close)
@@ -92,7 +95,11 @@ class ShortcutsDialog(QDialog):
         AppTheme.register(self.reapply_theme)
 
     def reapply_theme(self) -> None:
-        """重下配色：样式是构建期快照，打开期间跟随系统换主题时需重刷"""
+        """重下配色：样式是构建期快照，打开期间跟随系统换主题时需重刷
+
+        按钮不设专属样式：快捷键速查是"看完就关"的对话框，按钮走
+        AppTheme.global_qss() 的次级描边样式（与归档 / 日历对话框一致）。
+        """
         c = AppTheme.colors()
         self.setStyleSheet(f"""
             QDialog {{ background: {c['bg_primary']}; }}
@@ -114,13 +121,4 @@ class ShortcutsDialog(QDialog):
                 border: 1px solid {c['border']};
                 border-radius: 8px;
             }}
-            QPushButton {{
-                background: {c['accent']};
-                color: white;
-                border: none;
-                border-radius: 8px;
-                padding: 7px 22px;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{ background: {c['accent_hover']}; }}
         """)

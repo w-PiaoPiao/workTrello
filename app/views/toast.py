@@ -65,8 +65,12 @@ class Toast(QLabel):
 
     # ── 对外 ──────────────────────────────────────────────
 
-    def show_message(self, text: str) -> None:
-        """显示提示（重置淡出计时；隐藏态出现时带淡入，连播不闪烁）"""
+    def show_message(self, text: str, bottom_offset: int = 0) -> None:
+        """显示提示（重置淡出计时；隐藏态出现时带淡入，连播不闪烁）
+
+        bottom_offset：额外抬高的像素——底部被多选操作栏占用时
+        toast 上移到栏上方，避免整块盖住批量按钮约 2 秒。
+        """
         if self._effect is None:
             self._rebuild_effect()
         self._fade.stop()
@@ -75,7 +79,7 @@ class Toast(QLabel):
         parent = self.parentWidget()
         if parent is not None:
             self.move((parent.width() - self.width()) // 2,
-                      parent.height() - self.height() - 20)
+                      parent.height() - self.height() - 20 - bottom_offset)
         was_visible = self.isVisible()
         self.show()
         self.raise_()

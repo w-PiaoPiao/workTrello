@@ -70,7 +70,7 @@ from app.views.notes_popover import (
     notes_popover_anchored_to,
     notes_popover_hovering,
 )
-from app.views.theme import AppTheme
+from app.views.theme import AppTheme, to_qcolor
 from app.views.toast import Toast
 
 logger = logging.getLogger(__name__)
@@ -211,7 +211,7 @@ def _board_qss(mode: str) -> str:
         QPushButton#boardToolBtn {{
             background: {c['glass']};
             border: none;
-            border-radius: 9px;
+            border-radius: {AppConfig.UI_RADIUS_CONTROL}px;
             padding: 5px 10px;
             font-size: 12px;
             color: {c['text_primary']};
@@ -227,7 +227,7 @@ def _board_qss(mode: str) -> str:
         QLineEdit#boardSearch {{
             background: {c['glass']};
             border: 1px solid transparent;
-            border-radius: 9px;
+            border-radius: {AppConfig.UI_RADIUS_CONTROL}px;
             padding: 6px 10px;
             color: {c['text_primary']};
         }}
@@ -242,7 +242,7 @@ def _board_qss(mode: str) -> str:
             background: transparent;
             color: {c['text_secondary']};
             border: 1.5px dashed {c['border']};
-            border-radius: 9px;
+            border-radius: {AppConfig.UI_RADIUS_CONTROL}px;
             padding: 7px;
             font-size: 12px;
         }}
@@ -257,7 +257,7 @@ def _board_qss(mode: str) -> str:
             background: {c['glass']};
             color: {c['text_primary']};
             border: none;
-            border-radius: 9px;
+            border-radius: {AppConfig.UI_RADIUS_CONTROL}px;
             padding: 5px 10px;
         }}
         QPushButton#addBoardBtn[variant="toolbar"]:hover {{
@@ -267,7 +267,7 @@ def _board_qss(mode: str) -> str:
         }}
         /* 空看板引导叠在蓝紫渐变上：中性灰在渐变里几乎看不见 */
         QLabel#emptyBoardHint {{
-            color: rgba(255, 255, 255, 0.92);
+            color: {c['hint_on_board']};
             font-size: 15px;
             background: transparent;
         }}
@@ -303,7 +303,7 @@ def _board_qss(mode: str) -> str:
             color: {c['text_secondary']};
             font-size: 11px;
             background: {c['mask']};
-            border-radius: 8px;
+            border-radius: {AppConfig.UI_RADIUS_CHIP}px;
             padding: 1px 7px;
         }}
         QLabel#columnHint {{
@@ -1368,7 +1368,7 @@ def _begin_list_drag(source: QWidget, board_list: BoardList) -> None:
                                pixmap.copy(0, 0, pixmap.width(), header_h))
         body = QRect(0, header_h, pixmap.width(), max_h - header_h)
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(128, 128, 128, 60))
+        painter.setBrush(to_qcolor(AppTheme.colors()["mask_hover"]))
         painter.drawRoundedRect(body.adjusted(4, 2, -4, -4), 8, 8)
         painter.end()
         pixmap = ghost
@@ -1385,6 +1385,9 @@ class _TitleLabel(QLabel):
         self._header = header
 
     def mouseDoubleClickEvent(self, event) -> None:
+        col = self._header.parent()
+        if isinstance(col, ListColumn) and col.is_collapsed():
+            return   # 折叠态首次单击已展开，双击不再弹重命名编辑框
         self._header._start_rename(event)
 
 
@@ -1502,8 +1505,10 @@ class ListHeader(QWidget):
         self._collapse_btn.setText("▸" if collapsed else "▾")
         _set_prop(self._collapse_btn, "collapsed", bool(collapsed))
 
-    def update_count(self, n: int) -> None:
-        self._count_label.setText(str(n))
+    def update_count(self, n: int, total: int | None = None) -> None:
+        """列头计数：过滤态显示「命中/总数」，避免被误读成"卡片丢了" """
+        self._count_label.setText(f"{n}/{total}" if total is not None
+                                  and total != n else str(n))
 
     def set_list(self, board_list: BoardList) -> None:
         """增量刷新：重指向模型对象并同步标题文本"""
@@ -1572,23 +1577,25 @@ class ListHeader(QWidget):
         if (self._drag_press_pos is not None
                 and event.buttons() & Qt.LeftButton
                 and isinstance(col, ListColumn)
-                and not col.is_filtered()
                 and (event.position().toPoint() - self._drag_press_pos)
                 .manhattanLength() > AppConfig.LIST_DRAG_THRESHOLD):
             self._drag_press_pos = None      # 只触发一次
+            if col.is_filtered():
+                # 与卡片拖拽同款反馈：无声无息会让用户反复试
+                col.signal_drag_blocked.emit()
+                return
             self._start_list_drag()
             return
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
-        # 折叠列：单击头部任意处（按住未拖动）即展开，让"▸"有够大的命中区
+        # 折叠列：单击头部任意处（按住未拖动）即展开——标题是头部最宽的
+        # 命中区，排除它会让"点标题没反应"像列卡死了
         if (event.button() == Qt.LeftButton
                 and self._drag_press_pos is not None
                 and _ACTIVE_RENAME is None):
             col = self.parent()
-            if (isinstance(col, ListColumn) and col.is_collapsed()
-                    and self.childAt(event.position().toPoint())
-                    is not self._title_label):
+            if isinstance(col, ListColumn) and col.is_collapsed():
                 col.toggle_collapsed()
         self._drag_press_pos = None
         super().mouseReleaseEvent(event)
@@ -1610,6 +1617,17 @@ class _RenameEdit(QLineEdit):
         self.returnPressed.connect(self.commit)
         # 注意：不挂 editingFinished（失焦提交）——Qt.Tool 窗口焦点链不可靠，
         # 关闭时机统一由点击过滤器 / Esc / 折叠 / 隐藏等显式路径驱动
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() in (Qt.Key_Tab, Qt.Key_Backtab):
+            # Tab 失焦也要收口：否则编辑框悬空盖在标题上（视觉重影）。
+            # 先提交（此刻编辑器仍是焦点件），再按 Tab 方向移交焦点
+            forward = event.key() != Qt.Key_Backtab
+            self.commit()
+            self._header.focusNextPrevChild(forward)
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def commit(self) -> None:
         global _ACTIVE_RENAME
@@ -2010,10 +2028,12 @@ class ListColumn(QFrame):
     def mouseMoveEvent(self, event) -> None:
         if (self._drag_press_pos is not None
                 and event.buttons() & Qt.LeftButton
-                and not self.is_filtered()
                 and (event.position().toPoint() - self._drag_press_pos)
                 .manhattanLength() > AppConfig.LIST_DRAG_THRESHOLD):
             self._drag_press_pos = None      # 只触发一次
+            if self.is_filtered():
+                self.signal_drag_blocked.emit()   # 同列头：给解释而非沉默
+                return
             _begin_list_drag(self, self._lst)
             return
         super().mouseMoveEvent(event)
@@ -2136,7 +2156,10 @@ class ListColumn(QFrame):
             self._hint.deleteLater()
             self._hint = None
 
-        self._header.update_count(len(cards))
+        self._header.update_count(
+            len(cards),
+            total=len(self._lst.cards) if self._visible_cards is not None
+            else None)
         # 列高随内容收缩：卡片增删都要重算 sizeHint，否则列高停在旧值。
         # 但仅当几何指纹变化时才需要——单卡勾选/编辑不改 id 序与内容指纹
         # （指纹覆盖 rebuild 渲染的全部字段），此时跳过 updateGeometry 与
@@ -2700,6 +2723,7 @@ class BoardView(QWidget):
     signal_list_move = Signal(str, str, bool)   # moved_list_id, target_list_id, insert_before
     signal_card_add = Signal(str)               # list_id
     signal_list_add = Signal()
+    signal_bulk_add = Signal()                  # 批量添加（每行一张）
     signal_list_title_changed = Signal(str, str)
     signal_list_delete = Signal(str)
     signal_list_collapsed = Signal(str, bool)   # list_id, collapsed
@@ -2805,6 +2829,9 @@ class BoardView(QWidget):
         self._lower_cache: dict[str, tuple[str, str, str, str]] = {}
         # 标签过滤态（点卡片左缘色条触发，与搜索/今日模式正交叠加）
         self._label_filter: str | None = None
+        # 过滤态下新建卡的临时豁免集：否则"已添加卡片"的提示刚落音，
+        # 卡片因不匹配过滤条件凭空消失
+        self._pinned_ids: set[str] = set()
         self._today_count = 0   # 今日角标数（reapply_texts 重建文案用）
         self._label_chip = QPushButton()
         self._label_chip.setObjectName("boardToolBtn")
@@ -2822,6 +2849,15 @@ class BoardView(QWidget):
         self._add_list_btn.setFixedWidth(96)
         self._add_list_btn.clicked.connect(self.signal_list_add.emit)
         self._toolbar_layout.addWidget(self._add_list_btn)
+
+        # 批量添加（每行一张，支持速记）：此前仅 macOS 菜单栏可达
+        self._bulk_add_btn = AddCardButton(tr("+ 批量"), variant="toolbar")
+        self._bulk_add_btn.setFixedWidth(72)
+        self._bulk_add_btn.setCursor(Qt.PointingHandCursor)
+        self._bulk_add_btn.setToolTip(
+            tr("批量添加卡片：每行一张，支持速记语法"))
+        self._bulk_add_btn.clicked.connect(self.signal_bulk_add.emit)
+        self._toolbar_layout.addWidget(self._bulk_add_btn)
 
         self._archive_btn = QPushButton(tr("归档"))
         self._archive_btn.setObjectName("boardToolBtn")
@@ -2908,14 +2944,15 @@ class BoardView(QWidget):
         # 收纳优先级（低 → 高）：空间不足时从前往后收进「»」菜单。
         # 顺序按"冗余度"排：统计数字在列头也有、日历在 macOS 菜单栏也有，
         # 而「+ 添加列表」是空看板引导指向的唯一入口，放最后。
-        self._overflow_order = ("stats", "calendar", "export", "archive",
-                                "add_list")
+        self._overflow_order = ("stats", "calendar", "bulk_add", "export",
+                                "archive", "add_list")
         self._toolbar_items: list[tuple[str, QWidget]] = [
             ("title", self._title_btn),
             ("stats", self._stats_label),
             ("today", self._today_btn),
             ("search", self._search_edit),
             ("add_list", self._add_list_btn),
+            ("bulk_add", self._bulk_add_btn),
             ("archive", self._archive_btn),
             ("calendar", self._calendar_btn),
             ("export", self._export_btn),
@@ -3118,6 +3155,9 @@ class BoardView(QWidget):
         if self._label_filter:
             self._update_label_chip()
         self._add_list_btn.setText(tr("+ 添加列表"))
+        self._bulk_add_btn.setText(tr("+ 批量"))
+        self._bulk_add_btn.setToolTip(
+            tr("批量添加卡片：每行一张，支持速记语法"))
         self._archive_btn.setText(tr("归档"))
         self._archive_btn.setToolTip(tr("查看已归档卡片并恢复"))
         self._calendar_btn.setToolTip(tr("按截止日期在月历中查看与拖动卡片"))
@@ -3376,7 +3416,7 @@ class BoardView(QWidget):
             act.triggered.connect(
                 lambda _=False, i=bid: self.signal_board_switch.emit(i))
         menu.addSeparator()
-        act_new = menu.addAction(tr("＋ 新建看板"))
+        act_new = menu.addAction(tr("+ 新建看板"))
         act_new.triggered.connect(self.signal_board_create.emit)
         act_rename = menu.addAction(tr("✏ 重命名看板"))
         act_rename.triggered.connect(self.signal_board_rename.emit)
@@ -3460,6 +3500,20 @@ class BoardView(QWidget):
         self._sel_anchor = None
         self._apply_selection_props()
         self._update_selection_bar()
+
+    def clear_view_filters(self) -> None:
+        """切换看板时清空"对当前看板的临时视角"（搜索词 / 标签过滤）：
+
+        过滤是临时视角，换看板保留旧过滤会让人以为新看板真的没内容
+        （标签 chip 可能指向新看板不存在的标签，统计行恒显"匹配 0 张"）。
+        今日模式是跨看板概念，保留。
+        """
+        self._search_edit.clear()          # 触发 textChanged → 立即恢复
+        self._pinned_ids.clear()
+        if self._label_filter is not None:
+            self._label_filter = None
+            self._update_label_chip()
+            self._apply_filter()
 
     def clear_selection_if_active(self) -> bool:
         """有选中卡片时清空并吞掉本次 Esc（Esc 折叠链第一环）"""
@@ -3567,13 +3621,26 @@ class BoardView(QWidget):
                 return (c.priority == 0, c.priority, not c.starred,
                         delta if delta is not None else 999)
             cards.sort(key=_today_sort_key)
-            return cards
+            return self._with_pinned(lst, cards)
         if not q and not tag:
             return None
         cards = self._filter_cards(lst, q) if q else list(lst.cards)
         if tag:
             cards = [c for c in cards if tag in c.labels]
-        return cards
+        return self._with_pinned(lst, cards)
+
+    def _with_pinned(self, lst: BoardList, cards: list[Card]) -> list[Card]:
+        """把过滤态新建的豁免卡并入可见集（不匹配过滤条件也保持可见）"""
+        if not self._pinned_ids:
+            return cards
+        in_set = {c.id for c in cards}
+        extra = [c for c in lst.cards
+                 if c.id in self._pinned_ids and c.id not in in_set]
+        return cards + extra
+
+    def pin_card_visible(self, card_id: str) -> None:
+        """过滤生效期间新建的卡片临时豁免过滤（清过滤时一并失效）"""
+        self._pinned_ids.add(card_id)
 
     def _on_label_clicked(self, key: str) -> None:
         """点卡片左缘色条按标签过滤全板；再点同色清除"""
@@ -3614,6 +3681,9 @@ class BoardView(QWidget):
 
     def _apply_filter(self, *_args) -> None:
         """今日开关 / 搜索防抖到点：单遍扫描刷新各列可见卡片与角标统计"""
+        if (not self._search_query() and not self._label_filter
+                and not self._today_btn.isChecked()):
+            self._pinned_ids.clear()   # 无任何过滤：豁免集随之失效
         total = 0
         for lst, col in zip(self._lists, self._columns):
             visible = self._visible_cards_for(lst)
@@ -3652,8 +3722,8 @@ class BoardView(QWidget):
         menu.addSeparator()
         act_trello = menu.addAction(tr("导入 Trello 看板（.json）…"))
         act_md_import = menu.addAction(tr("导入 Markdown（.md）…"))
-        chosen = menu.exec(self.mapToGlobal(
-            QPoint(self._export_btn.x(), self._export_btn.height())))
+        chosen = menu.exec(self._export_btn.mapToGlobal(
+            QPoint(0, self._export_btn.height() + 2)))
         menu.deleteLater()   # 常驻 BoardView 上的菜单不销毁会每次导出累积一个
         if chosen is act_md:
             self.signal_export.emit("md")
@@ -3678,6 +3748,10 @@ class BoardView(QWidget):
     def search_has_focus(self) -> bool:
         """搜索框是否持有焦点（Esc 折叠链中仅此状态先清空搜索）"""
         return self._search_edit.hasFocus()
+
+    def return_focus_from_search(self) -> None:
+        """Esc 退出搜索框：焦点还给看板（随后方向键可直接导航卡片）"""
+        self.setFocus()
 
     def focus_search(self) -> None:
         """Cmd+F 聚焦搜索框并全选"""
@@ -3714,7 +3788,7 @@ class BoardView(QWidget):
         # 过滤态起拖被拒：解释原因（列已禁 drop，用户只会看到禁止光标）
         col.signal_drag_blocked.connect(
             lambda: self.show_toast(
-                tr("过滤/搜索状态下卡片不可拖拽，清除过滤后可拖动")))
+                tr("过滤/搜索状态下不可拖拽，清除过滤后可拖动")))
         col.signal_collapsed_changed.connect(self.signal_list_collapsed)
         col.signal_fund_watch.connect(self.signal_list_fund_watch)
         col.signal_fund_export.connect(self.signal_list_fund_export)
@@ -3761,10 +3835,20 @@ class BoardView(QWidget):
             tr("{total} 张卡片 · 完成 {done}").format(total=total, done=done))
 
     def _update_empty_hint(self, lists: list[BoardList]) -> None:
-        """无任何列表时显示空看板引导（覆盖列表区，可穿透鼠标）"""
+        """无任何列表时显示空看板引导（覆盖列表区，可穿透鼠标）
+
+        窄窗下「+ 添加列表」可能已被收进「»」菜单——引导指向一个
+        看不见的按钮等于指错路，按收纳态切换文案。
+        """
         if lists:
             self._empty_hint.hide()
         else:
+            if "add_list" in self._overflow_hidden:
+                self._empty_hint.setText(
+                    tr("看板还是空的\n点击右上角「»」→「+ 添加列表」创建第一列"))
+            else:
+                self._empty_hint.setText(
+                    tr("看板还是空的\n点击右上角「+ 添加列表」创建第一列"))
             self._empty_hint.setGeometry(self.rect())
             self._empty_hint.show()
             self._empty_hint.raise_()
@@ -3833,8 +3917,18 @@ class BoardView(QWidget):
             if key in self._overflow_order:
                 widget.setVisible(key not in hidden)
         self._sync_overflow_menu()
+        # 「+ 添加列表」收进菜单后，空看板引导要同步改指「»」入口
+        if self._empty_hint.isVisible():
+            self._update_empty_hint([])
+
     def _sync_overflow_menu(self) -> None:
-        """被收纳的入口进「»」菜单（点菜单项等价于点原按钮）"""
+        """被收纳的入口进「»」菜单（点菜单项等价于点原按钮）
+
+        日历按钮是自绘图标按钮（text() 为空），直接读 text() 会出现
+        空白菜单项——优先读显式文案表，按钮文本兜底。
+        """
+        labels = {"calendar": tr("日历"), "export": tr("导出"),
+                  "archive": tr("归档"), "add_list": tr("+ 添加列表")}
         self._overflow_menu.clear()
         by_key = dict(self._toolbar_items)
         actionable = 0
@@ -3842,14 +3936,20 @@ class BoardView(QWidget):
             widget = by_key.get(key)
             if widget is None or not hasattr(widget, "click"):
                 continue        # 纯信息项（统计数字）不进菜单
-            act = self._overflow_menu.addAction(widget.text())
+            text = labels.get(key) or widget.text() or widget.toolTip()
+            act = self._overflow_menu.addAction(text)
             act.triggered.connect(widget.click)
             actionable += 1
         self._overflow_btn.setVisible(actionable > 0)
 
     def show_toast(self, text: str) -> None:
         """显示看板内轻提示（折叠态由控制器改走托盘通知）"""
-        self._toast.show_message(text)
+        # 底部多选操作栏可见时抬高 toast：两者都钉在底部居中，
+        # 不避让的话 toast 会整块盖住批量按钮
+        bar = self._selection_bar
+        offset = (bar.height() + 12) if (bar is not None
+                                         and bar.isVisible()) else 0
+        self._toast.show_message(text, bottom_offset=offset)
 
     # ── 卡片信号 → 带 list_id 转发 ────────────────────────
 

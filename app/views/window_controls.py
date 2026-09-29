@@ -21,7 +21,7 @@ from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
 from app.i18n import tr
-from app.views.theme import AppTheme
+from app.views.theme import AppTheme, to_qcolor
 
 
 class WindowControls(QWidget):
@@ -87,7 +87,7 @@ class WindowControls(QWidget):
                                             r.width() - 2, r.height() - 2))
                 else:
                     painter.setPen(Qt.NoPen)
-                    painter.setBrush(QColor(128, 128, 128, 77))
+                    painter.setBrush(to_qcolor(c["mask_hover"]))
                     painter.drawRect(QRectF(r.left() + 1, r.top() + 1,
                                             r.width() - 2, r.height() - 2))
         self._paint_glyph(painter)

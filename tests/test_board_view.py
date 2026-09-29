@@ -539,7 +539,8 @@ class BoardViewRefreshTest(unittest.TestCase):
         self.assertFalse(col1.acceptDrops())
         self.assertIsNotNone(col1._hint)
         self.assertIn("没有匹配", col1._hint.text())
-        self.assertEqual(col0._header._count_label.text(), "1")
+        self.assertEqual(col0._header._count_label.text(), "1/3")   # 过滤态显示 命中/总数
+        self.assertEqual(col1._header._count_label.text(), "0/1")
 
     def test_search_matches_notes_case_insensitive(self):
         self.lists[1].cards.append(Card(title="购物", notes="Buy Milk"))

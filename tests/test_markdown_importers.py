@@ -158,5 +158,30 @@ class MarkdownImportTest(unittest.TestCase):
             board_from_markdown("随便一段没有结构的文字")
 
 
+class TrelloDueTimezoneTest(unittest.TestCase):
+    """回归：Trello due 按 UTC 截日期会把东八区晚间的截止日提前一天"""
+
+    @unittest.skipIf(sys.platform == "win32", "time.tzset 仅 POSIX 可用")
+    def test_due_converts_to_local_date(self):
+        old_tz = os.environ.get("TZ")
+        os.environ["TZ"] = "Asia/Shanghai"
+        import time
+        time.tzset()
+        try:
+            doc = {"lists": [{"id": "L1", "name": "To Do"}],
+                   "cards": [{"id": "C1", "name": "卡", "idList": "L1",
+                              "due": "2024-01-05T23:30:00.000Z"}]}
+            board, _ = board_from_trello(doc)
+            card = board.lists[0].cards[0]
+            # 23:30Z 在东八区是 1 月 6 日，不再截成 1 月 5 日
+            self.assertEqual(card.due_date, "2024-01-06")
+        finally:
+            if old_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old_tz
+            time.tzset()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

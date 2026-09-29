@@ -359,12 +359,16 @@ class MainWindow(QWidget):
                           None)
         if clearer is not None and clearer():
             return
-        # 仅在焦点位于搜索框时用 Esc 清空搜索（正在输入的用户预期先清空）；
-        # 搜索有字但焦点在别处时，Esc 的意图是收起看板，直接折叠
+        # 焦点在搜索框时 Esc 是"退出搜索框"：有字先清空，没字把焦点还给
+        # 看板——否则点进搜索框又不想搜的用户一按 Esc 看板整个缩没了，
+        # 同一控件上 Esc 的语义不应随"有没有字"突变
         if (self._expanded_view is not None
-                and self._expanded_view.search_has_focus()
-                and self._expanded_view.clear_search_if_active()):
+                and self._expanded_view.search_has_focus()):
+            if self._expanded_view.clear_search_if_active():
+                return
+            self._expanded_view.return_focus_from_search()
             return
+        # 搜索有字但焦点在别处时，Esc 的意图是收起看板，直接折叠
         self.collapse()
 
     def _focus_board_search(self) -> None:

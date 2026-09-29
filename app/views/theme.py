@@ -49,6 +49,22 @@ def to_qcolor(spec) -> QColor:
     return color
 
 
+def primary_button_style(c: dict) -> str:
+    """主操作按钮（accent 实心）统一样式：卡片 / 快速添加 / 设置 / 快捷键
+    对话框共用同一份 token 化规则，改圆角/内边距只动 config 一处"""
+    return f"""
+        QPushButton {{
+            background: {c['accent']};
+            color: white;
+            border: none;
+            border-radius: {AppConfig.UI_RADIUS_CONTROL}px;
+            padding: {AppConfig.UI_PAD_PRIMARY};
+            font-weight: bold;
+        }}
+        QPushButton:hover {{ background: {c['accent_hover']}; }}
+    """
+
+
 def _default_dark() -> bool:
     """探测系统是否深色模式（Windows 注册表 / macOS 系统外观 / 其他平台 False）"""
     if AppConfig.IS_WINDOWS:
@@ -277,6 +293,27 @@ class _Theme(QObject):
             QDateEdit::drop-down, QDateTimeEdit::drop-down {{
                 border: none;
                 width: 18px;
+            }}
+            QComboBox {{
+                background: {c['bg_card']};
+                color: {c['text_primary']};
+                border: 1px solid {c['border']};
+                border-radius: {AppConfig.UI_RADIUS_CONTROL}px;
+                padding: 5px 10px;
+            }}
+            QComboBox:focus {{ border: 1px solid {c['accent']}; }}
+            QComboBox::drop-down {{
+                border: none;
+                width: 20px;
+            }}
+            QComboBox QAbstractItemView {{
+                background: {c['bg_card']};
+                color: {c['text_primary']};
+                border: 1px solid {c['border']};
+                border-radius: 6px;
+                selection-background-color: {c['accent_soft']};
+                selection-color: {c['text_primary']};
+                outline: none;
             }}
             QCheckBox {{
                 color: {c['text_primary']};

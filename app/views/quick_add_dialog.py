@@ -28,7 +28,7 @@ from app.config import AppConfig
 from app.i18n import label_display, tr
 from app.models.quick_syntax import parse_quick_input
 from app.views.controls import ComboBox
-from app.views.theme import AppTheme
+from app.views.theme import AppTheme, primary_button_style
 
 
 def _fmt_fields(fields: dict) -> str:
@@ -77,13 +77,7 @@ def _input_dialog_style(c: dict) -> str:
         QLineEdit[error="true"], QPlainTextEdit[error="true"] {{
             border: 1.5px solid {c['danger']};
         }}
-        QComboBox {{
-            background: {c['bg_card']};
-            color: {c['text_primary']};
-            border: 1px solid {c['border']};
-            border-radius: 8px;
-            padding: 5px 10px;
-        }}
+        /* QComboBox 样式由 AppTheme.global_qss() 统一下发 */
         QPushButton {{
             background: {c['bg_card']};
             color: {c['text_primary']};
@@ -96,18 +90,8 @@ def _input_dialog_style(c: dict) -> str:
 
 
 def _primary_button_style(c: dict) -> str:
-    """主操作按钮（添加 / 批量添加）"""
-    return f"""
-        QPushButton {{
-            background: {c['accent']};
-            color: white;
-            border: none;
-            border-radius: 8px;
-            padding: 7px 22px;
-            font-weight: bold;
-        }}
-        QPushButton:hover {{ background: {c['accent_hover']}; }}
-    """
+    """主操作按钮（添加 / 批量添加）：与全站对话框共用同一份 token 化样式"""
+    return primary_button_style(c)
 
 
 def _mark_error(widget) -> None:
@@ -150,7 +134,10 @@ class QuickAddDialog(QDialog):
         self._ok_btn.setDefault(True)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(20, 18, 20, 16)
+        root.setContentsMargins(AppConfig.UI_DIALOG_MARGIN_H,
+                                AppConfig.UI_DIALOG_MARGIN_V,
+                                AppConfig.UI_DIALOG_MARGIN_H,
+                                AppConfig.UI_DIALOG_MARGIN_V - 2)
         root.setSpacing(8)
 
         cap = QLabel(label)
@@ -254,7 +241,10 @@ class BulkAddDialog(QDialog):
         self._ok_btn.setDefault(True)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(20, 18, 20, 16)
+        root.setContentsMargins(AppConfig.UI_DIALOG_MARGIN_H,
+                                AppConfig.UI_DIALOG_MARGIN_V,
+                                AppConfig.UI_DIALOG_MARGIN_H,
+                                AppConfig.UI_DIALOG_MARGIN_V - 2)
         root.setSpacing(8)
 
         hint = QLabel(tr("每行一张卡片，行内支持速记：明天 / 周五 / 3天后 /"

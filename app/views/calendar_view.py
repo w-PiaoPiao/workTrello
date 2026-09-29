@@ -86,7 +86,7 @@ class _Chip(QLabel):
                 background: {bg};
                 border: 1px solid {c['border']};
                 border-radius: 5px;
-                font-size: 10px;
+                font-size: 11px;
                 padding: 1px 5px;
             }}
             QLabel#calChip:hover {{ border: 1px solid {c['accent']}; }}
@@ -184,7 +184,7 @@ class _DayCell(QFrame):
             }}
             QPushButton#dayMore {{
                 color: {c['text_secondary']};
-                font-size: 9px;
+                font-size: 10px;
                 text-align: left;
                 background: transparent;
                 border: none;
@@ -308,10 +308,6 @@ class CalendarDialog(QDialog):
         self._today_btn.setCursor(Qt.PointingHandCursor)
         self._today_btn.clicked.connect(self._go_today)
         head.addWidget(self._today_btn)
-        self._close_btn = QPushButton(tr("关闭"))
-        self._close_btn.setCursor(Qt.PointingHandCursor)
-        self._close_btn.clicked.connect(self.close)
-        head.addWidget(self._close_btn)
         root.addLayout(head)
 
         grid_head = QGridLayout()
@@ -333,6 +329,15 @@ class CalendarDialog(QDialog):
         self._grid.setSpacing(4)
         self._scroll.setWidget(self._grid_host)
         root.addWidget(self._scroll, 1)
+
+        # 底部右对齐按钮行：与归档等对话框同布局（顶部只留导航）
+        foot = QHBoxLayout()
+        foot.addStretch(1)
+        self._close_btn = QPushButton(tr("关闭"))
+        self._close_btn.setCursor(Qt.PointingHandCursor)
+        self._close_btn.clicked.connect(self.close)
+        foot.addWidget(self._close_btn)
+        root.addLayout(foot)
 
         self.reapply_theme()
         AppTheme.register(self._on_theme_changed)

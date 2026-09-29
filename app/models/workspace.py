@@ -294,6 +294,13 @@ class Workspace:
         try:
             if path.exists():
                 path.unlink()
+        except OSError as e:
+            # 主文件删不掉（被占用/权限）：保留索引项并报失败——若照常移除
+            # 索引，残留文件下次启动会被孤儿收编"复活"，与确认框承诺矛盾
+            logger.warning("删除看板文件失败: %s (%s)", path, e)
+            self._save()   # current_id 可能已切换，保持索引一致
+            return False
+        try:
             # 同族备份（.prev/.snap/corrupt/good）一并清理，不留孤儿
             for pattern in (f"{path.name}.prev",
                             f"{path.name}.snap.*.bak",
@@ -302,7 +309,7 @@ class Workspace:
                 for old in self.boards_dir.glob(pattern):
                     old.unlink(missing_ok=True)
         except OSError as e:
-            logger.warning("删除看板文件失败: %s (%s)", path, e)
+            logger.warning("清理看板备份失败: %s (%s)", path, e)
         self._save()
         return True
 

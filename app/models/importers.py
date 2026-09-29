@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 from datetime import datetime
 
+from app.i18n import tr
 from app.models.board import Board, BoardList, Card, normalize_checklist
 
 # Trello 标签色 → 本应用色板 key（超集颜色就近归并）
@@ -36,12 +37,16 @@ _RE_MD_INDENT = re.compile(r"^(?:\s{4,}|\t)(.+)$")
 
 
 def _parse_trello_due(raw) -> str | None:
-    """Trello due 是完整 ISO 时间戳（可能带毫秒与 Z），截取日期段"""
+    """Trello due 是完整 ISO 时间戳（可能带毫秒与 Z），转本地时区后取日期
+
+    直接截 UTC 时间戳的日期段会把东八区晚间（23:30Z = 本地次日）的截止
+    日提前一天，卡片凭空"提前逾期"。
+    """
     if not isinstance(raw, str) or len(raw) < 10:
         return None
     try:
         return datetime.fromisoformat(raw.replace("Z", "+00:00")) \
-            .date().isoformat()
+            .astimezone().date().isoformat()
     except ValueError:
         return raw[:10]
 
@@ -77,7 +82,7 @@ def board_from_trello(doc: dict) -> tuple[Board, str]:
             if not isinstance(lst, dict) or lst.get("closed"):
                 continue
             lid = str(lst.get("id", "") or "")
-            title = str(lst.get("name", "") or "").strip() or "未命名列表"
+            title = str(lst.get("name", "") or "").strip() or tr("未命名列表")
             bl = BoardList(title=title, id=lid)
             lists_by_id[lid] = bl
             order.append(lid)
@@ -132,7 +137,7 @@ def board_from_trello(doc: dict) -> tuple[Board, str]:
                 # 卡片挂在已 closed 的列表下：丢进最后一个有效列表保数据
                 target = lists_by_id.get(order[-1]) if order else None
             if target is None:
-                target = BoardList(title="待办")
+                target = BoardList(title=tr("待办"))
                 lists_by_id[target.id] = target
                 order.append(target.id)
             target.cards.append(card)
@@ -188,6 +193,15 @@ def board_from_markdown(text: str, fallback_title: str = "") -> tuple[Board, str
         m = _RE_MD_INDENT.match(raw)
         if m and current_card is not None:
             note_line = m.group(1).strip()
+            if note_line.startswith(("\\- [", "\\* [", "\\+ [")):
+                # 导出端转义的清单样式备注行（见 _write_export_md）：
+                # 去掉转义符按普通备注还原，不升级为 checklist
+                note_line = note_line[1:]
+                if note_line:
+                    current_card.notes = (current_card.notes + "\n"
+                                          if current_card.notes else "") \
+                        + note_line
+                continue
             sub_done = _RE_MD_TODO_DONE.match(note_line)
             sub_open = None if sub_done else _RE_MD_TODO_OPEN.match(note_line)
             if sub_done or sub_open:
@@ -224,6 +238,6 @@ def _last(lists: list[BoardList]) -> BoardList | None:
 def _append_card(lists: list[BoardList], current: BoardList | None,
                  card: Card) -> None:
     if current is None:
-        current = BoardList(title="待办")
+        current = BoardList(title=tr("待办"))
         lists.append(current)
     current.cards.append(card)
