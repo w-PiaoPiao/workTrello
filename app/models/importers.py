@@ -17,6 +17,7 @@ import re
 from datetime import datetime
 
 from app.i18n import tr
+from app.config import AppConfig
 from app.models.board import Board, BoardList, Card, normalize_checklist
 
 # Trello 标签色 → 本应用色板 key（超集颜色就近归并）
@@ -33,7 +34,9 @@ _RE_MD_HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
 _RE_MD_TODO_DONE = re.compile(r"^[-*+]\s+\[[xX✓]\]\s+(.*)$")
 _RE_MD_TODO_OPEN = re.compile(r"^[-*+]\s+\[\s?\]\s+(.*)$")
 _RE_MD_BULLET = re.compile(r"^[-*+]\s+(.*)$")
-_RE_MD_INDENT = re.compile(r"^(?:\s{4,}|\t)(.+)$")
+# CommonMark 嵌套缩进是 2 空格（第三方清单最常见写法）；本应用导出的
+# 清单项是 6 空格，同样被覆盖
+_RE_MD_INDENT = re.compile(r"^(?:\s{2,}|\t)(.+)$")
 
 
 def _parse_trello_due(raw) -> str | None:
@@ -82,6 +85,9 @@ def board_from_trello(doc: dict) -> tuple[Board, str]:
             if not isinstance(lst, dict) or lst.get("closed"):
                 continue
             lid = str(lst.get("id", "") or "")
+            if lid in lists_by_id:
+                continue   # 病态导出（重复/空 list id）：同一列只登记一次，
+                           # 否则 order 里的重复 id 会让同一列在结果中出现两次
             title = str(lst.get("name", "") or "").strip() or tr("未命名列表")
             bl = BoardList(title=title, id=lid)
             lists_by_id[lid] = bl
@@ -157,7 +163,7 @@ def board_from_markdown(text: str, fallback_title: str = "") -> tuple[Board, str
     - `#` 一级标题 → 看板名（不建列表；本应用导出格式的文档标题）
     - `##` 及以下标题行 → 新列表
     - `- [x]` → 已完成卡片；`- [ ]` / 普通 `- 文本` → 未完成卡片
-    - 缩进 ≥4 空格（或 Tab）且非列表行 → 追加到上一张卡的备注
+    - 缩进 ≥2 空格（或 Tab）且非列表行 → 追加到上一张卡的备注
     """
     lists: list[BoardList] = []
     board_title = fallback_title
@@ -180,13 +186,15 @@ def board_from_markdown(text: str, fallback_title: str = "") -> tuple[Board, str
             continue
         m = _RE_MD_TODO_DONE.match(raw)
         if m:
-            card = Card(title=m.group(1).strip(), done=True)
+            title, fields = _strip_export_marks(m.group(1).strip())
+            card = Card(title=title, done=True, **fields)
             _append_card(lists, current, card)
             current, current_card = _last(lists), card
             continue
         m = _RE_MD_TODO_OPEN.match(raw)
         if m:
-            card = Card(title=m.group(1).strip())
+            title, fields = _strip_export_marks(m.group(1).strip())
+            card = Card(title=title, **fields)
             _append_card(lists, current, card)
             current, current_card = _last(lists), card
             continue
@@ -219,7 +227,8 @@ def board_from_markdown(text: str, fallback_title: str = "") -> tuple[Board, str
             continue
         m = _RE_MD_BULLET.match(raw)
         if m:
-            card = Card(title=m.group(1).strip())
+            title, fields = _strip_export_marks(m.group(1).strip())
+            card = Card(title=title, **fields)
             _append_card(lists, current, card)
             current, current_card = _last(lists), card
             continue
@@ -233,6 +242,51 @@ def board_from_markdown(text: str, fallback_title: str = "") -> tuple[Board, str
 
 def _last(lists: list[BoardList]) -> BoardList | None:
     return lists[-1] if lists else None
+
+
+# ── 本应用导出格式的行内字段标记回读 ─────────────────────────
+# _write_export_md 在标题后追加 "!P1 / 📅 日期 / 🔁周期 / 🍅×N"，导入时
+# 从行尾逐个剥离还原为字段——否则导出→导入往返一次全部粘进标题
+
+_RE_MARK_PRIO = re.compile(r"\s+!P([123])$")
+_RE_MARK_DUE = re.compile(r"\s+📅\s*(\d{4}-\d{2}-\d{2})$")
+_RE_MARK_POMO = re.compile(r"\s+🍅×(\d+)$")
+_RE_MARK_REPEAT = re.compile(r"\s+🔁(\S+)$")
+
+# REPEAT_NAMES 的反查表（never 导出时为空串、不带标记，排除）
+_EXPORT_REPEAT_FROM_NAME = {
+    v: k for k, v in AppConfig.REPEAT_NAMES.items() if k != "never" and v}
+
+
+def _strip_export_marks(title: str) -> tuple[str, dict]:
+    """剥离标题行尾的导出标记，返回 (纯标题, 字段dict)"""
+    fields: dict = {}
+    out = title
+    while True:
+        m = _RE_MARK_PRIO.search(out)
+        if m:
+            fields["priority"] = int(m.group(1))
+            out = out[:m.start()]
+            continue
+        m = _RE_MARK_DUE.search(out)
+        if m:
+            fields["due_date"] = m.group(1)
+            out = out[:m.start()]
+            continue
+        m = _RE_MARK_POMO.search(out)
+        if m:
+            fields["pomodoros"] = int(m.group(1))
+            out = out[:m.start()]
+            continue
+        m = _RE_MARK_REPEAT.search(out)
+        if m:
+            key = _EXPORT_REPEAT_FROM_NAME.get(m.group(1))
+            if key is not None:
+                fields["repeat"] = key
+                out = out[:m.start()]
+                continue
+        break
+    return out.strip(), fields
 
 
 def _append_card(lists: list[BoardList], current: BoardList | None,

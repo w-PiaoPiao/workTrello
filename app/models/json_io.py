@@ -50,14 +50,29 @@ def load_json_doc(
 
     raw: str | None = None
     read_error: Exception | None = None
+    decode_error: UnicodeDecodeError | None = None
     for attempt in range(3):
         try:
             raw = path.read_text("utf-8")
+            break
+        except UnicodeDecodeError as e:
+            # 字节序列非合法 UTF-8：确定性失败，重试无意义。解码发生在
+            # read_text 内部（不在此处捕获会直接冒出，逃过下方的隔离
+            # 分支），按损坏处理走隔离留档
+            decode_error = e
             break
         except OSError as e:
             read_error = e
             # 短退避（总时长 0.15s）：这是启动路径，长 sleep 会拖住 GUI 线程
             time.sleep(0.05 * (attempt + 1))
+
+    if raw is None and decode_error is not None:
+        logger.warning("数据文件不是合法 UTF-8 (%s)，隔离备份文件: %s",
+                       decode_error, path)
+        backup_corrupted(path)
+        if on_problem:
+            on_problem("corrupted", path, str(decode_error))
+        return {}
 
     if raw is None:
         logger.error("数据文件读取失败，以空数据启动: %s (%s)", path, read_error)
@@ -67,7 +82,7 @@ def load_json_doc(
 
     try:
         data = json.loads(raw)
-    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+    except json.JSONDecodeError as e:   # 输入已是 str，不会抛 UnicodeDecodeError
         logger.warning("JSON 解析失败 (%s)，隔离备份文件: %s", e, path)
         backup_corrupted(path)
         if on_problem:
@@ -86,11 +101,14 @@ def load_json_doc(
 
 def atomic_write_json(path: Path, data, *, indent: int | None = 2,
                       ensure_ascii: bool = False,
-                      durable: bool = False) -> None:
+                      durable: bool = False,
+                      rotate_prev: bool = True) -> None:
     """原子写入 JSON 文件（写 .tmp → [fsync] → 单次 replace 覆盖）
 
     覆盖前先把当前主文件轮转为 <文件名>.prev（硬链接优先、复制兜底），
-    作为最近一份好副本，供数据文件损坏时恢复。
+    作为最近一份好副本，供数据文件损坏时恢复。rotate_prev=False 跳过
+    轮转——恢复流程（restore_from_backup）用：恢复源往往就是 .prev 或
+    快照，先把坏文件轮转进 .prev 会污染好副本槽位。
 
     轮转与覆盖的顺序保证任何时刻主文件都存在：即使进程在两步之间被杀/
     断电，主文件也还是旧内容（.prev 同步建立），不会出现"主文件缺失
@@ -123,7 +141,7 @@ def atomic_write_json(path: Path, data, *, indent: int | None = 2,
                 os.fsync(f.fileno())
         # 轮转 .prev：硬链接零拷贝，失败（平台差异/文件占用）降级复制；
         # 轮转失败只影响备份新鲜度，不阻断本次写入（主文件仍在）
-        if path.exists():
+        if rotate_prev and path.exists():
             try:
                 prev_path.unlink(missing_ok=True)
                 os.link(path, prev_path)
@@ -239,6 +257,9 @@ def restore_from_backup(store_path: Path, backup: Path) -> bool:
 
     仅在备份本身可解析时恢复；成功后备份文件继续保留，
     直到下一次正常 flush 由 .prev 轮转机制接管。
+
+    落盘跳过 .prev 轮转：恢复源往往就是 .prev（或其同族快照），
+    先把当前的坏/空主文件轮转进 .prev 会把好副本槽位污染掉。
     """
     try:
         with backup.open("r", encoding="utf-8") as f:
@@ -249,7 +270,7 @@ def restore_from_backup(store_path: Path, backup: Path) -> bool:
         logger.error("备份文件无法解析，恢复失败: %s (%s)", backup, e)
         return False
     try:
-        atomic_write_json(store_path, data)
+        atomic_write_json(store_path, data, rotate_prev=False)
     except StoreError as e:
         logger.error("恢复落盘失败: %s", e)
         return False

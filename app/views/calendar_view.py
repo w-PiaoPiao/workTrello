@@ -403,6 +403,11 @@ class CalendarDialog(QDialog):
             self._cells.append(cell)
         for c in range(7):
             self._grid.setColumnStretch(c, 1)
+        # rowStretch 只增不清：从 6 行月份切到 4 行月份时，旧行的残留
+        # stretch 会在底部拉出一条空白带（格子不再撑满）。月份最多 6 行，
+        # 固定清 0..5（rowCount 只反映当前行数，清不到残留行）
+        for r in range(6):
+            self._grid.setRowStretch(r, 0)
         for r in range(rows):
             self._grid.setRowStretch(r, 1)
 

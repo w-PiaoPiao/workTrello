@@ -352,12 +352,14 @@ _zh_en: dict[str, str] = {
     "待办": "To Do",
     "进行中": "In Progress",
     "未命名列表": "Untitled List",
+    "未命名卡片": "Untitled Card",
     "日历": "Calendar",
     "今日待办": "Today",
     "+ 批量": "+ Bulk",
     "批量添加卡片：每行一张，支持速记语法":
         "Bulk add: one card per line, quick syntax supported",
     "看板创建失败：{err}": "Failed to create board: {err}",
+    "看板保存失败，已取消切换：{err}": "Failed to save board — switch cancelled: {err}",
     "删除看板失败：{err}": "Failed to delete board: {err}",
     "看板还是空的\n点击右上角「»」→「+ 添加列表」创建第一列":
         'Board is empty\nClick "»" → "+ Add List" to create the first list',

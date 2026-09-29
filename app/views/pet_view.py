@@ -761,8 +761,8 @@ class PetView(QWidget):
         """全部完成庆祝：连跳两次后恢复待机"""
         if not self.isVisible():
             return    # 桌宠被禁用或窗口隐藏：跳了也没人看，别让动画空转
-        if not self._animations_enabled:
-            return
+        if not self._animations_enabled or self._focus_mode:
+            return    # 专注中桌宠闭眼睡觉：庆祝会把睡着的桌宠跳醒
         self.stop_idle()
         group = QSequentialAnimationGroup(self)
         group.addAnimation(self._make_jump_action())

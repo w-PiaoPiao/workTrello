@@ -52,9 +52,11 @@ class CardTest(unittest.TestCase):
         self.assertTrue(card2.done)
         self.assertEqual(card2.id, card.id)
 
-    def test_empty_title_rejected(self):
-        with self.assertRaises(ValueError):
-            Card.from_dict({"title": "  "})
+    def test_empty_title_falls_back_to_placeholder(self):
+        # 空白标题回退默认名而非抛错：加载端丢弃会让整张卡静默消失
+        from app.i18n import tr
+        card = Card.from_dict({"title": "  "})
+        self.assertEqual(card.title, tr("未命名卡片"))
 
     def test_missing_fields_defaults(self):
         card = Card.from_dict({"title": "仅标题"})
@@ -430,11 +432,15 @@ class BoardListTest(unittest.TestCase):
         self.assertEqual([c.title for c in lst2.cards], ["卡片一", "卡片二"])
 
     def test_invalid_cards_skipped(self):
+        # 空白标题的卡回退默认名保留（不再静默丢弃）；
+        # 非 dict 垃圾项仍然跳过
+        from app.i18n import tr
         lst = BoardList.from_dict({
             "title": "T",
             "cards": [{"title": "有效"}, {"title": ""}, "垃圾", 123],
         })
-        self.assertEqual(len(lst.cards), 1)
+        self.assertEqual(len(lst.cards), 2)
+        self.assertEqual(lst.cards[1].title, tr("未命名卡片"))
 
     def test_fund_watch_roundtrip(self):
         lst = BoardList(title="资金分配", fund_watch=True)
@@ -799,6 +805,33 @@ class PrevBackupRecoveryTest(unittest.TestCase):
         self.path.write_text("{坏", encoding="utf-8")
         self.assertFalse(doc_has_cards(self.path))
         self.assertFalse(doc_has_cards(self.path.with_name("不存在.json")))
+
+
+class AttachmentPendingTest(unittest.TestCase):
+    """回归：附件复制失败的 pending 标记必须活过 apply / 落盘往返"""
+
+    def test_apply_keeps_pending_flag(self):
+        card = Card(title="卡")
+        card.apply({"attachments": [{
+            "id": "a1", "name": "图.png", "path": "/tmp/x.png",
+            "is_image": True, "pending": True}]})
+        self.assertTrue(card.attachments[0].get("pending"))
+
+    def test_roundtrip_keeps_pending_flag(self):
+        card = Card(title="卡")
+        card.apply({"attachments": [{
+            "id": "a1", "name": "图.png", "path": "/tmp/x.png",
+            "is_image": True, "pending": True}]})
+        # 落盘 → 读回（normalize 不得剥掉重试标记，否则附件永指临时文件）
+        again = Card.from_dict(card.to_dict())
+        self.assertTrue(again.attachments[0].get("pending"))
+
+    def test_normal_attachment_has_no_pending_key(self):
+        card = Card(title="卡")
+        card.apply({"attachments": [{
+            "id": "a2", "name": "文档.pdf", "path": "/data/d.pdf",
+            "is_image": False}]})
+        self.assertNotIn("pending", card.attachments[0])
 
 
 if __name__ == "__main__":

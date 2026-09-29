@@ -1637,5 +1637,89 @@ class DragHierarchyTest(unittest.TestCase):
         self.assertEqual(drags, 0, "空白处不该启动任何 QDrag")
 
 
+class HoverTrackingDisposeTest(unittest.TestCase):
+    """回归：被悬停跟踪的卡动画退场销毁后，看板不得留死引用
+
+    残留的死 wrapper 会让下一次悬停的 prev._clear_hover() 抛
+    RuntimeError（悬停自愈机制从此每次报错刷屏）。
+    """
+
+    def setUp(self):
+        self.view = BoardView()
+        self.lists = make_lists([("待办", ["A", "B"])])
+        self.view.refresh(self.lists)
+        self.view.show()
+        _qapp.processEvents()
+
+    def tearDown(self):
+        self.view.hide()
+        self.view.deleteLater()
+
+    def test_disposed_hovered_card_clears_tracking(self):
+        col = self.view._columns[0]
+        first = col._card_widgets[0]
+        self.view._on_card_hover(first)
+        self.assertIs(self.view._hovered_card, first)
+
+        col._dispose_card_widgets([first])          # 模拟删除/归档退场
+        self.assertIsNone(self.view._hovered_card)  # 跟踪已解除
+
+        # 之后新的悬停不触碰死引用（此前在这里抛 RuntimeError）
+        second = col._card_widgets[1]
+        self.view._on_card_hover(second)
+        self.assertIs(self.view._hovered_card, second)
+
+
+class TodayBadgeTest(unittest.TestCase):
+    """回归：无过滤态下角标恒 0（visible 全 None 求和得 0）"""
+
+    def setUp(self):
+        self.view = BoardView()
+        self.lists = make_lists([("待办", ["A", "B"])])
+
+    def tearDown(self):
+        self.view.deleteLater()
+
+    def test_badge_counts_today_focus_without_filter(self):
+        self.lists[0].cards[0].due_date = date.today().isoformat()
+        self.view.refresh(self.lists)
+        self.assertEqual(self.view._today_count, 1)
+
+    def test_badge_zero_without_focus_cards(self):
+        self.lists[0].cards[0].due_date = (
+            date.today() + timedelta(days=3)).isoformat()
+        self.view.refresh(self.lists)
+        self.assertEqual(self.view._today_count, 0)
+
+
+class RawDropIndexTest(unittest.TestCase):
+    """回归：拖放可见序 → raw 序换算（插入点前有归档卡时落点错位）"""
+
+    def setUp(self):
+        self.view = BoardView()
+
+    def tearDown(self):
+        self.view.deleteLater()
+
+    def test_raw_index_skips_archived_cards(self):
+        lst = BoardList(title="列")
+        a, b, c = Card(title="A"), Card(title="B"), Card(title="C")
+        a.archived = True
+        lst.cards = [a, b, c]
+        self.view.refresh([lst])
+        col = self.view._columns[0]
+        col.set_visible_cards([b, c])
+        self.assertEqual(col._raw_index_from_visible(0), 1)   # B 前（跳过归档 A）
+        self.assertEqual(col._raw_index_from_visible(1), 2)   # C 前
+        self.assertEqual(col._raw_index_from_visible(2), 3)   # 末尾
+
+    def test_raw_index_without_filter_is_identity(self):
+        lst = BoardList(title="列")
+        lst.cards = [Card(title="A"), Card(title="B")]
+        self.view.refresh([lst])
+        col = self.view._columns[0]
+        self.assertEqual(col._raw_index_from_visible(1), 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

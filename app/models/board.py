@@ -68,6 +68,9 @@ def normalize_attachments(raw) -> list[dict]:
             "name": name,
             "path": path,
             "is_image": bool(entry.get("is_image", False)),
+            # pending（复制失败待重试）是运行时态：必须保留，否则
+            # apply/落盘一次后重试机制失效，附件永久指向临时文件
+            **({"pending": True} if entry.get("pending") else {}),
         })
     return out
 
@@ -237,9 +240,9 @@ class Card:
 
     @classmethod
     def from_dict(cls, data: dict) -> "Card":
-        title = str(data.get("title", "")).strip()
-        if not title:
-            raise ValueError("卡片标题为空")
+        # 空白标题回退默认名而非抛错：手工编辑的 JSON / 旧版本数据一旦
+        # 带入，抛错会让加载端把整张卡静默丢弃（并随下次保存永久落定）
+        title = str(data.get("title", "")).strip() or tr("未命名卡片")
         labels_raw = data.get("labels", [])
         labels = ([str(x) for x in labels_raw if isinstance(x, str)]
                   if isinstance(labels_raw, list) else [])

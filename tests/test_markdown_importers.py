@@ -183,5 +183,35 @@ class TrelloDueTimezoneTest(unittest.TestCase):
             time.tzset()
 
 
+class ExportMarksRoundTripTest(unittest.TestCase):
+    """回归：导出端追加的行内标记（!P1/📅/🔁/🍅）导入时还原为字段"""
+
+    def test_marks_restored_as_fields(self):
+        md = "## 列表\n- [ ] 交周报 !P1 📅 2026-09-30 🔁每周 🍅×3\n"
+        board, _ = board_from_markdown(md)
+        c = board.lists[0].cards[0]
+        self.assertEqual(c.title, "交周报")
+        self.assertEqual(c.priority, 1)
+        self.assertEqual(c.due_date, "2026-09-30")
+        self.assertEqual(c.repeat, "weekly")
+        self.assertEqual(c.pomodoros, 3)
+
+    def test_plain_title_with_mark_like_text_kept(self):
+        # 未构成"行尾标记序列"的文本不剥离（标题里真有 "!P1" 字样）
+        md = "## 列表\n- [ ] 讲 !P1 的含义\n"
+        board, _ = board_from_markdown(md)
+        c = board.lists[0].cards[0]
+        self.assertEqual(c.title, "讲 !P1 的含义")
+        self.assertEqual(c.priority, 0)   # 中段 !P1 不是导出标记，不解析
+
+    def test_checklist_indent_two_spaces_roundtrip(self):
+        """CommonMark 标准 2 空格嵌套也还原为清单项（曾静默丢失）"""
+        md = "## 列表\n- [ ] 父任务\n  - [ ] 子任务\n"
+        board, _ = board_from_markdown(md)
+        parent = board.lists[0].cards[0]
+        self.assertEqual(parent.checklist,
+                         [{"text": "子任务", "done": False}])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

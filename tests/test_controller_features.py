@@ -347,7 +347,7 @@ class ControllerFeatureTest(unittest.TestCase):
         with patch("app.views.quick_add_dialog.BulkAddDialog") as dlg_cls:
             dlg = dlg_cls.return_value
             dlg.exec.return_value = BulkAddDialog.Accepted
-            dlg.text.return_value = "第三张\n改bug !P1 #红\n9月20日交房租\n"
+            dlg.text.return_value = "第三张\n改bug !P1 #红\n12月31日交房租\n"
             dlg.list_index.return_value = 0   # 第一个列表
             self.c._on_bulk_add()
         cards = self._list().cards
@@ -355,8 +355,9 @@ class ControllerFeatureTest(unittest.TestCase):
                          ["第三张", "改bug", "交房租"])
         self.assertEqual(cards[1].priority, 1)
         self.assertEqual(cards[1].labels, ["red"])
+        # 12/31 恒为未来或当天，不受运行日期影响（往年写法恰在年底会滚年）
         self.assertEqual(cards[2].due_date,
-                         date(date.today().year, 9, 20).isoformat())
+                         date(date.today().year, 12, 31).isoformat())
         # 撤销一次回滚整批（单个撤销快照）
         self.c._on_undo_requested(False)
         self.assertEqual([c.title for c in self._list().cards][:2], [])
@@ -1723,6 +1724,41 @@ class DataIntegrityRegressionTest(unittest.TestCase):
         card2 = board2.lists[0].cards[0]
         self.assertEqual(card2.checklist, [])
         self.assertIn("- [ ] 待办式笔记", card2.notes)
+
+    def test_export_default_path_builds_without_type_error(self):
+        """回归：默认文件名拼接的运算符优先级错误让导出在弹框前崩
+
+        Path / tr(...).format(...) + f".{fmt}"："/" 先算，Path + str 抛
+        TypeError。任何导出入口点下都静默失败（槽异常不冒泡）。
+        """
+        captured = []
+
+        def _fake(parent, caption, default, filt):
+            captured.append((caption, default, filt))
+            return "", ""
+
+        with patch("app.controllers.app_controller.QFileDialog."
+                   "getSaveFileName", side_effect=_fake):
+            self.c._on_export("md")
+            self.c._on_export("csv")
+        self.assertEqual(len(captured), 2)
+        self.assertTrue(captured[0][1].endswith(".md"))
+        self.assertTrue(captured[1][1].endswith(".csv"))
+
+    def test_pomodoro_uses_absolute_deadline(self):
+        """回归：按"每秒减一"计时会被系统休眠拉长（QTimer 不补发 tick）
+
+        绝对截止时刻语义：休眠后首个 tick 应按真实剩余时间立即结算。
+        """
+        self._reset()
+        self.c._on_card_add(self._list().id, "专注卡")
+        card = self._list().cards[0]
+        self.c._pomo_start(card)
+        # 模拟"休眠跳过一段"：deadline 已过去
+        self.c._pomo_deadline -= (self.c._pomo_left + 5)
+        self.c._pomo_tick()
+        self.assertIsNone(self.c._pomo_card_id)          # 立即结算
+        self.assertEqual(self._list().cards[0].pomodoros, 1)
 
 
 if __name__ == "__main__":

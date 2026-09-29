@@ -217,6 +217,20 @@ class CalendarDialogTest(unittest.TestCase):
         AppTheme.set_mode("light")
         self.dlg.reapply_theme()
 
+    def test_row_stretch_reset_on_month_switch(self):
+        """回归：6 行月份切少行月份后旧行 stretch 残留（底部空白带）"""
+        self.dlg.set_month(2026, 8, {})        # 8/1 周六 + 31 天 → 6 行
+        big_rows = len(self.dlg._cells) // 7
+        self.assertEqual(big_rows, 6)
+        self.assertEqual(self.dlg._grid.rowStretch(5), 1)
+
+        self.dlg.set_month(2026, 2, {})        # 行数更少的月份
+        small_rows = len(self.dlg._cells) // 7
+        self.assertLess(small_rows, big_rows)
+        # 旧行（新行数之外）的 stretch 已清零，新行仍撑满
+        self.assertEqual(self.dlg._grid.rowStretch(5), 0)
+        self.assertEqual(self.dlg._grid.rowStretch(small_rows - 1), 1)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

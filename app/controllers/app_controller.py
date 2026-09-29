@@ -306,7 +306,7 @@ class AppController(QObject):
             self._window,
             tr("看板数据异常"),
             tr("看板数据文件{detail}，{note}检测到最近一次成功保存的副本"
-               "（{name}），是否用它恢复数据？\n选择「否」则以默认看板启动。").format(
+               "（{name}），是否用它恢复数据？\n选择「否」则以空看板继续。").format(
                 detail=detail, note=origin_note, name=bak.name),
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.Yes,
@@ -362,9 +362,9 @@ class AppController(QObject):
             self._board_view.refresh(board.lists, stats=stats)
             return
         self._board_view.refresh(board.lists[:1], stats=stats)
-        self._build_columns_over_frames(board, stats, built=1)
+        self._build_columns_over_frames(board, built=1)
 
-    def _build_columns_over_frames(self, board: Board, stats: dict,
+    def _build_columns_over_frames(self, board: Board,
                                    built: int) -> None:
         """展开首帧后的逐列补齐（每帧 1 列 ≈40ms@50 卡，与动画 tick
         16ms 交替执行，掉帧可控；动画结束后很快全部建完）
@@ -372,20 +372,23 @@ class AppController(QObject):
         每帧传全量 lists + build_limit：refresh 只保证前 built 列存在、
         不做列回收——期间的数据变更走全量 refresh 一次建齐后，后续帧
         经幂等 diff 收敛；最终以一帧全量 refresh 收口（纠正顺序/清理）。
+        每帧现算 stats：分帧秒级窗口内数据可能已变，用展开时的旧快照
+        会把统计行覆盖回旧值。
         """
         if self._store.load() is not board:
             return   # 看板已切换/撤销替换：全量刷新路径已接管
         total = len(board.lists)
         if built >= total:
-            self._board_view.refresh(board.lists, stats=stats)   # 收口
-            return
+            self._board_view.refresh(board.lists,
+                                     stats=board.today_stats(date.today()))
+            return   # 收口
         built = min(built + 1, total)
-        self._board_view.refresh(board.lists, stats=stats,
+        self._board_view.refresh(board.lists,
+                                 stats=board.today_stats(date.today()),
                                  build_limit=built)
         if built < total:
             QTimer.singleShot(
-                0, lambda: self._build_columns_over_frames(board, stats,
-                                                           built))
+                0, lambda: self._build_columns_over_frames(board, built))
 
     def _schedule_save(self) -> None:
         self._save_timer.start()
@@ -447,7 +450,16 @@ class AppController(QObject):
             self._save_timer.stop()
             if self._pomo_card_id is not None:
                 self._pomo_stop()          # 专注中的卡属于旧看板
-            self._flush_store()            # 旧看板先落盘再切走
+            # 旧看板先完整落盘再切走：等在途写收口 + 剩余脏数据同步写。
+            # 不能走异步提交——写失败的退避重试路径用的是"当前 store"，
+            # 换板后重试会写错板，旧板尾部编辑就此悬空。写失败则取消切换
+            self._save_pool.waitForDone(3000)
+            try:
+                self._store.flush()
+            except json_io.StoreError as e:
+                self._show_error(
+                    tr("看板保存失败，已取消切换：{err}").format(err=e))
+                return
             if not self._workspace.set_current(board_id):
                 return
             self._store = BoardStore(self._workspace.board_path(board_id))
@@ -457,11 +469,20 @@ class AppController(QObject):
             self._board_view.clear_selection()
             self._board_view.clear_view_filters()
         board = self._store.load()
+        if self._store.problems:
+            # 切到的板文件损坏（已隔离）：与启动路径同一套恢复询问，
+            # 否则用户对着空板录入，原数据被下一次保存覆盖
+            kinds = [k for k, _ in self._store.problems]
+            self._store.problems.clear()
+            self._offer_restore(kinds)
+            board = self._store.load()
         # 每次激活为上一份数据留档（与启动时同一保护）
         json_io.snapshot_board(
             self._store.path,
             has_cards=any(lst.cards for lst in board.lists))
         self._apply_board_to_ui(board)
+        self._refresh_archive()   # 非模态归档/日历开着时残留旧板内容
+        self._refresh_calendar()
         if notify:
             self._notify(notify)
 
@@ -501,6 +522,13 @@ class AppController(QObject):
         name = dlg.text().strip()
         if name == meta.name:
             return
+        # 在途异步写先收口再同步落盘：rename 随后直写板文件，若排在保存池
+        # 已提交任务之前，worker 会用旧 name 快照把它覆盖回去（双写者）
+        self._save_pool.waitForDone(3000)
+        try:
+            self._store.flush()
+        except json_io.StoreError:
+            pass   # 落盘失败不阻断改名（索引已改，下次保存自然补上）
         self._workspace.rename_board(meta.id, name)
         board = self._store.load()
         board.name = name
@@ -536,8 +564,24 @@ class AppController(QObject):
         if not self._workspace.delete_board(board_id):
             self._show_error(tr("删除看板失败：{err}").format(
                 err=tr("文件可能被其他程序占用，请稍后重试")))
+            if was_current:
+                # discard_pending 已把旧 store 永久作废，而删除失败意味着
+                # 文件还在：重建存储（重新读盘），否则后续编辑全部静默丢写
+                self._store = BoardStore(self._workspace.board_path(board_id))
+                self._store_board_id = board_id
+                self._undo_stack.clear()
+                self._redo_stack.clear()
+                self._board_view.clear_selection()
             return
         if was_current:
+            # 在途写若在 discard 置位前已越过检查点，replace 会把已删文件
+            # 写回"复活"。等保存池收口后补删一次（正常路径毫秒级）
+            self._save_pool.waitForDone(3000)
+            try:
+                self._workspace.board_path(board_id).unlink(missing_ok=True)
+            except OSError as e:
+                logger.warning("删除看板在途写回文件失败: %s (%s)",
+                               board_id, e)
             self._store = BoardStore(
                 self._workspace.board_path(self._workspace.current_id))
             self._store_board_id = self._workspace.current_id
@@ -546,6 +590,8 @@ class AppController(QObject):
             self._board_view.clear_selection()
             self._board_view.clear_view_filters()
         self._apply_board_to_ui()
+        self._refresh_archive()
+        self._refresh_calendar()
         self._notify(tr("已删除看板"))
 
     def _on_import_trello(self) -> None:
@@ -1282,6 +1328,7 @@ class AppController(QObject):
         # 空列表无卡片可丢，直接删除（撤销栈可恢复）
         self._push_undo()
         board.remove_list(list_id)
+        self._stop_pomo_if_card_gone()   # 专注卡可能正在被删的列里
         self._after_data_change(
             tr("已删除列表 · {hint}").format(hint=self._undo_hint()))
 
@@ -1799,6 +1846,17 @@ class AppController(QObject):
         del self._undo_stack[:-self._undo_limit_for(doc)]
         self._redo_stack.clear()
 
+    def _stop_pomo_if_card_gone(self) -> None:
+        """整板替换（撤销/重做）或整列删除后专注卡可能已不存在
+
+        悬空的专注目标让每秒 tick 空转 find_card（tooltip 标题变空），
+        25 分钟完成后番茄数无处落；主动收口。
+        """
+        if self._pomo_card_id is None:
+            return
+        if self._store.load().find_card(self._pomo_card_id)[1] is None:
+            self._pomo_stop()
+
     def _on_undo_requested(self, notify_empty: bool = False) -> None:
         if not self._undo_stack:
             if notify_empty:
@@ -1809,6 +1867,7 @@ class AppController(QObject):
         del self._redo_stack[:-self._undo_limit_for(doc)]
         doc = self._undo_stack.pop()
         self._store.replace_board(Board.from_dict(doc))
+        self._stop_pomo_if_card_gone()
         self._after_data_change(None)
         self._notify(tr("已撤销上一步"))
 
@@ -1823,6 +1882,7 @@ class AppController(QObject):
         del self._undo_stack[:-self._undo_limit_for(doc)]
         doc = self._redo_stack.pop()
         self._store.replace_board(Board.from_dict(doc))
+        self._stop_pomo_if_card_gone()
         self._after_data_change(None)
         self._notify(tr("已重做"))
 
@@ -1968,6 +2028,9 @@ class AppController(QObject):
         self._pomo_card_id = card.id
         self._pomo_shown_minute = None   # 强制首个 tick 刷新托盘 tooltip
         self._pomo_left = AppConfig.POMODORO_MINUTES * 60
+        # 绝对截止时刻：QTimer 休眠/节流后不补发 tick，按"每秒减一"计
+        # 剩余会让合盖 N 分钟就把专注顺延 N 分钟（桌宠常驻，合盖高频）
+        self._pomo_deadline = time.monotonic() + self._pomo_left
         self._pomo_timer.start()
         self._board_view.set_focusing_card(card.id)
         self._pet_view.set_focus_mode(True)
@@ -2004,7 +2067,8 @@ class AppController(QObject):
     def _pomo_tick(self) -> None:
         if self._pomo_card_id is None:
             return
-        self._pomo_left -= 1
+        self._pomo_left = max(
+            0, round(self._pomo_deadline - time.monotonic()))
         if self._pomo_left <= 0:
             self._pomo_stop(finished=True)
             return
@@ -2123,9 +2187,12 @@ class AppController(QObject):
 
     def _on_export(self, fmt: str) -> None:
         board = self._store.load()
+        # 括号必须包住字符串拼接："/" 优先级高于 "+"，先得出 Path 再
+        # "+ f'.{fmt}'" 会抛 TypeError（Path 不支持与 str 相加），
+        # 任何导出在弹文件框前就崩
         default = Path(str(AppConfig.DATA_DIR)) / \
-            tr("桌宠看板导出_{date}").format(date=f"{date.today():%Y%m%d}") \
-            + f".{fmt}"
+            (tr("桌宠看板导出_{date}").format(date=f"{date.today():%Y%m%d}")
+             + f".{fmt}")
         path, _ = QFileDialog.getSaveFileName(
             self._window, tr("导出看板"), str(default),
             "Markdown (*.md)" if fmt == "md" else "CSV (*.csv)")
@@ -2270,6 +2337,10 @@ class AppController(QObject):
         常驻托盘时窗口整个隐藏，再次双击若只得到"已在运行"的提示，观感
         与闪退无异。这里按默认形态亮出窗口并拉到前台；已展开时仅激活。
         """
+        # 先保证窗口可见：偏桌宠形态的 start_collapsed_idle 只起待机动画
+        # 不 show()，对隐藏窗口的 raise_/activateWindow 是空操作——
+        # 恰好漏掉本功能要解决的"从托盘召回"场景
+        self._window.show_and_activate()
         self._open_in_default_view()
         self._window.raise_()
         self._window.activateWindow()
@@ -2304,9 +2375,13 @@ class AppController(QObject):
 
         托盘不可用时（极少数环境没有系统托盘）退化为"折叠回桌宠"而非退出：
         桌宠就在屏幕上，应用仍然找得到；退出这条路由菜单承担，不由 ✕ 承担。
+        桌宠也被禁用时折叠等于整个隐藏且无路召回——退化为最小化到任务栏。
         """
         if not self._tray.is_available():
-            self._window.collapse()
+            if self._window.is_pet_enabled():
+                self._window.collapse()
+            else:
+                self._window.showMinimized()
             return
         self._window.hide_to_tray()
         if not self._tray_hint_shown:

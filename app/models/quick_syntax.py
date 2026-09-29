@@ -6,7 +6,8 @@
 
 语法（解析出的片段从标题剔除；中英两种语法恒可用，与界面语言无关）：
 - 截止日（中）：今天 明天 后天 | N天后 | 周X/星期X/礼拜X（未来最近一天，
-  含今天）| 下周X（下周对应日）| M月D日 / M/D（今年）| YYYY-MM-DD
+  含今天；"上周X/每周X"等前缀词不解析，保留原文）| 下周X（下周对应日）|
+  M月D日 / M/D（今年已过则明年）| YYYY-MM-DD
 - 截止日（英）：today / tomorrow / day after tomorrow | in N days |
   next mon…（缩写或全名）| mon/tue/…/fri…（未来最近一天）| M/D | YYYY-MM-DD
 - 优先级：!P1 !P2 !P3（大小写均可，1=高 3=低）
@@ -40,11 +41,20 @@ _RE_FULL_DATE = re.compile(r"(?<![0-9])(\d{4})-(\d{1,2})-(\d{1,2})(?![0-9])")
 # 斜杠形式与分数/比例同形（"进度1/2的人"），要求前面是行首或空白，
 # 且斜杠两侧不写空格——避免把正文里的分数静默吞成截止日
 _RE_MD = re.compile(r"(?<![0-9])(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?(?![0-9])")
+# 斜杠形式还要求位于行首或行尾（"日期习惯位置"）：句中斜杠一律当
+# 正文——"完成 3/4 后交付"的分数宁可漏识别（原文可见），也不能被
+# 静默吞掉（卡片凭空多出逾期截止日）
 _RE_MD_SLASH = re.compile(r"(?<!\S)(\d{1,2})/(\d{1,2})(?![0-9])")
 _RE_PRIORITY = re.compile(r"(?<![A-Za-z])![pP]([123])\b")
 _RE_TAG = re.compile(r"#([\u4e00-\u9fa5A-Za-z]+)")
 _RE_NEXT_WEEKDAY = re.compile(r"下(?:周|星期|礼拜)([一二三四五六日天])")
-_RE_WEEKDAY = re.compile(r"(?:周|星期|礼拜)([一二三四五六日天])")
+# "上周三/每周三/本周三"等前缀词不是"未来最近一天"语义（前者指过去，
+# 后者是周期性）：负向后视排除，保留原文不解析
+_RE_WEEKDAY = re.compile(
+    r"(?<![上每单双本这])(?:周|星期|礼拜)([一二三四五六日天])")
+# 英文相对词带词边界："Todays standup" 不能被 today 切掉词尾
+_RE_RELATIVE_EN = re.compile(
+    r"\b(day after tomorrow|tomorrow|today)\b", re.IGNORECASE)
 # 英文周几：三字母缩写或全名（monday/tuesday/…/sunday），尾 \b 防
 # "saturate" 之类普通单词误命中
 _RE_NEXT_WEEKDAY_EN = re.compile(
@@ -68,6 +78,21 @@ def _safe_date(year: int, month: int, day: int) -> date | None:
         return date(year, month, day)
     except ValueError:
         return None
+
+
+def _future_year_date(month: int, day: int, today: date) -> date | None:
+    """M月D日 / M/D：今年该日已过则滚到明年
+
+    用户写"1月5日交材料"指的是即将到来的 1 月 5 日，不是八个多月前
+    的过去日期（按今年解析会让卡片创建即"已逾期"并进今日聚焦）。
+    2/29 滚到平年不存在时退回今年的解析结果。
+    """
+    d = _safe_date(today.year, month, day)
+    if d is None:
+        return None
+    if d < today:
+        return _safe_date(today.year + 1, month, day) or d
+    return d
 
 
 def _parse_due(text: str, today: date) -> tuple[str, str | None]:
@@ -94,12 +119,15 @@ def _parse_due(text: str, today: date) -> tuple[str, str | None]:
             monday + timedelta(days=7 + _WEEKDAY_CH[m.group(1)]))
     m = _RE_MD.search(text)
     if m:
-        d = _safe_date(today.year, int(m.group(1)), int(m.group(2)))
+        d = _future_year_date(int(m.group(1)), int(m.group(2)), today)
         return (_cut(text, m), _iso(d)) if d else (text, None)
     m = _RE_MD_SLASH.search(text)
     if m:
-        d = _safe_date(today.year, int(m.group(1)), int(m.group(2)))
-        return (_cut(text, m), _iso(d)) if d else (text, None)
+        at_head = not text[:m.start()].strip()
+        at_tail = not text[m.end():].strip()
+        if at_head or at_tail:   # 句中斜杠是分数（"完成 3/4 后交付"）
+            d = _future_year_date(int(m.group(1)), int(m.group(2)), today)
+            return (_cut(text, m), _iso(d)) if d else (text, None)
     m = _RE_WEEKDAY.search(text)
     if m:
         ahead = (_WEEKDAY_CH[m.group(1)] - today.weekday()) % 7
@@ -107,11 +135,11 @@ def _parse_due(text: str, today: date) -> tuple[str, str | None]:
     # ── 英文速记兜底（与界面语言无关：中英两种语法恒可用）──
     # lower 副本只做定位/匹配，长度与原文一致，_cut 用原文安全
     low = text.lower()
-    hits = [(low.find(w), w, off)
-            for w, off in _RELATIVE_DAYS_EN.items() if w in low]
-    if hits:
-        _, word, offset = min(hits, key=lambda x: x[0])
-        i = low.find(word)
+    m = _RE_RELATIVE_EN.search(low)
+    if m:
+        word = m.group(1).lower()
+        offset = _RELATIVE_DAYS_EN[word]
+        i = m.start()
         return text[:i] + " " + text[i + len(word):], _iso(
             today + timedelta(days=offset))
     m = _RE_IN_N_DAYS.search(low)

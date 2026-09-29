@@ -591,6 +591,17 @@ class CardDialog(QDialog):
         self._rebuild_attach_rows()
         self._apply_workdir_state()
         self._apply_due_state()
+        # 清单行删除钮是构建期快照：不重下则同一个窗口半新半旧
+        remove_style = _remove_button_style(c)
+        for check, _edit in self._check_rows:
+            parent = check.parentWidget()
+            if parent is None:
+                continue
+            for btn in parent.findChildren(QPushButton):
+                btn.setStyleSheet(remove_style)
+        # 预览开着时按新配色重渲染（HTML 内嵌了旧主题的文字色）
+        if self._preview_btn.isChecked():
+            self._on_toggle_preview(True)
 
     def showEvent(self, event) -> None:
         """打开即聚焦标题框并全选（直接输入即可覆盖标题）"""
@@ -630,6 +641,11 @@ class CardDialog(QDialog):
     def done(self, result: int) -> None:
         """关闭/确定/取消统一出口：记住当前尺寸（X 关闭走 closeEvent → reject）"""
         AppConfig.save_card_dialog_size(self.size())
+        if result != QDialog.Accepted:
+            # 取消/关闭：本轮粘贴的临时 PNG 无人认领（保存路径由控制器
+            # 复制入库并删源），留在临时目录会随"粘贴+取消"反复累积
+            for att in self._attachments:
+                self._discard_paste_tmp(att)
         super().done(result)
 
     def _on_repeat_changed(self, index: int) -> None:
@@ -747,8 +763,29 @@ class CardDialog(QDialog):
     def _remove_attachment(self, index: int) -> None:
         if not (0 <= index < len(self._attachments)):
             return
-        self._attachments.pop(index)
+        att = self._attachments.pop(index)
+        self._discard_paste_tmp(att)   # 移出表单即无入库路径，随手清源
         self._rebuild_attach_rows()
+
+    @staticmethod
+    def _discard_paste_tmp(att: dict) -> None:
+        """清掉粘贴产生、尚未入库的临时 PNG（用户原文件绝不触碰）
+
+        判定与控制器 _materialize_attachments 一致：pending 标记 +
+        系统临时目录 + petboard_paste_ 前缀三重限定。
+        """
+        if not att.get("pending"):
+            return
+        path = str(att.get("path", ""))
+        if not path:
+            return
+        p = Path(path)
+        if (p.parent == Path(tempfile.gettempdir())
+                and p.name.startswith("petboard_paste_")):
+            try:
+                p.unlink()
+            except OSError:
+                pass
 
     def _on_add_attachment(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -1100,6 +1137,10 @@ class CardDialog(QDialog):
 
     def _on_insert_time(self) -> None:
         """在备注光标处插入紧凑时间戳 MM-DD HH:MM（不占位置）"""
+        if self._preview_btn.isChecked():
+            # 预览态下编辑框是隐藏的：直接插入会写进看不见的控件、
+            # 预览也不刷新（表现为"点了没反应"）。先切回编辑态
+            self._preview_btn.setChecked(False)
         stamp = datetime.now().strftime("%m-%d %H:%M")
         cursor = self._notes_edit.textCursor()
         cursor.insertText(stamp)

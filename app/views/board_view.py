@@ -1950,6 +1950,8 @@ class ListColumn(QFrame):
         self._geom_key: tuple | None = None
         # 拖拽落点快照（host 内 y 中点，升序）：dragEnter 时重建
         self._drop_mids: list[int] | None = None
+        # 落点指示线当前指向的插入位（overlay 不占布局，见 _update_drop_indicator_at）
+        self._drop_indicator_index: int | None = None
         # 整列拖拽起点（列身空白处按下；None=未按下）
         self._drag_press_pos: QPoint | None = None
         # 父链上的看板横向滚动区缓存（构造后父链稳定）
@@ -1990,8 +1992,9 @@ class ListColumn(QFrame):
         self._scroll.setWidget(self._cards_host)
         root.addWidget(self._scroll, 1)
 
-        # 卡片拖拽插入指示线（拖拽期间临时插入布局对应间隙显示）
-        self._drop_indicator = QFrame()
+        # 卡片拖拽插入指示线（overlay 定位，不占布局——见
+        # _update_drop_indicator_at 顶部的说明）
+        self._drop_indicator = QFrame(self._cards_host)
         self._drop_indicator.setObjectName("dropIndicator")
         self._drop_indicator.setFixedHeight(3)
         self._drop_indicator.hide()
@@ -2053,7 +2056,9 @@ class ListColumn(QFrame):
         """增量刷新：重指向模型对象并同步整列内容（可带过滤子集）"""
         self._lst = board_list
         self._visible_cards = visible_cards
-        self.setAcceptDrops(visible_cards is None)   # 过滤态拖放落点不可靠，禁用
+        # 过滤态落点不可靠禁用；折叠列同样禁用——否则数据变更触发的
+        # refresh 会把折叠列重新放开拖放，卡片拖进去落在隐藏卡之间"消失"
+        self.setAcceptDrops(visible_cards is None and not self._collapsed)
         self._header.set_list(board_list)
         self.refresh_cards()
 
@@ -2070,7 +2075,7 @@ class ListColumn(QFrame):
             if old is None or [c.id for c in old] == [c.id for c in visible_cards]:
                 return
         self._visible_cards = visible_cards
-        self.setAcceptDrops(visible_cards is None)
+        self.setAcceptDrops(visible_cards is None and not self._collapsed)
         self.refresh_cards()
 
     def _make_card_widget(self, card: Card) -> CardWidget:
@@ -2158,8 +2163,9 @@ class ListColumn(QFrame):
 
         self._header.update_count(
             len(cards),
-            total=len(self._lst.cards) if self._visible_cards is not None
-            else None)
+            # "命中/总数"的总数排除归档卡（不渲染也不该进分母）
+            total=(sum(1 for c in self._lst.cards if not c.archived)
+                   if self._visible_cards is not None else None))
         # 列高随内容收缩：卡片增删都要重算 sizeHint，否则列高停在旧值。
         # 但仅当几何指纹变化时才需要——单卡勾选/编辑不改 id 序与内容指纹
         # （指纹覆盖 rebuild 渲染的全部字段），此时跳过 updateGeometry 与
@@ -2184,6 +2190,9 @@ class ListColumn(QFrame):
                    <= AppConfig.ANIM_BATCH_LIMIT and self.isVisible())
         for cw in widgets:
             self._cards_layout.removeWidget(cw)
+            # 被悬停跟踪的卡销毁前先解除跟踪：动画退场期间收不到 Leave，
+            # 残留的死 wrapper 会让下一次悬停的 _clear_hover 抛 RuntimeError
+            cw._clear_hover()
             if animate:
                 cw.setAttribute(Qt.WA_TransparentForMouseEvents, True)
                 cw.setParent(self._cards_host)   # 同父调用不改几何，仅确保归属
@@ -2502,6 +2511,23 @@ class ListColumn(QFrame):
         # 与原逐卡扫描等价：返回第一个「y < 中点」的卡片位置
         return bisect.bisect_right(self._drop_mids, host_y)
 
+    def _raw_index_from_visible(self, vis_index: int) -> int:
+        """可见序插入位 → 卡片列表 raw 序（含归档卡）插入位
+
+        列内可能含归档卡（仍在 lst.cards 里、不渲染）：控制器按 raw 序
+        插入，直接用可见序会在插入点之前有归档卡时落点整体错位。
+        """
+        visible = self._visible_cards
+        if visible is None:
+            return vis_index
+        cards = self._lst.cards
+        if vis_index >= len(visible):
+            return len(cards)
+        try:
+            return cards.index(visible[vis_index])
+        except ValueError:
+            return vis_index   # 理论不可达：可见集取自 cards
+
     # ── 拖拽落点指示线 + 视口边缘自动滚动 ───────────────────
 
     def _column_y_from_event(self, event) -> int:
@@ -2510,20 +2536,32 @@ class ListColumn(QFrame):
                 + self.mapToGlobal(QPoint(0, 0)).y())
 
     def _update_drop_indicator_at(self, global_y: int) -> None:
-        """把插入指示线移到 global_y 对应的卡片间隙（位置不变则跳过）"""
+        """把插入指示线移到 global_y 对应的卡片间隙（位置不变则跳过）
+
+        指示线不占布局（独立子控件按几何定位）：insertWidget 进卡片布局
+        会把下方卡片整体下移十几像素，而 _drop_mids 快照是进入拖拽时的
+        "无指示线"状态——光标落在受影响带内时二分判定会差一位。
+        """
         index = self._drop_index_from_y(global_y)
-        current = self._cards_layout.indexOf(self._drop_indicator)
-        if current == index:
+        if index == self._drop_indicator_index:
+            self._drop_indicator.show()
             return
-        if current >= 0:
-            self._cards_layout.removeWidget(self._drop_indicator)
-        self._cards_layout.insertWidget(index, self._drop_indicator)
+        self._drop_indicator_index = index
+        cards = self._card_widgets
+        if not cards:
+            y = 0
+        elif index >= len(cards):
+            y = cards[-1].geometry().bottom() + 1
+        else:
+            y = cards[index].geometry().top() - 2
+        self._drop_indicator.setParent(self._cards_host)
+        self._drop_indicator.setGeometry(
+            0, y, self._cards_host.width(), self._drop_indicator.height())
         self._drop_indicator.show()
+        self._drop_indicator.raise_()
 
     def _hide_drop_indicator(self) -> None:
-        current = self._cards_layout.indexOf(self._drop_indicator)
-        if current >= 0:
-            self._cards_layout.removeWidget(self._drop_indicator)
+        self._drop_indicator_index = None
         self._drop_indicator.hide()
 
     def _board_scroll_area(self) -> QScrollArea | None:
@@ -2640,6 +2678,8 @@ class ListColumn(QFrame):
                 + self.mapToGlobal(QPoint(0, 0)).y())
             self._drop_mids = None
             self._hide_drop_indicator()
+            # 可见序 → raw 序：归档卡在插入点之前时保持落点不错位
+            index = self._raw_index_from_visible(index)
             self.signal_card_move.emit(card_id, self._lst.id, index)
             event.acceptProposedAction()
             return
@@ -3073,11 +3113,17 @@ class BoardView(QWidget):
     def eventFilter(self, obj, event) -> bool:
         if (event.type() == QEvent.MouseButtonPress
                 and _ACTIVE_RENAME is not None
-                and isinstance(obj, QWidget)
-                and obj is not _ACTIVE_RENAME
-                and not _ACTIVE_RENAME.isAncestorOf(obj)):
-            finish_active_rename()
-            self._attach_rename_filter()   # 编辑器已关闭 → 卸掉过滤器
+                and isinstance(obj, QWidget)):
+            if not shiboken6.isValid(_ACTIVE_RENAME):
+                # 编辑器随宿主列被 deleteLater 销毁（撤销删列等未经提交
+                # 路径）：清悬空引用并卸过滤器——对死 wrapper 调
+                # isAncestorOf 会抛 RuntimeError，且每次点击都复现
+                finish_active_rename()
+                self._attach_rename_filter()
+            elif (obj is not _ACTIVE_RENAME
+                    and not _ACTIVE_RENAME.isAncestorOf(obj)):
+                finish_active_rename()
+                self._attach_rename_filter()   # 编辑器已关闭 → 卸掉过滤器
         return super().eventFilter(obj, event)
 
     def finish_rename(self, cancel: bool = False) -> bool:
@@ -3104,7 +3150,10 @@ class BoardView(QWidget):
         """
         prev = self._hovered_card
         if prev is not None and prev is not cw:
-            prev._clear_hover()
+            if shiboken6.isValid(prev):
+                prev._clear_hover()
+            else:
+                self._hovered_card = None
         self._hovered_card = cw
 
     def _forget_card_hover(self, cw: "CardWidget") -> None:
@@ -3116,7 +3165,10 @@ class BoardView(QWidget):
         """光标离开整块看板：连列级 Leave 都可能没派发，直接复位跟踪卡"""
         cw = self._hovered_card
         if cw is not None:
-            cw._clear_hover()
+            if shiboken6.isValid(cw):
+                cw._clear_hover()
+            else:
+                self._hovered_card = None
         super().leaveEvent(event)
 
     # ── 主题 ──────────────────────────────────────────────
@@ -3367,6 +3419,12 @@ class BoardView(QWidget):
         if not build_limit:
             for list_id, col in by_id.items():
                 if list_id not in kept:
+                    if (_ACTIVE_RENAME is not None
+                            and shiboken6.isValid(_ACTIVE_RENAME)
+                            and col.isAncestorOf(_ACTIVE_RENAME)):
+                        # 编辑器宿主列即将销毁：先收口（丢弃修改——列都
+                        # 没了，改名无意义），避免留下悬空编辑器
+                        finish_active_rename(cancel=True)
                     self._columns.remove(col)
                     col.setParent(None)
                     col.deleteLater()
@@ -3384,10 +3442,14 @@ class BoardView(QWidget):
             self._columns = ordered_cols
 
         self.update_stats(lists, visibles=visibles, stats=stats)
-        self._set_today_count(sum(len(v or []) for v in visibles.values()))
+        self._set_today_count(self._today_count_from(visibles))
         self._update_empty_hint(lists)
         # 列/卡控件按 id 复用，选中态属性随控件保留；重建出的新卡默认
         # 未选中，这里统一重刷一次（集合没变时设置是幂等短路）
+        # 先收窄集合到现存卡：单卡删除路径不清集合，否则"已选 N 张"虚报
+        if self._selected_ids:
+            self._selected_ids &= {c.id for lst in lists for c in lst.cards}
+            self._update_selection_bar()
         self._apply_selection_props()
         sb.setValue(scroll_pos)
 
@@ -3591,6 +3653,8 @@ class BoardView(QWidget):
             return None
         out: list[Card] = []
         for c in lst.cards:
+            if c.archived:
+                continue   # 归档卡不渲染，也不进匹配数
             title_low, notes_low = self._lower_texts(c)
             if q in title_low or q in notes_low:
                 out.append(c)
@@ -3606,7 +3670,8 @@ class BoardView(QWidget):
         tag = self._label_filter
         if self._today_btn.isChecked():
             today = date.today()
-            cards = [c for c in lst.cards if c.in_today_focus(today)]
+            cards = [c for c in lst.cards
+                     if not c.archived and c.in_today_focus(today)]
             if q:
                 cards = [c for c in cards
                          if q in self._lower_texts(c)[0]
@@ -3624,7 +3689,8 @@ class BoardView(QWidget):
             return self._with_pinned(lst, cards)
         if not q and not tag:
             return None
-        cards = self._filter_cards(lst, q) if q else list(lst.cards)
+        cards = (self._filter_cards(lst, q) if q
+                 else [c for c in lst.cards if not c.archived])
         if tag:
             cards = [c for c in cards if tag in c.labels]
         return self._with_pinned(lst, cards)
@@ -3635,7 +3701,8 @@ class BoardView(QWidget):
             return cards
         in_set = {c.id for c in cards}
         extra = [c for c in lst.cards
-                 if c.id in self._pinned_ids and c.id not in in_set]
+                 if c.id in self._pinned_ids and c.id not in in_set
+                 and not c.archived]
         return cards + extra
 
     def pin_card_visible(self, card_id: str) -> None:
@@ -3685,15 +3752,32 @@ class BoardView(QWidget):
                 and not self._today_btn.isChecked()):
             self._pinned_ids.clear()   # 无任何过滤：豁免集随之失效
         total = 0
+        filtered = False
         for lst, col in zip(self._lists, self._columns):
             visible = self._visible_cards_for(lst)
             col.set_visible_cards(visible)
+            if visible is not None:
+                filtered = True
             total += len(visible or [])
-        self._set_today_count(total)
+        # 无过滤时 visible 全是 None（sum 恒 0）：角标要显示全板今日聚焦数，
+        # 否则"今天有事要办"在最重要的常态下提示"今日 0"
+        self._set_today_count(total if filtered else self._today_focus_total())
         if self._search_query():
             self._stats_label.setText(tr("匹配 {n} 张").format(n=total))
         else:
             self.update_stats(self._lists)
+
+    def _today_count_from(self, visibles: dict) -> int:
+        """角标数：有任一列处于过滤态 → 匹配数；全无过滤 → 今日聚焦总数"""
+        if all(v is None for v in visibles.values()):
+            return self._today_focus_total()
+        return sum(len(v or []) for v in visibles.values())
+
+    def _today_focus_total(self) -> int:
+        """全板今日聚焦卡数（不含归档卡）"""
+        today = date.today()
+        return sum(1 for lst in self._lists for c in lst.cards
+                   if not c.archived and c.in_today_focus(today))
 
     def _set_today_count(self, n: int) -> None:
         self._today_count = n
@@ -3860,17 +3944,25 @@ class BoardView(QWidget):
         if self._empty_hint.isVisible():
             self._empty_hint.setGeometry(self.rect())
         if self._toast.isVisible():
+            # 复用 show_toast 的避让偏移：多选栏可见时 toast 停在栏上方，
+            # 窗口尺寸变化不该把它甩回底部盖住按钮
             self._toast.move((self.width() - self._toast.width()) // 2,
-                             self.height() - self._toast.height() - 20)
+                             self.height() - self._toast.height() - 20
+                             - self._toast_bottom_offset())
         if self._selection_bar.isVisible():
             self._update_selection_bar()
 
     # ── 工具栏窄窗收纳 ────────────────────────────────────
 
     def _aux_toolbar_widgets(self) -> list:
-        """不参与收纳的固定控件（交通灯 / Windows 窗口控制键 / 折叠键）"""
+        """不参与收纳的固定控件（交通灯 / 窗口控制键 / 折叠键 / 标签筛选 chip）
+
+        标签 chip 是动态显隐的（点色条开启筛选才出现），漏算它会让
+        开启筛选后的工具栏超宽，收纳判定按不足的宽度算导致控件重叠。
+        """
         return [w for w in (getattr(self, "_traffic_lights", None),
-                            self._window_controls, self._collapse_btn)
+                            self._window_controls, self._collapse_btn,
+                            getattr(self, "_label_chip", None))
                 if w is not None and not w.isHidden()]
 
     def _apply_toolbar_overflow(self) -> None:
@@ -3944,12 +4036,17 @@ class BoardView(QWidget):
 
     def show_toast(self, text: str) -> None:
         """显示看板内轻提示（折叠态由控制器改走托盘通知）"""
-        # 底部多选操作栏可见时抬高 toast：两者都钉在底部居中，
-        # 不避让的话 toast 会整块盖住批量按钮
+        self._toast.show_message(text,
+                                 bottom_offset=self._toast_bottom_offset())
+
+    def _toast_bottom_offset(self) -> int:
+        """toast 距底部的额外抬高：底部多选操作栏可见时避让到栏上方
+
+        （两者都钉在底部居中，不避让 toast 会整块盖住批量按钮）
+        """
         bar = self._selection_bar
-        offset = (bar.height() + 12) if (bar is not None
-                                         and bar.isVisible()) else 0
-        self._toast.show_message(text, bottom_offset=offset)
+        return (bar.height() + 12) if (bar is not None
+                                       and bar.isVisible()) else 0
 
     # ── 卡片信号 → 带 list_id 转发 ────────────────────────
 

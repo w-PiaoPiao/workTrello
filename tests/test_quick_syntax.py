@@ -186,13 +186,40 @@ class SlashDateBoundaryTest(unittest.TestCase):
         self.assertIn("1/2", title)
 
     def test_fraction_space_separated_still_ambiguous_kept_tight_only(self):
-        # 紧贴场景（正文分数）被排除；空格分隔的斜杠日期仍然识别
+        # 紧贴场景（正文分数）被排除；位于行首/行尾的斜杠日期仍然识别
         _, f = parse_quick_input("9/20 体检", today=MONDAY)
         self.assertEqual(f["due_date"], "2026-09-20")
 
+    def test_fraction_mid_sentence_not_due(self):
+        """回归："完成 3/4 后交付" 的分数不能被静默吞成截止日"""
+        title, f = parse_quick_input("完成 3/4 后交付", today=MONDAY)
+        self.assertNotIn("due_date", f)
+        self.assertIn("3/4", title)
+
     def test_month_day_tight_with_text_still_parsed(self):
+        # 今年已过 → 滚到明年：写"3月4日"指即将到来的 3 月 4 日，
+        # 按今年解析会让卡片创建即"已逾期"
         _, f = parse_quick_input("项目3月4日截止", today=MONDAY)
-        self.assertEqual(f["due_date"], "2026-03-04")
+        self.assertEqual(f["due_date"], "2027-03-04")
+
+    def test_past_month_day_rolls_to_next_year(self):
+        _, f = parse_quick_input("1月5日交材料", today=MONDAY)
+        self.assertEqual(f["due_date"], "2027-01-05")
+
+
+class WordBoundaryTest(unittest.TestCase):
+    """回归：前缀词与英文词边界"""
+
+    def test_last_and_every_weekday_kept_as_text(self):
+        for s in ("上周三开的会", "每周三例会"):
+            title, f = parse_quick_input(s, today=MONDAY)
+            self.assertNotIn("due_date", f)
+            self.assertEqual(title, s)
+
+    def test_english_relative_word_needs_boundary(self):
+        title, f = parse_quick_input("Todays standup notes", today=MONDAY)
+        self.assertNotIn("due_date", f)
+        self.assertEqual(title, "Todays standup notes")
 
 
 if __name__ == "__main__":

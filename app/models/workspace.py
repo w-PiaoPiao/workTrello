@@ -139,16 +139,24 @@ class Workspace:
         # boards/ 目录也为空：迁移旧单看板文件，或创建默认看板
         legacy = self._data_dir / LEGACY_BOARD_FILE
         if legacy.exists():
-            board = Board.from_dict(load_json_doc(legacy))
-            meta = BoardMeta(id=_new_board_id(),
-                             name=str(board.name or ""),
-                             created_at=_now_iso())
-            self._write_board_file(meta, board)
-            self.boards = [meta]
-            self.current_id = meta.id
-            self._save()
-            logger.info("已迁移旧看板数据到 %s", self.board_path(meta.id))
-            return
+            legacy_doc = load_json_doc(legacy)
+            if not isinstance(legacy_doc.get("lists"), list):
+                # 旧文件损坏（load_json_doc 已隔离 .corrupt 副本）或结构
+                # 异常：中止迁移，不把空板伪装成"迁移成功"——legacy 原件
+                # 保留原地，用户从隔离副本救回数据后下次启动再迁
+                logger.error("旧看板文件损坏，跳过迁移（原文件保留）: %s",
+                             legacy)
+            else:
+                board = Board.from_dict(legacy_doc)
+                meta = BoardMeta(id=_new_board_id(),
+                                 name=str(board.name or ""),
+                                 created_at=_now_iso())
+                self._write_board_file(meta, board)
+                self.boards = [meta]
+                self.current_id = meta.id
+                self._save()
+                logger.info("已迁移旧看板数据到 %s", self.board_path(meta.id))
+                return
 
         meta = BoardMeta(id=_new_board_id(), name="", created_at=_now_iso())
         self._write_board_file(meta, Board.from_dict({}))
@@ -283,22 +291,22 @@ class Workspace:
         return True
 
     def delete_board(self, board_id: str) -> bool:
-        """删除看板（文件 + 同族备份）；至少保留一块看板"""
+        """删除看板（文件 + 同族备份）；至少保留一块看板
+
+        先删文件、成功后才摘索引：unlink 失败（被占用/权限）时索引与
+        磁盘保持一致，残留文件不会被孤儿收编"复活"。
+        """
         if len(self.boards) <= 1 or self._meta(board_id) is None:
             return False
         meta = self._meta(board_id)
-        self.boards.remove(meta)
-        if self.current_id == board_id:
-            self.current_id = self.boards[0].id
         path = self.board_path(board_id)
         try:
             if path.exists():
                 path.unlink()
         except OSError as e:
-            # 主文件删不掉（被占用/权限）：保留索引项并报失败——若照常移除
-            # 索引，残留文件下次启动会被孤儿收编"复活"，与确认框承诺矛盾
+            # 文件删不掉：什么都不动、报失败。若先摘索引，残留文件下次
+            # 启动会被孤儿收编"复活"，与确认框承诺矛盾
             logger.warning("删除看板文件失败: %s (%s)", path, e)
-            self._save()   # current_id 可能已切换，保持索引一致
             return False
         try:
             # 同族备份（.prev/.snap/corrupt/good）一并清理，不留孤儿
@@ -310,6 +318,9 @@ class Workspace:
                     old.unlink(missing_ok=True)
         except OSError as e:
             logger.warning("清理看板备份失败: %s (%s)", path, e)
+        self.boards.remove(meta)
+        if self.current_id == board_id:
+            self.current_id = self.boards[0].id
         self._save()
         return True
 

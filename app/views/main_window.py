@@ -127,6 +127,9 @@ class MainWindow(QWidget):
         self._animation_running = False
         self._expanding = False
         self._expand_delta = QPoint()
+        # 展开前的桌宠原位几何：折叠落点以它为准（展开期间窗口可能被
+        # 拖动/最大化，"反推位移"会落错位置甚至出屏）
+        self._pet_home_geo: QRect | None = None
         self._visible_cb = None
         self._zoomed = False
         self._zoom_restore_geo = QRect()
@@ -305,10 +308,11 @@ class MainWindow(QWidget):
         # 动画与视图切换前通知控制器（首展开时同步构建看板控件）
         self.signal_about_to_expand.emit()
         self._set_pet_idle(False)
-        self._zoomed = False
+        self._reset_zoom_state()
         target = self._effective_expanded_size()
         screen = self._current_screen()
         base_geo = self.geometry()
+        self._pet_home_geo = QRect(base_geo)   # 折叠时回到这里
         self._expand_delta = self._visible_expand_delta(base_geo, target, screen)
         self._mode = "expanded"
         self._expanding = True
@@ -335,7 +339,7 @@ class MainWindow(QWidget):
         if self._mode == "collapsed" or self._animation_running:
             return
         self._finish_board_rename()    # 提交未完成的重命名
-        self._zoomed = False
+        self._reset_zoom_state()
         base_geo = self.geometry()
         self._mode = "collapsed"
         if AppConfig.IS_WINDOWS:
@@ -344,9 +348,16 @@ class MainWindow(QWidget):
         self.setMaximumSize(16777215, 16777215)
         self.setMinimumSize(0, 0)
         self.setFixedSize(QSize(16777215, 16777215))
+        # 落点 = 展开时的桌宠原位：期间窗口被拖动/最大化时，用
+        # "-_expand_delta 反推"会落在错误位置（极端小屏可出屏）
+        home = self._pet_home_geo
+        if home is not None and home.isValid():
+            delta = home.topLeft() - base_geo.topLeft()
+        else:
+            delta = -self._expand_delta
         self._animate_size(
             self._collapsed_size.width(), self._collapsed_size.height(),
-            delta=-self._expand_delta, base_geo=base_geo)
+            delta=delta, base_geo=base_geo)
         self._flush_expanded_size()    # 折叠时冲刷防抖中的展开尺寸
 
     def _on_esc_pressed(self) -> None:
@@ -581,8 +592,19 @@ class MainWindow(QWidget):
             self._stack.setCurrentWidget(self._collapsed_view)
             self.setFixedSize(self._collapsed_size)
             self.unsetCursor()
+            self._snap_to_screen_edge()   # 双保险：落点出屏时收回可用区
             self._set_pet_idle(True)
         self._update_grip_visibility()
+
+    def _reset_zoom_state(self) -> None:
+        """复位最大化标记并广播
+
+        收起/隐藏离开了最大化形态：不广播会让 Windows 最大化按钮的
+        图标停在"还原"态（组件只在 toggle_zoom 路径被更新）。
+        """
+        if self._zoomed:
+            self._zoomed = False
+            self.zoom_state_changed.emit(False)
 
     # ── macOS 缩放把手 ─────────────────────────────────────
 
@@ -807,7 +829,7 @@ class MainWindow(QWidget):
         """
         if self._mode == "expanded" and self._pet_enabled:
             self._flush_expanded_size()
-        self._zoomed = False
+        self._reset_zoom_state()
         self.hide()
 
     def show_and_activate(self) -> None:

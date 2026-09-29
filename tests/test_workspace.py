@@ -125,5 +125,73 @@ class WorkspaceTest(unittest.TestCase):
         self.assertEqual(ws.current_id, ws.boards[0].id)
 
 
+class DeleteFailureTest(unittest.TestCase):
+    """回归：删除看板文件失败（被占用/权限）时索引与磁盘必须保持一致"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.data_dir = Path(self.tmp.name)
+        self.ws = Workspace(self.data_dir)
+        self.ws.load()
+        self.second = self.ws.create_board("第二块")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_delete_failure_keeps_index_and_disk(self):
+        """unlink 失败 → 索引不摘除、current 不变、重启后看板仍在
+
+        索引先摘除会让残留文件下次启动被孤儿收编"复活"，与确认框
+        承诺矛盾；当前会话的 store 已作废，后续编辑还会静默丢失。
+        """
+        from unittest import mock
+
+        target = self.second.id
+        path = self.ws.board_path(target)
+        self.assertEqual(self.ws.current_id, target)
+
+        with mock.patch.object(Path, "unlink", side_effect=OSError("被占用")):
+            ok = self.ws.delete_board(target)
+
+        self.assertFalse(ok)
+        self.assertIsNotNone(self.ws.meta(target))      # 索引项保留
+        self.assertEqual(self.ws.current_id, target)    # current 未切换
+        self.assertTrue(path.exists())                  # 文件仍在
+        # 重启（重新加载索引）后看板依然在
+        ws2 = Workspace(self.data_dir)
+        ws2.load()
+        self.assertIsNotNone(ws2.meta(target))
+
+    def test_delete_success_removes_index_and_file(self):
+        target = self.second.id
+        path = self.ws.board_path(target)
+        self.assertTrue(self.ws.delete_board(target))
+        self.assertIsNone(self.ws.meta(target))
+        self.assertFalse(path.exists())
+
+
+class CorruptLegacyMigrationTest(unittest.TestCase):
+    """回归：损坏的旧看板文件不得被静默迁移成空板"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.data_dir = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_corrupt_legacy_not_migrated_as_empty_board(self):
+        legacy = self.data_dir / "board.json"
+        legacy.write_bytes(b"\x80\x81 not valid json \xff")
+        ws = Workspace(self.data_dir)
+        ws.load()
+        # 中止迁移：legacy 原文件保留（+ .corrupt 隔离副本），
+        # 索引里是全新默认板而非"迁移成功"的空板
+        self.assertTrue(legacy.exists())
+        self.assertTrue(list(self.data_dir.glob("board.json.corrupt.*.bak")))
+        doc = json.loads(ws.board_path(ws.current_id).read_text("utf-8"))
+        self.assertEqual(doc["lists"][0]["cards"], [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
