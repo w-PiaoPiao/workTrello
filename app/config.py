@@ -262,8 +262,20 @@ class AppConfig:
     def save_autostart(cls, on: bool) -> None:
         _settings().setValue(cls.KEY_AUTOSTART, on)
 
-    # ── 默认打开形态（启动 / 从托盘显示以哪种形态出现）────────
+    # ── 全局快捷键（应用失焦时唤起快速添加；仅 Windows）────────
+    KEY_GLOBAL_HOTKEY = "app/global_hotkey"
+    GLOBAL_HOTKEY_SEQUENCE = "Ctrl+Alt+N"
 
+    @classmethod
+    def get_global_hotkey(cls) -> bool:
+        """是否启用全局快捷键（默认关闭：不主动占系统级热键）"""
+        return _settings().value(cls.KEY_GLOBAL_HOTKEY, False, type=bool)
+
+    @classmethod
+    def save_global_hotkey(cls, on: bool) -> None:
+        _settings().setValue(cls.KEY_GLOBAL_HOTKEY, on)
+
+    # ── 默认打开形态（启动 / 从托盘显示以哪种形态出现）────────
     DEFAULT_VIEWS = ("pet", "board")
 
     @classmethod
@@ -407,6 +419,7 @@ class AppConfig:
     SIZE_SAVE_DEBOUNCE_MS = 200       # 窗口尺寸持久化防抖（系统缩放循环按帧触发 resizeEvent）
     SEARCH_DEBOUNCE_MS = 150             # 搜索框逐键过滤防抖间隔（输入停顿后才刷新）
     DUE_CHECK_INTERVAL_MS = 60 * 1000    # 截止提醒检查间隔（1 分钟，桌宠常驻成本极低）
+    REMIND_SNOOZE_MINUTES = 10           # 「稍后提醒」推迟的分钟数
     UNDO_LIMIT = 20                          # 撤销快照保留步数
     POMODORO_MINUTES = 25                    # 番茄钟时长（分钟）
 
@@ -480,6 +493,9 @@ class AppConfig:
         "scroll_handle_hover": "rgba(128, 128, 128, 0.55)",
         "hint_on_board": "rgba(255, 255, 255, 0.92)",
     }
+
+    # ── 图片扩展名（附件图标 / 拖入文件的看图判定）────────────
+    IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp")
 
     # ── 卡片标签色板（key → (背景, 文字)）────────────────────
     LABEL_COLORS = {

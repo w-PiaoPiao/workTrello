@@ -34,13 +34,14 @@ from PySide6.QtWidgets import (
 
 from app import i18n
 from app.config import AppConfig, workdir_start_dir
-from app.i18n import tr
+from app.i18n import priority_name, tr
 from app.models import json_io
 from app.models.board import Board, BoardList, BoardStore, Card
 from app.models.importers import board_from_markdown, board_from_trello
 from app.models.quick_syntax import parse_quick_input
 from app.models.workspace import Workspace
 from app.services import autostart
+from app.services.global_hotkey import GlobalHotkeyService
 from app.services.single_instance import InstanceWaker
 from app.services.tray_service import TrayService
 from app.views import motion
@@ -56,6 +57,22 @@ def _safe_filename(name: str) -> str:
     """附件入库文件名：剔除路径分隔与非法字符，限长"""
     keep = "".join(ch if ch not in '\\/:*?"<>|' else "_" for ch in name)
     return keep.strip()[:80] or "attachment"
+
+
+def _batch_rename(title: str, find: str, repl: str, mode: str) -> str:
+    """批量改名的纯函数：mode = prefix/suffix/replace
+
+    空标题结果一律判为"无变化"（返回原值）：标题是卡片的唯一必填字段，
+    批量操作里一个手滑的前缀替换就能把整批卡片改成同名，而看板视图对
+    同名卡没有区分手段。
+    """
+    if mode == "prefix":
+        out = f"{repl}{title}" if repl else title
+    elif mode == "suffix":
+        out = f"{title}{repl}" if repl else title
+    else:   # replace
+        out = title.replace(find, repl) if find else title
+    return out.strip() or title
 
 
 class _FlushNotifier(QObject):
@@ -96,6 +113,12 @@ class AppController(QObject):
         self._tray.signal_show_requested.connect(self._on_tray_show)
         self._tray.signal_hide_requested.connect(self._on_tray_hide)
         self._tray.signal_quit_requested.connect(self._on_quit)
+        self._tray.signal_snooze_requested.connect(self._on_snooze_requested)
+        self._tray.signal_notification_clicked.connect(
+            self._on_notification_clicked)
+        # 全局快捷键（仅 Windows 可用）：应用失焦时也能唤起快速添加
+        self._hotkeys = GlobalHotkeyService(self)
+        self._hotkeys.triggered.connect(self._on_global_hotkey_triggered)
 
         # ── 落盘防抖 ──────────────────────────────────────
         self._save_timer = QTimer()
@@ -132,6 +155,14 @@ class AppController(QObject):
         self._pomo_timer = QTimer(self)
         self._pomo_timer.setInterval(1000)
         self._pomo_timer.timeout.connect(self._pomo_tick)
+        # 截止提醒的"稍后提醒"：贪睡期间不发提醒，到点清掉当天去重键再查一次
+        self._snooze_until = 0.0
+        self._snooze_timer = QTimer(self)
+        self._snooze_timer.setSingleShot(True)
+        self._snooze_timer.setInterval(AppConfig.REMIND_SNOOZE_MINUTES * 60 * 1000)
+        self._snooze_timer.timeout.connect(self._on_snooze_elapsed)
+        # 气泡点击跳转的目标卡片（仅截止提醒期间有效，其余通知置空）
+        self._notify_card_id: str | None = None
         self._archive_dialog: ArchiveDialog | None = None
         self._settings_dialog: SettingsDialog | None = None   # 惰性创建
         self._calendar_dialog = None                          # 惰性创建
@@ -165,6 +196,12 @@ class AppController(QObject):
             svc = autostart.get_autostart()
             if svc is not None:
                 svc.sync()
+
+        # ── 全局快捷键偏好（注册失败不打扰：可能是组合被别的程序占了，
+        # 设置页开关会显示真实状态）────────────────────────────
+        if AppConfig.get_global_hotkey():
+            if not self._hotkeys.register(AppConfig.GLOBAL_HOTKEY_SEQUENCE):
+                logger.info("全局快捷键未能注册（组合可能已被占用）")
 
         # ── 菜单栏（macOS：应用激活接管菜单栏时可见）───────
         if AppConfig.IS_MACOS:
@@ -684,6 +721,21 @@ class AppController(QObject):
             self._on_card_duplicate)
         self._board_view.signal_card_attachment_open.connect(
             self._on_card_attachment_open)
+        # 卡片快捷编辑（右键菜单 / 卡片键盘）
+        self._board_view.signal_card_priority.connect(self._on_card_priority)
+        self._board_view.signal_card_due_set.connect(self._on_card_due_set)
+        self._board_view.signal_batch_edit.connect(self._on_batch_edit)
+        self._board_view.signal_cards_move.connect(self._on_cards_move)
+        self._board_view.signal_cards_to_today.connect(
+            self._on_cards_to_today)
+        self._board_view.signal_card_save_template.connect(
+            self._on_card_save_template)
+        self._board_view.signal_add_from_template.connect(
+            self._on_card_add_from_template)
+        # 捕获入口：看板内 Ctrl+V 粘贴建卡 / 外部文件拖到列建卡
+        self._window.paste_shortcut.connect(self._on_paste_create)
+        self._board_view.signal_files_dropped.connect(
+            self._on_files_dropped)
         # 批量操作（多选）
         self._board_view.signal_batch_done.connect(self._on_batch_done)
         self._board_view.signal_batch_move.connect(self._on_batch_move)
@@ -740,6 +792,7 @@ class AppController(QObject):
             self._on_list_title_changed)
         self._board_view.signal_list_delete.connect(self._on_list_delete)
         self._board_view.signal_list_move.connect(self._on_list_move)
+        self._board_view.signal_list_duplicate.connect(self._on_list_duplicate)
 
     # ── 卡片操作 ──────────────────────────────────────────
 
@@ -800,6 +853,138 @@ class AppController(QObject):
         self._after_data_change(
             tr("已批量添加 {n} 张卡片").format(n=len(new_cards)))
 
+    def _on_global_hotkey_triggered(self) -> None:
+        """全局热键按下：亮出窗口并按形态唤起快速添加
+
+        窗口可能整个藏在托盘（此时没有任何可见表面），先按默认形态把界面
+        调出来再弹对话框——否则对话框会挂在一个隐藏的父窗口上，用户看到
+        "没有任何反应"。
+        """
+        if not self._window.isVisible():
+            self._window.show_and_activate()
+            self._open_in_default_view()
+        self._window.raise_()
+        self._window.activateWindow()
+        self._on_quick_add()
+
+    def _on_global_hotkey_toggled(self, on: bool) -> None:
+        """设置页开关：注册失败（组合被占用/平台不支持）回滚开关并说明
+
+        与开机自启动同一套失败回滚范式：偏好只在真正生效后才落盘。
+        """
+        if not on:
+            self._hotkeys.unregister()
+            AppConfig.save_global_hotkey(False)
+            return
+        if not self._hotkeys.register(AppConfig.GLOBAL_HOTKEY_SEQUENCE):
+            AppConfig.save_global_hotkey(False)
+            if self._settings_dialog is not None:
+                self._settings_dialog.set_global_hotkey(False)
+            self._notify(tr("全局快捷键注册失败：可能已被其他程序占用"))
+            return
+        AppConfig.save_global_hotkey(True)
+        self._notify(tr("已启用全局快捷键 {seq}").format(
+            seq=AppConfig.GLOBAL_HOTKEY_SEQUENCE))
+
+    def _on_paste_create(self) -> None:
+        """看板内 Ctrl/Cmd+V：剪贴板文本直接变卡片（每行一张，支持速记）
+
+        与「批量添加」共用同一套解析与行数上限，区别是不打断流——不弹
+        对话框，直接落卡。落点取当前聚焦卡片所在的列（键盘导航后不用再
+        挑列），没有焦点则落到首列（与 Ctrl+N 快速添加一致）。
+        """
+        board = self._store.load()
+        if not board.lists:
+            self._notify(tr("看板还没有列表，先添加一个列表"))
+            return
+        clipboard = QApplication.clipboard()
+        text = clipboard.text() if clipboard is not None else ""
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()][:100]
+        if not lines:
+            self._notify(tr("剪贴板没有文本内容"))
+            return
+        target = None
+        if self._board_ui_built:
+            target = board.find_list(
+                self._board_view.paste_target_list_id() or "")
+        if target is None:
+            target = board.lists[0]
+        self._push_undo()
+        new_cards = [self._make_card_from_text(ln) for ln in lines]
+        target.cards[0:0] = new_cards   # 保序插入列首（第一行在最上）
+        if target.fund_watch:
+            for card in new_cards:
+                if card.fund is None:
+                    card.ensure_fund()
+        board.invalidate_index()
+        if len(new_cards) == 1:
+            self._after_data_change(
+                tr("已添加「{title}」到 {list}").format(
+                    title=new_cards[0].title, list=target.title))
+        else:
+            self._after_data_change(
+                tr("已粘贴添加 {n} 张卡片到 {list}").format(
+                    n=len(new_cards), list=target.title))
+
+    def _on_files_dropped(self, list_id: str, paths: list) -> None:
+        """外部文件拖到列：一个文件一张卡（标题=文件名主干）并挂为该卡附件
+
+        一个文件一张卡而不是"一张卡挂全部文件"：拖进来的通常是各自独立的
+        待办对象（合同、截图、报表），合成一张卡后还得手工再拆。文件一律
+        复制进 attachments/<卡 id>/，与编辑对话框加附件走同一套落库规则
+        （源文件此后移动/删除不影响看板）。
+        """
+        board = self._store.load()
+        target = board.find_list(list_id)
+        if target is None:
+            return
+        self._push_undo()
+        attach_root = (AppConfig.DATA_DIR / "attachments").resolve()
+        created: list[Card] = []
+        failed = 0
+        for raw in paths[:50]:
+            src = Path(str(raw))
+            try:
+                if not src.is_file():
+                    failed += 1
+                    continue
+            except OSError:
+                failed += 1
+                continue
+            card = Card(title=src.stem or src.name)
+            try:
+                dest_dir = attach_root / card.id
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                dest = dest_dir / (
+                    f"{uuid.uuid4().hex[:8]}_{_safe_filename(src.name)}")
+                shutil.copy2(src, dest)
+            except OSError as e:
+                logger.warning("拖入文件复制失败: %s (%s)", src, e)
+                failed += 1
+                continue
+            card.attachments.append({
+                "id": uuid.uuid4().hex,
+                "name": src.name,
+                "path": str(dest),
+                "is_image": src.suffix.lower() in AppConfig.IMAGE_EXTS,
+            })
+            created.append(card)
+        if not created:
+            self._undo_stack.pop()   # 全失败：不留空撤销步
+            self._notify(tr("没有可添加的文件"))
+            return
+        if target.fund_watch:
+            for card in created:
+                card.ensure_fund()
+        target.cards[0:0] = created
+        board.invalidate_index()
+        msg = (tr("已添加「{title}」").format(title=created[0].title)
+               if len(created) == 1
+               else tr("已添加 {n} 个文件为卡片").format(n=len(created)))
+        if failed:
+            msg += " · " + tr("{n} 个未能添加").format(n=failed)
+        self._after_data_change(msg)
+
     def _today_focus_items(self, focus=None) -> list[tuple[BoardList, Card]]:
         """今日聚焦卡片（含所属列表），供今日清单浮窗显示
 
@@ -812,6 +997,29 @@ class AppController(QObject):
         return [(lst, c) for lst in board.lists for c in lst.cards
                 if c.in_today_focus(today)]
 
+    def _on_today_quick_add(self, text: str) -> None:
+        """今日浮窗就地新建：落到首列 + 立即加入今日聚焦
+
+        浮窗的语义就是"今天要做的事"，所以新卡直接打星标进今日；日期留空
+        （星标本身就意味着"今天处理"，硬写当天截止日反而会污染日历视图）。
+        """
+        board = self._store.load()
+        text = text.strip()
+        if not text:
+            return
+        if not board.lists:
+            self._notify(tr("看板还没有列表，先添加一个列表"))
+            return
+        card = self._make_card_from_text(text)
+        card.starred = True
+        target = board.lists[0]
+        self._push_undo()
+        if target.fund_watch:
+            card.ensure_fund()
+        target.cards.insert(0, card)
+        self._after_data_change(
+            tr("已加入今日「{title}」").format(title=card.title))
+
     def _on_today_list_open(self) -> None:
         """桌宠右键"今日清单"：浮窗概览今日待办（勾选/打开编辑直通控制器）"""
         if self._today_popover is None:
@@ -821,6 +1029,8 @@ class AppController(QObject):
             self._today_popover.signal_card_done.connect(self._on_card_done)
             self._today_popover.signal_card_edit.connect(self._on_card_edit)
             self._today_popover.signal_card_star.connect(self._on_card_star)
+            self._today_popover.signal_quick_add.connect(
+                self._on_today_quick_add)
         board = self._store.load()
         stats = board.today_stats(date.today())
         self._today_popover.set_items(
@@ -1112,6 +1322,70 @@ class AppController(QObject):
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
+    def _on_cards_move(self, card_ids: list, target_list_id: str,
+                       index: int) -> None:
+        """成组拖拽：把选中集合整体搬到目标列（保持组内相对顺序）
+
+        组内顺序按看板顺序而非点击顺序：拖拽前后的相对次序不变，用户
+        看到的排布不会因为"先点哪张"而改变。
+        """
+        board = self._store.load()
+        target = board.find_list(target_list_id)
+        if target is None or not card_ids:
+            return
+        wanted = set(card_ids)
+        moving: list[Card] = []
+        for lst in board.lists:
+            for card in lst.cards:
+                if card.id in wanted and not card.archived:
+                    moving.append(card)
+        if not moving:
+            return
+        # 落点用"锚卡片"表达而不是裸下标：落点是"插到当时第 index 张之前"，
+        # 而摘除组内成员会让下标整体前移（同列内拖动尤其明显）。先记下
+        # 锚卡片的身份，摘除后再按它的新位置插入，落点不会漂移。
+        original = list(target.cards)
+        anchor = original[index] if 0 <= index < len(original) else None
+        if anchor is not None and anchor.id in wanted:
+            anchor = None   # 锚点在组内：摘除后无处可依，退化为按序插入
+        self._push_undo()
+        for card in moving:
+            src, found = board.find_card(card.id)
+            if src is not None and found is not None:
+                src.cards.remove(found)
+        board.invalidate_index()
+        if anchor is not None:
+            try:
+                insert_at = target.cards.index(anchor)
+            except ValueError:
+                insert_at = len(target.cards)
+        else:
+            insert_at = max(0, min(index, len(target.cards)))
+        target.cards[insert_at:insert_at] = moving
+        if target.fund_watch:
+            for card in moving:
+                if card.fund is None:
+                    card.ensure_fund()
+        self._after_data_change(
+            tr("已移动 {n} 张卡片").format(n=len(moving)))
+
+    def _on_cards_to_today(self, card_ids: list) -> None:
+        """拖卡片到「今日」按钮：加入今日聚焦（只加不减，已经是星标的跳过）"""
+        board = self._store.load()
+        self._push_undo()
+        n = 0
+        for cid in card_ids:
+            _lst, card = board.find_card(cid)
+            if card is None or card.archived or card.starred:
+                continue
+            card.starred = True
+            n += 1
+        if n == 0:
+            self._undo_stack.pop()   # 全是已星标：不留空撤销步
+            return
+        self._after_data_change(
+            tr("已加入今日 {n} 张卡片").format(n=n))
+
     def _on_batch_done(self, card_ids: list, done: bool) -> None:
         """批量切换完成状态（存在未完成 → 全置完成，否则全取消）"""
         board = self._store.load()
@@ -1222,6 +1496,7 @@ class AppController(QObject):
                 lambda y, m: self._refresh_calendar(y, m))
             dlg.signal_due_change.connect(self._on_calendar_due_change)
             dlg.signal_edit_requested.connect(self._on_calendar_edit)
+            dlg.signal_create_requested.connect(self._on_calendar_create)
             self._calendar_dialog = dlg
         self._refresh_calendar()
         self._calendar_dialog.show()
@@ -1271,6 +1546,41 @@ class AppController(QObject):
         if card is None:
             return
         self._on_card_edit(lst.id, card_id)
+
+    def _on_calendar_create(self, iso_date: str) -> None:
+        """日历里双击空白格：新建一张截止日为该天的卡片
+
+        先问标题（带速记预览），再把格子日期填进去——标题里写了日期
+        （如"明天 交周报"）时以标题为准，用户显式输入优先于双击的落点。
+        """
+        from app.views.quick_add_dialog import QuickAddDialog
+
+        board = self._store.load()
+        if not board.lists:
+            self._notify(tr("看板还没有列表，先添加一个列表"))
+            return
+        dlg = QuickAddDialog(
+            tr("新建卡片"),
+            tr("{date} 截止的卡片标题").format(date=iso_date),
+            tr("例：交周报 !P1 #红"),
+            syntax_preview=True,
+            parent=self._window)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        title = dlg.text().strip()
+        if not title:
+            return
+        card = self._make_card_from_text(title)
+        if not card.due_date:
+            card.due_date = iso_date
+        target = board.lists[0]
+        self._push_undo()
+        if target.fund_watch:
+            card.ensure_fund()   # 资金监视泳道：新建卡自动补配置
+        target.cards.insert(0, card)
+        self._after_data_change(
+            tr("已添加「{title}」到 {list}").format(
+                title=card.title, list=target.title))
 
     # ── 快捷键速查 ────────────────────────────────────────
 
@@ -1357,6 +1667,34 @@ class AppController(QObject):
         by_id = {lst.id: lst for lst in board.lists}
         board.lists[:] = [by_id[lid] for lid in new_order]
         self._after_data_change(None)
+
+    def _on_list_duplicate(self, list_id: str) -> None:
+        """复制列表（含卡片）：整列克隆插在原列右侧
+
+        卡片全新 id、标题加" 副本"；附件沿用同一份文件路径（与卡片复制
+        一致——附件目录按"被引用"回收，两份引用共享文件是有意为之）。
+        """
+        board = self._store.load()
+        src = board.find_list(list_id)
+        if src is None:
+            return
+        self._push_undo()
+        clone = BoardList(title=tr("{title} 副本").format(title=src.title),
+                          fund_watch=src.fund_watch)
+        for card in src.cards:
+            data = card.to_dict()
+            data.pop("id", None)
+            data.pop("created_at", None)   # 副本的创建时间是现在，不是原卡的
+            clone.cards.append(Card.from_dict(data))
+        if clone.fund_watch:
+            for card in clone.cards:
+                if card.fund is None:
+                    card.ensure_fund()
+        board.lists.insert(board.lists.index(src) + 1, clone)
+        board.invalidate_index()
+        self._after_data_change(
+            tr("已复制列表「{title}」（{n} 张卡片）").format(
+                title=src.title, n=len(clone.cards)))
 
     def _on_list_collapsed(self, list_id: str, collapsed: bool) -> None:
         """列折叠状态持久化（会话之间保留）"""
@@ -1452,7 +1790,12 @@ class AppController(QObject):
         return stats
 
     def _notify(self, text: str) -> None:
-        """操作反馈：看板展开态走窗口内 toast，折叠/隐藏态走托盘气泡"""
+        """操作反馈：看板展开态走窗口内 toast，折叠/隐藏态走托盘气泡
+
+        顺带清掉气泡的跳转目标：这句话与上一次截止提醒无关，点它不该
+        打开某张卡片。
+        """
+        self._notify_card_id = None
         if self._window.mode == "expanded":
             self._board_view.show_toast(text)
         else:
@@ -1503,6 +1846,8 @@ class AppController(QObject):
                 AppConfig.save_remind_advance)
             dlg.signal_default_view_selected.connect(
                 AppConfig.save_default_view)
+            dlg.signal_global_hotkey_toggled.connect(
+                self._on_global_hotkey_toggled)
             i18n.register(dlg.retexts)          # 语言切换整页刷新
             AppTheme.register(dlg.reapply_theme)
             self._settings_dialog = dlg
@@ -1515,7 +1860,8 @@ class AppController(QObject):
             remind_advance=AppConfig.get_remind_advance(),
             autostart=self._autostart_state(),
             default_view=AppConfig.get_default_view(),
-            pet_enabled=self._window.is_pet_enabled())
+            pet_enabled=self._window.is_pet_enabled(),
+            global_hotkey=self._hotkeys.is_registered())
         self._settings_dialog.show()
         self._settings_dialog.raise_()
         self._settings_dialog.activateWindow()
@@ -1715,14 +2061,23 @@ class AppController(QObject):
         act_redo.triggered.connect(lambda: self._on_redo_requested(False))
         m_edit.addAction(act_redo)
         m_edit.addSeparator()
+        self._menu_act_paste = None
         for label, seq, method in (("剪切", QKeySequence.Cut, "cut"),
                                    ("复制", QKeySequence.Copy, "copy"),
                                    ("粘贴", QKeySequence.Paste, "paste"),
                                    ("全选", QKeySequence.SelectAll, "selectAll")):
             act = _act(label)
             act.setShortcut(seq)
-            act.triggered.connect(
-                lambda _=False, m=method: self._edit_focus_widget(m))
+            if method == "paste":
+                # macOS 的 ⌘V 由菜单 QAction 承担，窗口级 QShortcut 会被它
+                # 盖住（非 macOS 那条在看板窗口上注册）。因此这里让"粘贴"
+                # 在没有文本控件聚焦时落到看板粘贴建卡——两条平台路径
+                # 语义对齐：文本框内粘文本，看板内粘贴建卡。
+                act.triggered.connect(self._on_paste_action)
+                self._menu_act_paste = act
+            else:
+                act.triggered.connect(
+                    lambda _=False, m=method: self._edit_focus_widget(m))
             m_edit.addAction(act)
 
         # 视图
@@ -1811,6 +2166,14 @@ class AppController(QObject):
         fw = QApplication.focusWidget()
         if isinstance(fw, (QLineEdit, QPlainTextEdit)):
             getattr(fw, method)()
+
+    def _on_paste_action(self) -> None:
+        """粘贴：文本框优先，否则看板粘贴建卡（macOS 菜单路径）"""
+        fw = QApplication.focusWidget()
+        if isinstance(fw, (QLineEdit, QPlainTextEdit)):
+            fw.paste()
+            return
+        self._on_paste_create()
 
     def _show_about(self) -> None:
         from app.i18n import app_display_name
@@ -1925,6 +2288,14 @@ class AppController(QObject):
                 and self._calendar_dialog.isVisible()):
             self._refresh_calendar()
         self._refresh_archive()
+        # 每日快照：启动快照只覆盖"重启过"的场景，而这个应用是常驻挂件，
+        # 一开就是几周——期间数据被逐步改坏时，快照链停在启动那一刻。
+        # 跨天时顺手留一份（内容与上一份相同会被 snapshot_board 自身跳过）。
+        if any(lst.cards for lst in board.lists):
+            try:
+                json_io.snapshot_board(self._store.path, has_cards=True)
+            except OSError as e:
+                logger.warning("每日快照失败: %s", e)
 
     # ── 截止提醒 ──────────────────────────────────────────
 
@@ -1937,10 +2308,15 @@ class AppController(QObject):
         """
         today = date.today()
         advance = AppConfig.get_remind_advance()
+        # 贪睡期间不重新提醒：到点由 _on_snooze_elapsed 清掉当天的去重键
+        # 再查一次，用户不必因为"刚推迟完又被弹一次"而烦躁
+        if time.monotonic() < self._snooze_until:
+            return
         board = self._store.load()
         log = AppConfig.get_remind_log()
         log_for_today = set(log.get(today.isoformat(), ()))   # set 判重 O(1)
         items: list[tuple[str, str]] = []   # (卡片标题, 状态文案)
+        first_card_id: str | None = None    # 本次提醒的第一张卡（气泡点击目标）
         for lst in board.lists:
             for c in lst.cards:
                 if c.done or c.archived:
@@ -1962,6 +2338,8 @@ class AppController(QObject):
                     if key not in log_for_today:
                         log_for_today.add(key)
                         items.append((c.title, label))
+                        if first_card_id is None:
+                            first_card_id = c.id
                 # 资金分配监视：两道期限（启动 +14/+30 天）并入同套分档，
                 # 键带 fund 前缀与普通截止互不干扰
                 for n, (dl, limit) in enumerate(c.fund_deadlines(), 1):
@@ -1981,6 +2359,8 @@ class AppController(QObject):
                         continue
                     log_for_today.add(key)
                     items.append((c.title, dlabel + flabel))
+                    if first_card_id is None:
+                        first_card_id = c.id
         # 清旧日志（只留今天与昨天）：必须无条件执行——放在"无新提醒就
         # 早退"之后会让旧条目在无提醒的日子永不修剪，日志越积越大
         keep = (today.isoformat(),
@@ -1995,10 +2375,61 @@ class AppController(QObject):
         parts = [f"「{t}」{k}" for t, k in items[:2]]
         if len(items) > 2:
             parts.append(tr("等 {n} 项").format(n=len(items)))
+        # 记下这次提醒指向的卡片：气泡被点击时直接打开它（与文案同一张）
+        self._notify_card_id = first_card_id
         self._tray.show_notification(
             tr("截止提醒：{items}").format(items=tr("、").join(parts)))
         if self._window.mode == "collapsed":
             self._pet_view.nudge()
+
+    # ── 提醒交互：点击跳转 / 稍后提醒 ──────────────────────
+
+    def _on_notification_clicked(self) -> None:
+        """气泡被点击：打开它指向的卡片（非截止提醒的通知无跳转目标）"""
+        card_id = self._notify_card_id
+        self._notify_card_id = None
+        if not card_id:
+            return
+        board = self._store.load()
+        lst, card = board.find_card(card_id)
+        if card is None or lst is None:
+            return
+        if not self._window.isVisible():
+            self._window.show_and_activate()
+            self._open_in_default_view()
+        self._window.raise_()
+        self._window.activateWindow()
+        self._on_card_edit(lst.id, card_id)
+
+    def _on_snooze_requested(self) -> None:
+        """托盘「稍后提醒」：推迟 N 分钟再提醒（清键重查，见 _on_snooze_elapsed）
+
+        没有待提醒卡片时给出明确回执——菜单项常驻（否则"想推迟时找不到
+        入口"），空手点是常态，静默会让人以为点了没用。
+        """
+        board = self._store.load()
+        today = date.today()
+        advance = AppConfig.get_remind_advance()
+        pending = any(
+            (lambda d: d is not None and (d <= 0 or d <= advance))(
+                c.due_delta(today))
+            for lst in board.lists for c in lst.cards
+            if not c.done and not c.archived)
+        if not pending:
+            self._notify(tr("当前没有待提醒的截止卡片"))
+            return
+        minutes = AppConfig.REMIND_SNOOZE_MINUTES
+        self._snooze_until = time.monotonic() + minutes * 60
+        self._snooze_timer.start()
+        self._notify(tr("已推迟提醒 {n} 分钟").format(n=minutes))
+
+    def _on_snooze_elapsed(self) -> None:
+        """贪睡结束：清掉当天的提醒去重键，让同一批卡片重新提醒一次"""
+        self._snooze_until = 0.0
+        log = AppConfig.get_remind_log()
+        log.pop(date.today().isoformat(), None)
+        AppConfig.save_remind_log(log)
+        self._check_due_dates()
 
     # ── 番茄钟 ────────────────────────────────────────────
 
@@ -2097,6 +2528,129 @@ class AppController(QObject):
         self._after_data_change(
             tr("已加入今日") if card.starred else tr("已移出今日"))
 
+    def _on_card_save_template(self, card_id: str) -> None:
+        """把卡片另存为模板（同名覆盖）：表单只问名字，其余字段照抄"""
+        from app.models import templates as templates_mod
+        from app.views.quick_add_dialog import QuickAddDialog
+
+        board = self._store.load()
+        _lst, card = board.find_card(card_id)
+        if card is None:
+            return
+        dlg = QuickAddDialog(
+            tr("另存为模板"),
+            tr("模板名称（同名会覆盖）"),
+            tr("例：每周复盘"),
+            initial_text=card.title,
+            ok_text=tr("保存"),
+            parent=self._window)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        name = dlg.text().strip()
+        if not name:
+            return
+        if templates_mod.save_template(name, card):
+            self._notify(tr("已保存模板「{name}」").format(name=name))
+        else:
+            self._show_error(tr("模板保存失败（数据目录不可写）"))
+
+    def _on_card_add_from_template(self, list_id: str, name: str) -> None:
+        """按模板新建卡片：插到目标列顶部"""
+        from app.models import templates as templates_mod
+
+        board = self._store.load()
+        target = board.find_list(list_id)
+        if target is None:
+            return
+        card = templates_mod.card_from_template(name, name)
+        if card is None:
+            self._notify(tr("模板「{name}」已不存在").format(name=name))
+            return
+        self._push_undo()
+        if target.fund_watch:
+            card.ensure_fund()
+        target.cards.insert(0, card)
+        self._after_data_change(
+            tr("已按模板添加「{title}」").format(title=card.title))
+
+    def _on_card_priority(self, card_id: str, priority: int) -> None:
+        """快捷设置优先级（右键子菜单 / 卡片聚焦时 1/2/3、0=清除）"""
+        board = self._store.load()
+        _lst, card = board.find_card(card_id)
+        if card is None or card.priority == priority:
+            return
+        self._push_undo()
+        card.priority = priority
+        if priority:
+            self._after_data_change(
+                tr("优先级：{name}").format(
+                    name="{} {}".format(AppConfig.PRIORITY_MARKS[priority],
+                                        priority_name(priority))))
+        else:
+            self._after_data_change(tr("已清除优先级"))
+
+    def _on_card_due_set(self, card_id: str, iso: str) -> None:
+        """快捷设置/清除截止日期（右键子菜单；""=清除）
+
+        日期来自相对预设（今天/明天/下周…），因此按"当天"算出的
+        值在跨天刷新后依然正确——不做任何缓存。
+        """
+        board = self._store.load()
+        _lst, card = board.find_card(card_id)
+        if card is None or (card.due_date or "") == iso:
+            return
+        self._push_undo()
+        card.due_date = iso or None
+        if iso:
+            self._after_data_change(
+                tr("截止日期：{date}").format(date=iso))
+        else:
+            self._after_data_change(tr("已清除截止日期"))
+
+    def _on_batch_edit(self, card_ids: list) -> None:
+        """批量编辑：截止日期 / 优先级 / 标题改名，一次落盘一步撤销"""
+        from app.views.batch_edit_dialog import BatchEditDialog
+
+        board = self._store.load()
+        cards = []
+        for cid in card_ids:
+            _lst, card = board.find_card(cid)
+            if card is not None and not card.archived:
+                cards.append(card)
+        if not cards:
+            return
+        dlg = BatchEditDialog(len(cards), parent=self._window)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        changes = dlg.changes()
+        if not changes:
+            return
+        self._push_undo()
+        n = 0
+        for card in cards:
+            touched = False
+            if "priority" in changes and card.priority != changes["priority"]:
+                card.priority = changes["priority"]
+                touched = True
+            if "due" in changes and (card.due_date or "") != changes["due"]:
+                card.due_date = changes["due"] or None
+                touched = True
+            if "rename" in changes:
+                new_title = _batch_rename(
+                    card.title, changes["rename"]["find"],
+                    changes["rename"]["repl"],
+                    changes["rename"]["mode"])
+                if new_title and new_title != card.title:
+                    card.title = new_title
+                    touched = True
+            if touched:
+                n += 1
+        if n == 0:
+            self._undo_stack.pop()   # 无实际变化不留空撤销步
+            return
+        self._after_data_change(
+            tr("已编辑 {n} 张卡片").format(n=n))
+
     def _on_card_workdir_open(self, card_id: str) -> None:
         """打开卡片工作目录（📂 徽章 / 右键菜单）
 
@@ -2147,6 +2701,10 @@ class AppController(QObject):
             self._archive_dialog = ArchiveDialog(self._window)
             self._archive_dialog.signal_restore_requested.connect(
                 self._on_card_restore)
+            self._archive_dialog.signal_purge_requested.connect(
+                self._on_card_purge)
+            self._archive_dialog.signal_clear_requested.connect(
+                self._on_archive_clear)
         self._archive_dialog.show()
         self._archive_dialog.raise_()
         self._archive_dialog.activateWindow()
@@ -2175,6 +2733,40 @@ class AppController(QObject):
         self._push_undo()
         card.archived = False
         self._after_data_change(tr("已恢复"))
+
+    def _on_card_purge(self, card_id: str) -> None:
+        """归档区彻底删除：与看板内删除同语义，不弹确认（撤销兜底）"""
+        board = self._store.load()
+        _lst, card = board.find_card(card_id)
+        if card is None or not card.archived:
+            return
+        self._push_undo()
+        if card_id == self._pomo_card_id:
+            self._pomo_stop()
+        board.remove_card(card_id)
+        self._after_data_change(
+            tr("已删除「{title}」 · {hint}").format(
+                title=card.title, hint=self._undo_hint()))
+
+    def _on_archive_clear(self) -> None:
+        """清空归档：一次删除全部归档卡片（对话框侧已确认过一次）"""
+        board = self._store.load()
+        archived = [c.id for _lst, c in board.archived_cards()]
+        if not archived:
+            return
+        self._push_undo()
+        n = 0
+        for cid in archived:
+            if board.remove_card(cid) is not None:
+                n += 1
+        if self._pomo_card_id in archived:
+            self._pomo_stop()
+        if n == 0:
+            self._undo_stack.pop()
+            return
+        self._after_data_change(
+            tr("已清空 {n} 张归档 · {hint}").format(
+                n=n, hint=self._undo_hint()))
 
     # ── 系统主题跟随 ──────────────────────────────────────
 
@@ -2393,6 +2985,8 @@ class AppController(QObject):
 
     def _on_quit(self) -> None:
         self._flush_store()
+        # 全局热键是系统级独占资源：显式注销，别留给下一个进程
+        self._hotkeys.dispose()
         self._tray.hide()
         QApplication.quit()
 

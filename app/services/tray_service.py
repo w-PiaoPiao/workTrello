@@ -22,6 +22,8 @@ class TrayService(QObject):
     signal_always_top_toggled = Signal(bool)
     signal_undo_requested = Signal()
     signal_settings_requested = Signal()
+    signal_snooze_requested = Signal()      # 稍后提醒（推迟截止提醒）
+    signal_notification_clicked = Signal()  # 气泡被点击
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -48,6 +50,14 @@ class TrayService(QObject):
         self._undo_action = QAction(tr("撤销"), menu)
         self._undo_action.triggered.connect(self.signal_undo_requested.emit)
         menu.addAction(self._undo_action)
+        # 稍后提醒：截止提醒只弹一次气泡，错过就没了——给出"再等一会儿"
+        # 的入口，而不是让用户自己盯着时间
+        self._snooze_action = QAction(
+            tr("稍后提醒 {n} 分钟").format(n=AppConfig.REMIND_SNOOZE_MINUTES),
+            menu)
+        self._snooze_action.triggered.connect(
+            self.signal_snooze_requested.emit)
+        menu.addAction(self._snooze_action)
         self._settings_action = QAction(tr("设置…"), menu)
         self._settings_action.triggered.connect(
             self.signal_settings_requested.emit)
@@ -58,6 +68,9 @@ class TrayService(QObject):
 
         self._tray.setContextMenu(menu)
         self._tray.activated.connect(self._on_activated)
+        # 气泡被点击：截止提醒时用来跳到对应卡片（无卡片上下文时无害）
+        self._tray.messageClicked.connect(
+            self.signal_notification_clicked.emit)
         self._tray.show()
 
     def set_always_top_checked(self, on: bool) -> None:
@@ -86,6 +99,8 @@ class TrayService(QObject):
         self._sync_toggle_text()
         self._always_top_action.setText(tr("窗口置顶"))
         self._undo_action.setText(tr("撤销"))
+        self._snooze_action.setText(
+            tr("稍后提醒 {n} 分钟").format(n=AppConfig.REMIND_SNOOZE_MINUTES))
         self._settings_action.setText(tr("设置…"))
         self._quit_action.setText(tr("退出"))
         self._tray.setToolTip(app_display_name())

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import math
+from datetime import date
 
 from PySide6.QtCore import QPoint, QPointF, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
@@ -30,7 +32,13 @@ from app.views.board_view import _CardCheckButton
 from app.views.theme import AppTheme
 
 _ROW_MIN_H = 42
-_MAX_POP_H = 330
+# 上限跟着 chrome 一起抬：加了两行输入后若不抬，可视行数会从 6 行掉到 4 行
+_MAX_POP_H = 392
+# 标题行 + 就地新建框 + 筛选框 + 内边距的总高（不含内容行）
+# 定高是按"内容行数"算出来的，chrome 高度必须一起算进去：少算过一次
+# （加了两行输入框却没调基数），浮窗底部把最后一条待办整个裁掉了
+_CHROME_H = 122
+_EMPTY_CHROME_H = 170
 
 
 class _StarButton(QPushButton):
@@ -220,16 +228,19 @@ class TodayPopover(QWidget):
     signal_card_done = Signal(str, str, bool)   # list_id, card_id, done
     signal_card_edit = Signal(str, str)         # list_id, card_id
     signal_card_star = Signal(str)              # card_id（星标 toggle）
+    signal_quick_add = Signal(str)              # 就地新建（输入文本，支持速记）
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setFixedWidth(280)
+        self.setFixedWidth(300)
         self._rows: list[tuple[str, str, QWidget]] = []   # (list_id, card_id, row)
         self._items: list[tuple[BoardList, Card]] = []    # 缓存供主题切换后重建
         self._done_label: QLabel | None = None            # "今日已完成 N 张"回顾行
         self._empty_label: QLabel | None = None           # 空态行（主题切换需重刷）
+        self._done_count: int | None = None               # 回顾行数字（过滤后仍要显示）
+        self._query = ""                                  # 标题/备注过滤词
         self._built = False
         AppTheme.register(self._on_theme_changed)
 
@@ -254,7 +265,16 @@ class TodayPopover(QWidget):
                   done_count: int | None = None) -> None:
         self._rebuild_row_widget()
         self._items = list(items)
-        self._title_label.setText(tr("今日待办 · {n}").format(n=len(items)))
+        self._done_count = done_count
+        # 排序与看板「今日聚焦」一致：优先级 → 星标 → 截止日。浮窗此前按
+        # 看板顺序展示，同一个"今日"在桌面小挂件和看板里顺序不同，用户
+        # 得重新找一遍；两处口径统一后视线不用换。
+        items = self._sorted(items)
+        items = self._filtered(items)
+        self._title_label.setText(
+            tr("今日待办 · {n}").format(n=len(items))
+            if not self._query else
+            tr("今日待办 · 匹配 {n}").format(n=len(items)))
         layout = self._rows_layout
         # 按 card.id 复用行控件（与 ListColumn.refresh_cards 同一策略：
         # 复用行绝不能先 deleteLater——销毁已排队，回事件循环即没）
@@ -271,13 +291,17 @@ class TodayPopover(QWidget):
         keep: set[int] = set()        # 复用行 id()
 
         # 今日完成回顾：全部勾完的庆祝时刻也走空态分支，两处都要显示
-        show_done = done_count is not None and done_count > 0
+        # （用实例上的计数而非入参：按关键字重跑 set_items 时过滤只影响行）
+        show_done = self._done_count is not None and self._done_count > 0
         if show_done:
-            done_label.setText(tr("今日已完成 {n} 张 🎉").format(n=done_count))
+            done_label.setText(
+                tr("今日已完成 {n} 张 🎉").format(n=self._done_count))
             self._apply_done_label_style()
 
         if not items:
-            empty = QLabel(tr("今天没有待办 🎉"))
+            empty = QLabel(tr("没有匹配的待办")
+                           if self._query else
+                           tr("今天没有待办 🎉"))
             empty.setAlignment(Qt.AlignCenter)
             self._empty_label = empty
             self._apply_empty_label_style()
@@ -287,7 +311,8 @@ class TodayPopover(QWidget):
                 done_label.show()
             else:
                 done_label.hide()
-            self._set_pop_height(110 + (24 if show_done else 0),
+            self._set_pop_height(_EMPTY_CHROME_H
+                                 + (24 if show_done else 0),
                                  dismiss=current, keep=keep)
             return
 
@@ -312,9 +337,47 @@ class TodayPopover(QWidget):
         else:
             done_label.hide()
         layout.addStretch(1)
-        h = min(_MAX_POP_H, 62 + _ROW_MIN_H * len(items)
+        h = min(_MAX_POP_H, _CHROME_H + _ROW_MIN_H * len(items)
                 + (24 if show_done else 0))
         self._set_pop_height(h, dismiss=current, keep=keep)
+
+    # ── 排序 / 过滤（与看板「今日聚焦」同口径）──────────────
+
+    @staticmethod
+    def _sorted(items: list[tuple[BoardList, Card]]):
+        """优先级 → 星标 → 越紧急的截止日在前
+
+        与看板视图 _today_sort_key 逐项一致（含"无截止日按 999 排最后"
+        的哨兵）：两处口径必须同步改，否则同一个"今日"在浮窗与看板里
+        顺序不同，用户得重新找一遍。
+        """
+        def key(pair):
+            card = pair[1]
+            delta = card.due_delta(date.today())
+            return (card.priority == 0, card.priority,
+                    not card.starred,
+                    delta if delta is not None else 999)
+        return sorted(items, key=key)
+
+    def _filtered(self, items: list[tuple[BoardList, Card]]):
+        """按标题/备注过滤（大小写不敏感）；空词直接透传"""
+        if not self._query:
+            return list(items)
+        q = self._query
+        return [(lst, c) for lst, c in items
+                if q in c.title.lower() or q in (c.notes or "").lower()]
+
+    def _on_search_changed(self, text: str) -> None:
+        self._query = text.strip().lower()
+        self.set_items(self._items, done_count=self._done_count)
+
+    def _on_quick_add(self) -> None:
+        """就地新建：输入框内容交给控制器解析速记并建卡（自动带星标）"""
+        text = self._add_edit.text().strip()
+        if not text:
+            return
+        self._add_edit.clear()
+        self.signal_quick_add.emit(text)
 
     def _set_pop_height(self, h: int, dismiss: list[QWidget],
                         keep: set[int]) -> None:
@@ -406,6 +469,20 @@ class TodayPopover(QWidget):
         head.addWidget(self._close_btn)
         root.addLayout(head)
 
+        # 就地新建：桌宠右键点开的小浮窗要能"看一眼就补一条"，此前只能
+        # 勾选和打开已有卡片，记新想法必须绕回看板（或桌宠菜单另一条路）
+        self._add_edit = QLineEdit()
+        self._add_edit.setPlaceholderText(tr("添加今日待办（支持速记）…"))
+        self._add_edit.returnPressed.connect(self._on_quick_add)
+        root.addWidget(self._add_edit)
+
+        # 搜索：今日清单长起来以后（十几条）翻找同样费劲
+        self._search_edit = QLineEdit()
+        self._search_edit.setPlaceholderText(tr("筛选今日待办…"))
+        self._search_edit.setClearButtonEnabled(True)
+        self._search_edit.textChanged.connect(self._on_search_changed)
+        root.addWidget(self._search_edit)
+
         self._frame = frame
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
@@ -440,6 +517,26 @@ class TodayPopover(QWidget):
                 font-size: 10px;
             }}
             QPushButton:hover {{ background: {c['danger']}; color: white; }}
+        """)
+        self._add_edit.setStyleSheet(f"""
+            QLineEdit {{
+                background: {c['bg_hover']};
+                color: {c['text_primary']};
+                border: 1px solid {c['border']};
+                border-radius: 8px;
+                padding: 5px 8px;
+                font-size: 12px;
+            }}
+        """)
+        self._search_edit.setStyleSheet(f"""
+            QLineEdit {{
+                background: transparent;
+                color: {c['text_primary']};
+                border: 1px solid {c['border']};
+                border-radius: 8px;
+                padding: 4px 8px;
+                font-size: 11px;
+            }}
         """)
 
     def show_below(self, anchor: QRect) -> None:

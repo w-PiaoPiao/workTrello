@@ -11,11 +11,13 @@
 from __future__ import annotations
 
 import bisect
+import json
 import logging
 import math
 import zlib
-from datetime import date
+from datetime import date, timedelta
 from functools import lru_cache
+from pathlib import Path
 
 import shiboken6
 from PySide6.QtCore import (
@@ -43,6 +45,7 @@ from PySide6.QtGui import (
     QPen,
     QPainter,
     QPainterPath,
+    QPixmap,
     QColor,
 )
 from PySide6.QtWidgets import (
@@ -60,7 +63,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import AppConfig
-from app.i18n import label_display, repeat_display, tr
+from app.i18n import label_display, priority_name, repeat_display, tr
 from app.models.board import FUND_KIND_LABELS, BoardList, Card
 from app.views import motion
 from app.views.notes_popover import (
@@ -77,8 +80,21 @@ logger = logging.getLogger(__name__)
 
 MIME_LIST = "application/x-petboard-list"
 MIME_CARD = "application/x-petboard-card"
+# 成组拖拽：单卡走 MIME_CARD（日历等只认单卡的落点也要能接），
+# 多选成组时另发这条，落点侧优先取它
+MIME_CARDS = "application/x-petboard-cards"
 
 _MAX_WIDGET_H = 16777215    # QWIDGETSIZE_MAX：清除动画期固定高度用
+
+
+def _popup_menu(menu: QMenu, global_pos: QPoint):
+    """弹出菜单并返回被选中的 QAction（未选中返回 None）
+
+    单独抽一层是为了给测试留接缝：QMenu.exec 是 Shiboken 槽，patch 类属性
+    对它无效（PySide6 从 C++ 方法表解析），测试无法在不起真菜单的情况下
+    走一遍"选项 → 派发"的完整链路。
+    """
+    return menu.exec(global_pos)
 
 
 def _clear_layout_recursive(layout) -> None:
@@ -220,6 +236,11 @@ def _board_qss(mode: str) -> str:
             background: {c['glass_hover']};
         }}
         QPushButton#boardToolBtn:checked {{
+            background: {c['accent']};
+            color: white;
+        }}
+        /* 卡片拖到工具按钮上（归档 / 今日）：accent 高亮 = 松手就执行 */
+        QPushButton#boardToolBtn[dropTarget="true"] {{
             background: {c['accent']};
             color: white;
         }}
@@ -590,6 +611,10 @@ class CardWidget(QFrame):
     signal_card_ctrl_clicked = Signal(str)      # card_id（Ctrl/Cmd+单击 多选）
     signal_card_shift_clicked = Signal(str)     # card_id（Shift+单击 范围多选）
     signal_drag_blocked = Signal()              # 过滤态下拖拽被拒（提示入口）
+    signal_card_priority = Signal(str, int)     # card_id, priority（0=无 1=高 2=中 3=低）
+    signal_card_due_set = Signal(str, str)      # card_id, ISO 日期（""=清除截止日）
+    signal_card_move_to = Signal(str, str)      # card_id, target_list_id
+    signal_card_save_template = Signal(str)     # card_id（另存为模板）
 
     # 标签色条前景色按 hex 字符串缓存：QColor(十六进制解析) 每帧每条
     # 纯重复，key 数量有限（LABEL_COLORS 的 fg 值域）；主题切换换 key 自动生效
@@ -635,12 +660,78 @@ class CardWidget(QFrame):
         self._selected = selected
         _set_prop(self, "selected", bool(selected))
 
+    # ── 右键快捷编辑子菜单（优先级 / 截止日期 / 移动到列表）──
+
+    def _add_priority_menu(self, menu: QMenu, choices: dict) -> None:
+        """优先级子菜单：当前值打勾；选中项由调用方按 action 查表派发"""
+        sub = menu.addMenu(tr("优先级"))
+        for value in (0, 1, 2, 3):
+            name = (tr("无") if value == 0
+                    else tr("{mark} {name}").format(
+                        mark=AppConfig.PRIORITY_MARKS[value],
+                        name=priority_name(value)))
+            act = sub.addAction(name)
+            act.setCheckable(True)
+            act.setChecked(self._card.priority == value)
+            choices[act] = ("priority", value)
+
+    def _add_due_menu(self, menu: QMenu, choices: dict) -> None:
+        """截止日期子菜单：常用相对日期 + 清除
+
+        任意日期仍走编辑对话框（Enter/单击卡片）——快捷菜单只收编
+        "今天/明天/下周"这类无需看日历的高频改期。
+        """
+        sub = menu.addMenu(tr("截止日期"))
+        today = date.today()
+        presets = [
+            (tr("今天"), today),
+            (tr("明天"), today + timedelta(days=1)),
+            (tr("后天"), today + timedelta(days=2)),
+            (tr("下周一"), today + timedelta(days=7 - today.weekday())),
+            (tr("一周后"), today + timedelta(days=7)),
+        ]
+        current = self._card.due_date or ""
+        for label, day in presets:
+            iso = day.isoformat()
+            act = sub.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(current == iso)
+            choices[act] = ("due", iso)
+        if current:
+            sub.addSeparator()
+            act_clear = sub.addAction(tr("清除日期"))
+            choices[act_clear] = ("due", "")
+
+    def _add_move_menu(self, menu: QMenu, choices: dict) -> None:
+        """移动到列表子菜单：列出本卡之外的全部列表（目标列顶部落位）"""
+        bv = self._board_view()
+        col = self._owning_column()
+        if bv is None or col is None:
+            return
+        others = [(lid, title) for lid, title in bv.list_choices()
+                  if lid != col.list_id()]
+        if not others:
+            return
+        sub = menu.addMenu(tr("移动到列表"))
+        fm = sub.fontMetrics()
+        for lid, title in others:
+            act = sub.addAction(fm.elidedText(title, Qt.ElideRight, 200))
+            choices[act] = ("move_to", lid)
+
     def _show_card_menu(self, pos) -> None:
         menu = QMenu(self)
+        # 子菜单选项按 action 查表派发：exec 返回的就是被触发的那个 QAction
+        choices: dict = {}
         # 今日聚焦开关放首位：星标是"加入今日"的唯一入口，此前必须打开
         # 编辑对话框才能勾选，是规划链路上最贵的操作
         act_star = menu.addAction(
             tr("☆ 移出今日") if self._card.starred else tr("⭐ 加入今日"))
+        menu.addSeparator()
+        # 高频字段的快捷编辑：优先级/截止/换列此前一律"打开对话框→改→
+        # 保存"三步走，是日常整理看板最费步数的路径
+        self._add_priority_menu(menu, choices)
+        self._add_due_menu(menu, choices)
+        self._add_move_menu(menu, choices)
         menu.addSeparator()
         # 工作目录：有目录先给"打开"，设置项无目录也提供（含更改语义，
         # 清除走编辑对话框）
@@ -656,23 +747,37 @@ class CardWidget(QFrame):
             act_pomo = menu.addAction(tr("▶ 开始专注 25 分钟"))
         menu.addSeparator()
         act_duplicate = menu.addAction(tr("复制卡片"))
+        act_save_tpl = menu.addAction(tr("另存为模板…"))
         act_archive = menu.addAction(tr("归档"))
-        chosen = menu.exec(self.mapToGlobal(pos))
+        chosen = _popup_menu(menu, self.mapToGlobal(pos))
         menu.deleteLater()   # exec 返回即弃用：挂在卡片控件上会随卡片累积
+        card_id = self._card.id
+        kind_value = choices.get(chosen)
+        if kind_value is not None:
+            kind, value = kind_value
+            if kind == "priority":
+                self.signal_card_priority.emit(card_id, value)
+            elif kind == "due":
+                self.signal_card_due_set.emit(card_id, value)
+            elif kind == "move_to":
+                self.signal_card_move_to.emit(card_id, value)
+            return
         if chosen is act_star:
-            self.signal_card_star.emit(self._card.id)
+            self.signal_card_star.emit(card_id)
         elif act_workdir_open is not None and chosen is act_workdir_open:
-            self.signal_card_workdir_open.emit(self._card.id)
+            self.signal_card_workdir_open.emit(card_id)
         elif chosen is act_workdir_set:
-            self.signal_card_workdir_set.emit(self._card.id)
+            self.signal_card_workdir_set.emit(card_id)
         elif act_attach_open is not None and chosen is act_attach_open:
-            self.signal_card_attachment_open.emit(self._card.id)
+            self.signal_card_attachment_open.emit(card_id)
         elif chosen is act_pomo:
-            self.signal_card_pomo.emit(self._card.id)
+            self.signal_card_pomo.emit(card_id)
         elif chosen is act_duplicate:
-            self.signal_card_duplicate.emit(self._card.id)
+            self.signal_card_duplicate.emit(card_id)
+        elif chosen is act_save_tpl:
+            self.signal_card_save_template.emit(card_id)
         elif chosen is act_archive:
-            self.signal_card_archive.emit(self._card.id)
+            self.signal_card_archive.emit(card_id)
 
     def card(self) -> Card:
         return self._card
@@ -1276,8 +1381,26 @@ class CardWidget(QFrame):
             p = p.parent()
         return p
 
+    def _show_move_menu(self) -> None:
+        """键盘 M：只弹"移动到列表"菜单（右键菜单的子集，免鼠标绕行）"""
+        menu = QMenu(self)
+        choices: dict = {}
+        self._add_move_menu(menu, choices)
+        if not choices:
+            menu.deleteLater()
+            return
+        chosen = _popup_menu(menu, self.mapToGlobal(QPoint(0, self.height())))
+        menu.deleteLater()
+        value = choices.get(chosen)
+        if value is not None:
+            self.signal_card_move_to.emit(self._card.id, value[1])
+
     def keyPressEvent(self, event) -> None:
-        """键盘操作卡片：Return 编辑 / 空格切换完成 / 方向键移动焦点"""
+        """键盘操作卡片：Return 编辑 / 空格切换完成 / 方向键移动焦点
+
+        1/2/3/0 直接设优先级、M 换列：这两件事在整理看板时最频繁，此前
+        每次都要"打开对话框→改→保存"，键盘用户尤其吃亏。
+        """
         key = event.key()
         if key in (Qt.Key_Return, Qt.Key_Enter):
             self.signal_edit_requested.emit(self._card)
@@ -1285,6 +1408,18 @@ class CardWidget(QFrame):
             return
         if key == Qt.Key_Space:
             self.signal_done_toggled.emit(self._card.id, not self._card.done)
+            event.accept()
+            return
+        if key in (Qt.Key_1, Qt.Key_2, Qt.Key_3):
+            self.signal_card_priority.emit(self._card.id, key - Qt.Key_0)
+            event.accept()
+            return
+        if key == Qt.Key_0:
+            self.signal_card_priority.emit(self._card.id, 0)
+            event.accept()
+            return
+        if key == Qt.Key_M:
+            self._show_move_menu()
             event.accept()
             return
         col = self._owning_column()
@@ -1320,6 +1455,13 @@ class CardWidget(QFrame):
             return
         mime = QMimeData()
         mime.setData(MIME_CARD, self._card.id.encode("utf-8"))
+        # 多选成组：拖选中集合里的任一张 = 搬走整组。多选是"我对这几张
+        # 一起做事"的宣言，此前拖拽却只搬手上那一张，只能逐张拖或改用
+        # 批量栏的"→ 移动"（落点只能到列首）
+        group = self._group_drag_ids()
+        if group:
+            mime.setData(MIME_CARDS,
+                         json.dumps(group).encode("utf-8"))
         # 起拖前先复位悬停态：drag.exec() 是原生模态循环，期间与之后都不
         # 保证派发 Enter/Leave；同列重排还会复用同一控件（refresh_cards），
         # 残留的 _hovered 会让 ✕ 赖在卡上不走。顺带让拖拽预览截图不再带着
@@ -1327,8 +1469,10 @@ class CardWidget(QFrame):
         self._clear_hover()
         drag = QDrag(self)
         drag.setMimeData(mime)
-        # 拖拽预览：卡片自身截图
+        # 拖拽预览：卡片自身截图（成组时右上角叠一个张数角标）
         pixmap = self.grab()
+        if group:
+            pixmap = _with_group_badge(pixmap, len(group))
         drag.setPixmap(pixmap)
         drag.setHotSpot(QPoint(pixmap.width() // 2, 14))
         drag.exec(Qt.MoveAction)
@@ -1336,6 +1480,43 @@ class CardWidget(QFrame):
         # 原生循环结束后保守复核一次（此时 underMouse 可信，光标若仍在
         # 本卡上则保持隐藏也无妨——下一次真实 Enter 会重新显示）
         self._revalidate_hover()
+
+    def _group_drag_ids(self) -> list[str]:
+        """本卡属于当前多选、且选中不止一张时返回整组 id（否则空表）
+
+        返回顺序按列内实际顺序（不是点击顺序），落点插入后与拖拽前的
+        相对次序一致。
+        """
+        bv = self._board_view()
+        col = self._owning_column()
+        if bv is None or col is None:
+            return []
+        selected = bv.selection_ids()
+        if len(selected) < 2 or self._card.id not in selected:
+            return []
+        sel = set(selected)
+        return [c.id for c in col.board_list().cards if c.id in sel]
+
+
+def _with_group_badge(pixmap: QPixmap, count: int) -> QPixmap:
+    """在拖影右上角叠一个"N"角标（成组拖拽"手上拿着几张"的即时反馈）"""
+    out = QPixmap(pixmap)
+    painter = QPainter(out)
+    painter.setRenderHint(QPainter.Antialiasing)
+    d = 22
+    x = max(0, out.width() - d - 4)
+    rect = QRectF(x, 4, d, d)
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(to_qcolor(AppTheme.colors()["accent"]))
+    painter.drawEllipse(rect)
+    painter.setPen(QColor("#FFFFFF"))
+    font = painter.font()
+    font.setBold(True)
+    font.setPointSizeF(max(7.0, d * 0.42))
+    painter.setFont(font)
+    painter.drawText(rect, Qt.AlignCenter, str(count))
+    painter.end()
+    return out
 
 
 def _begin_list_drag(source: QWidget, board_list: BoardList) -> None:
@@ -1398,6 +1579,7 @@ class ListHeader(QWidget):
     signal_delete_requested = Signal(str)     # list_id
     signal_fund_watch = Signal(str, bool)     # list_id, enabled 资金分配监视
     signal_fund_export = Signal(str)          # list_id 导出资金记录 Excel
+    signal_duplicate_requested = Signal(str)  # list_id（复制列表含卡片）
 
     def __init__(self, board_list: BoardList, parent=None):
         super().__init__(parent)
@@ -1446,6 +1628,7 @@ class ListHeader(QWidget):
         # 列表操作菜单
         self._menu = QMenu(self)
         self._act_rename = QAction(tr("重命名"), self._menu)
+        self._act_duplicate = QAction(tr("复制列表（含卡片）"), self._menu)
         self._act_delete = QAction(tr("删除列表"), self._menu)
         self._act_fund_watch = QAction(tr("资金分配监视"), self._menu)
         self._act_fund_watch.setCheckable(True)
@@ -1454,10 +1637,14 @@ class ListHeader(QWidget):
         self._act_fund_export = QAction(tr("导出 Excel…"), self._menu)
         self._act_fund_export.setVisible(board_list.fund_watch)
         self._menu.addAction(self._act_rename)
+        self._menu.addAction(self._act_duplicate)
+        self._menu.addSeparator()
         self._menu.addAction(self._act_fund_watch)
         self._menu.addAction(self._act_fund_export)
         self._menu.addAction(self._act_delete)
         self._act_rename.triggered.connect(self._start_rename)
+        self._act_duplicate.triggered.connect(
+            lambda: self.signal_duplicate_requested.emit(self._lst.id))
         self._act_delete.triggered.connect(
             lambda: self.signal_delete_requested.emit(self._lst.id))
         self._act_fund_watch.toggled.connect(self._on_fund_watch_toggled)
@@ -1915,7 +2102,9 @@ class ListColumn(QFrame):
     signal_card_done = Signal(str, bool)
     signal_card_delete = Signal(str)
     signal_card_move = Signal(str, str, int)   # card_id, target_list_id, index
+    signal_cards_move = Signal(list, str, int)  # card_ids, target_list_id, index（成组）
     signal_add_card = Signal(str)              # list_id
+    signal_add_from_template = Signal(str, str)  # list_id, 模板名
     signal_title_changed = Signal(str, str)
     signal_delete_list = Signal(str)
     signal_card_pomo = Signal(str)             # card_id
@@ -1927,12 +2116,18 @@ class ListColumn(QFrame):
     signal_card_attachment_open = Signal(str)  # card_id（打开首个附件）
     signal_card_ctrl_clicked = Signal(str)     # card_id（Ctrl/Cmd+单击 多选）
     signal_card_shift_clicked = Signal(str)    # card_id（Shift+单击 范围多选）
+    signal_card_priority = Signal(str, int)    # card_id, priority（右键/键盘快捷编辑）
+    signal_card_due_set = Signal(str, str)     # card_id, ISO 日期（""=清除）
+    signal_card_move_to = Signal(str, str)     # card_id, target_list_id
+    signal_card_save_template = Signal(str)    # card_id（另存为模板）
     signal_label_clicked = Signal(str)         # label key（点色条过滤）
     signal_drag_blocked = Signal()             # 过滤态下拖拽被拒（→ 看板 toast）
     signal_list_move = Signal(str, str, bool)  # moved_list_id, target_list_id, insert_before
     signal_collapsed_changed = Signal(str, bool)  # list_id, collapsed
     signal_fund_watch = Signal(str, bool)      # list_id, enabled 资金分配监视
     signal_fund_export = Signal(str)           # list_id 导出资金记录 Excel
+    signal_duplicate_requested = Signal(str)   # list_id（复制列表含卡片）
+    signal_files_dropped = Signal(str, list)   # list_id, [本地文件路径]（拖文件建卡）
 
     COLLAPSED_HEIGHT = 52        # 折叠态高度（仅剩标题栏）
 
@@ -1974,6 +2169,8 @@ class ListColumn(QFrame):
         self._header.signal_delete_requested.connect(self.signal_delete_list)
         self._header.signal_fund_watch.connect(self.signal_fund_watch)
         self._header.signal_fund_export.connect(self.signal_fund_export)
+        self._header.signal_duplicate_requested.connect(
+            self.signal_duplicate_requested)
         root.addWidget(self._header)
 
         # 卡片滚动区
@@ -2007,11 +2204,49 @@ class ListColumn(QFrame):
 
         # 添加按钮
         self._add_btn = AddCardButton(tr("+ 添加卡片"))
-        self._add_btn.clicked.connect(
-            lambda: self.signal_add_card.emit(self._lst.id))
+        self._add_btn.clicked.connect(self._on_add_clicked)
         root.addWidget(self._add_btn)
 
         self.refresh_cards()
+
+    # ── 添加卡片：有模板时先给一个选择 ────────────────────
+
+    def _on_add_clicked(self) -> None:
+        """列尾「+ 添加卡片」：有模板时先弹"空白卡片 / 模板…"菜单
+
+        模板的入口放在这里而不是工具栏：它是"新建一张卡"的一种方式，
+        与"空白卡片"并列最自然；没有模板时退化为原来的直接新建，
+        老用户的操作一步都不会多。
+        """
+        names = self._template_names()
+        if not names:
+            self.signal_add_card.emit(self._lst.id)
+            return
+        menu = QMenu(self)
+        picked: dict = {}
+        act_blank = menu.addAction(tr("空白卡片"))
+        picked[act_blank] = ""
+        menu.addSeparator()
+        fm = menu.fontMetrics()
+        for name in names:
+            act = menu.addAction(tr("模板：{name}").format(name=name))
+            picked[act] = name
+        chosen = _popup_menu(
+            menu, self._add_btn.mapToGlobal(
+                QPoint(0, -menu.sizeHint().height() - 4)))
+        menu.deleteLater()
+        if chosen is None:
+            return
+        if chosen is act_blank:
+            self.signal_add_card.emit(self._lst.id)
+            return
+        name = picked.get(chosen)
+        if name:
+            self.signal_add_from_template.emit(self._lst.id, name)
+
+    def _template_names(self) -> list[str]:
+        bv = self._board_view()
+        return bv.template_names() if bv is not None else []
 
     # ── 整列拖拽：列身空白处按下并拖动即搬走整列 ──────────────
 
@@ -2051,14 +2286,19 @@ class ListColumn(QFrame):
     def list_id(self) -> str:
         return self._lst.id
 
+    def board_list(self) -> BoardList:
+        """当前列表模型（卡片顺序查询用：成组拖拽按列内顺序取 id）"""
+        return self._lst
+
     def set_list(self, board_list: BoardList,
                  visible_cards: list[Card] | None = None) -> None:
         """增量刷新：重指向模型对象并同步整列内容（可带过滤子集）"""
         self._lst = board_list
         self._visible_cards = visible_cards
-        # 过滤态落点不可靠禁用；折叠列同样禁用——否则数据变更触发的
-        # refresh 会把折叠列重新放开拖放，卡片拖进去落在隐藏卡之间"消失"
-        self.setAcceptDrops(visible_cards is None and not self._collapsed)
+        # 过滤态落点不可靠，禁用拖放。折叠列**保持可接收**：拖到折叠列
+        # 会先自动展开再落点（见 dragEnterEvent），否则"看板列太多先折起来"
+        # 的状态下就没法往这些列拖卡片
+        self.setAcceptDrops(visible_cards is None)
         self._header.set_list(board_list)
         self.refresh_cards()
 
@@ -2075,7 +2315,7 @@ class ListColumn(QFrame):
             if old is None or [c.id for c in old] == [c.id for c in visible_cards]:
                 return
         self._visible_cards = visible_cards
-        self.setAcceptDrops(visible_cards is None and not self._collapsed)
+        self.setAcceptDrops(visible_cards is None)
         self.refresh_cards()
 
     def _make_card_widget(self, card: Card) -> CardWidget:
@@ -2092,6 +2332,10 @@ class ListColumn(QFrame):
         cw.signal_card_attachment_open.connect(self.signal_card_attachment_open)
         cw.signal_card_ctrl_clicked.connect(self.signal_card_ctrl_clicked)
         cw.signal_card_shift_clicked.connect(self.signal_card_shift_clicked)
+        cw.signal_card_priority.connect(self.signal_card_priority)
+        cw.signal_card_due_set.connect(self.signal_card_due_set)
+        cw.signal_card_move_to.connect(self.signal_card_move_to)
+        cw.signal_card_save_template.connect(self.signal_card_save_template)
         cw.signal_label_clicked.connect(self.signal_label_clicked)
         cw.signal_drag_blocked.connect(self.signal_drag_blocked)
         return cw
@@ -2360,8 +2604,8 @@ class ListColumn(QFrame):
                 logger.exception("列 %s 折叠过渡的事件处理器抛异常", self._lst.id)
 
         guarded(lambda: self._header.set_collapsed_mark(collapsed))
-        guarded(lambda: self.setAcceptDrops(
-            not collapsed and self._visible_cards is None))
+        # 折叠列仍接收拖放：进入时先自动展开（见 dragEnterEvent）
+        guarded(lambda: self.setAcceptDrops(self._visible_cards is None))
         if not collapsed:
             # 展开：先恢复内容可见，随高度增长逐层露出（超出部分被裁剪）
             guarded(lambda: self._scroll.setVisible(True))
@@ -2461,7 +2705,7 @@ class ListColumn(QFrame):
         step(lambda: self._scroll.setVisible(not collapsed))
         step(lambda: self._add_btn.setVisible(not collapsed))
         # 过滤态(搜索/今日)落点不可靠,拖放保持禁用,不能被折叠切换覆盖
-        self.setAcceptDrops(not collapsed and self._visible_cards is None)
+        self.setAcceptDrops(self._visible_cards is None)
         step(lambda: self._header.set_collapsed_mark(collapsed))
         self.updateGeometry()
         host = self.parentWidget()
@@ -2635,7 +2879,15 @@ class ListColumn(QFrame):
             bv.hide_list_drop_indicator()
 
     def dragEnterEvent(self, event) -> None:
-        if event.mimeData().hasFormat(MIME_CARD):
+        if self._is_card_drag(event):
+            self._expand_for_drop()
+        if self._file_paths_from(event) is not None:
+            # 外部文件：拖到列上 = 在该列建卡并把文件作为附件
+            self._set_drop_highlight(True)
+            event.acceptProposedAction()
+            return
+        if event.mimeData().hasFormat(MIME_CARD) or event.mimeData().hasFormat(
+                MIME_CARDS):
             self._drag_hovering = True
             self._rebuild_drop_mids()   # 拖拽期间布局不变，快照全程有效
             self._update_drop_indicator_at(self._column_y_from_event(event))
@@ -2646,8 +2898,47 @@ class ListColumn(QFrame):
             self._update_list_drop_indicator(event)
             event.acceptProposedAction()
 
+    def _is_card_drag(self, event) -> bool:
+        """会不会真的落在这列上（卡片拖拽 / 带本地文件的拖拽）
+
+        不能只看 hasUrls()：拖一段文本或空 URL 列表同样会带着 urls 格式，
+        但它落不下来——列会白白展开一次。
+        """
+        mime = event.mimeData()
+        if mime.hasFormat(MIME_CARD) or mime.hasFormat(MIME_CARDS):
+            return True
+        return self._file_paths_from(event) is not None
+
+    def _expand_for_drop(self) -> None:
+        """卡片/文件拖到折叠列上：先展开再落点
+
+        此前折叠列直接禁用拖放，理由是"拖进去落在隐藏卡之间会消失"。
+        自动展开从根上消掉这个歧义：落点始终是用户看得见的卡片列表。
+        """
+        if self._collapsed:
+            self.set_collapsed(False)
+
+    @staticmethod
+    def _file_paths_from(event) -> list | None:
+        """拖拽数据里的本地文件路径（非文件拖拽返回 None）
+
+        只认 file:// 的本地路径：拖进来的图片/文档/文件夹都算，但**过滤
+        目录**——建一张挂着目录的卡没有意义（打开附件会变成打开资源管理器），
+        且目录递归复制可能吞掉整棵子树。
+        """
+        mime = event.mimeData()
+        if not mime.hasUrls():
+            return None
+        paths = [u.toLocalFile() for u in mime.urls() if u.isLocalFile()]
+        files = [p for p in paths if p and Path(p).is_file()]
+        return files or None
+
     def dragMoveEvent(self, event) -> None:
-        if event.mimeData().hasFormat(MIME_CARD):
+        if self._file_paths_from(event) is not None:
+            event.acceptProposedAction()
+            return
+        if (event.mimeData().hasFormat(MIME_CARD)
+                or event.mimeData().hasFormat(MIME_CARDS)):
             self._drag_hovering = True
             self._update_drop_indicator_at(self._column_y_from_event(event))
             if not self._auto_scroll_timer.isActive():
@@ -2668,6 +2959,30 @@ class ListColumn(QFrame):
 
     def dropEvent(self, event) -> None:
         mime = event.mimeData()
+        paths = self._file_paths_from(event)
+        if paths is not None:
+            self._set_drop_highlight(False)
+            self.signal_files_dropped.emit(self._lst.id, paths)
+            event.acceptProposedAction()
+            return
+        if mime.hasFormat(MIME_CARDS):
+            # 多选成组拖动：一次搬走整组（顺序按看板顺序，落点为一个整体）
+            self._drag_hovering = False
+            self._auto_scroll_timer.stop()
+            try:
+                ids = json.loads(bytes(mime.data(MIME_CARDS)).decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                ids = []
+            index = self._drop_index_from_y(
+                event.position().toPoint().y()
+                + self.mapToGlobal(QPoint(0, 0)).y())
+            self._drop_mids = None
+            self._hide_drop_indicator()
+            index = self._raw_index_from_visible(index)
+            if ids:
+                self.signal_cards_move.emit(ids, self._lst.id, index)
+            event.acceptProposedAction()
+            return
         if mime.hasFormat(MIME_CARD):
             self._drag_hovering = False
             self._auto_scroll_timer.stop()
@@ -2709,6 +3024,56 @@ class AddCardButton(QPushButton):
     def reapply(self) -> None:
         """配色由看板级样式表统一下发，此处仅触发重绘"""
         self.update()
+
+
+class _CardDropButton(QPushButton):
+    """可接收卡片拖放的工具栏按钮（拖到按钮上 = 对该卡执行按钮的动作）
+
+    "拖卡片到「归档」= 归档、拖到「今日」= 加入今日"把最常用的两个归类
+    动作变成一次拖拽；此前必须先拖回列表、再右键、再选菜单项。
+    落点高亮用动态属性驱动 QSS（同一按钮在拖拽中会反复进出，重设样式表
+    会让按钮与其文字反复 re-polish）。
+    """
+
+    signal_cards_dropped = Signal(list)   # card_ids
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(text, parent)
+        self.setAcceptDrops(True)
+
+    @staticmethod
+    def _ids_from(event) -> list:
+        mime = event.mimeData()
+        if mime.hasFormat(MIME_CARDS):
+            try:
+                ids = json.loads(bytes(mime.data(MIME_CARDS)).decode("utf-8"))
+                return [str(i) for i in ids] if isinstance(ids, list) else []
+            except (ValueError, UnicodeDecodeError):
+                return []
+        if mime.hasFormat(MIME_CARD):
+            return [bytes(mime.data(MIME_CARD)).decode("utf-8")]
+        return []
+
+    def dragEnterEvent(self, event) -> None:
+        if self._ids_from(event):
+            _set_prop(self, "dropTarget", True)
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event) -> None:
+        if self._ids_from(event):
+            event.acceptProposedAction()
+
+    def dragLeaveEvent(self, event) -> None:
+        _set_prop(self, "dropTarget", False)
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event) -> None:
+        ids = self._ids_from(event)
+        _set_prop(self, "dropTarget", False)
+        if not ids:
+            return
+        event.acceptProposedAction()
+        self.signal_cards_dropped.emit(ids)
 
 
 class _ListsHost(QWidget):
@@ -2760,8 +3125,10 @@ class BoardView(QWidget):
     signal_card_done = Signal(str, str, bool)   # list_id, card_id, done
     signal_card_delete = Signal(str, str)       # list_id, card_id
     signal_card_move = Signal(str, str, int)    # card_id, target_list_id, index
+    signal_cards_move = Signal(list, str, int)  # card_ids, 目标列, index（成组拖拽）
     signal_list_move = Signal(str, str, bool)   # moved_list_id, target_list_id, insert_before
     signal_card_add = Signal(str)               # list_id
+    signal_add_from_template = Signal(str, str)  # list_id, 模板名
     signal_list_add = Signal()
     signal_bulk_add = Signal()                  # 批量添加（每行一张）
     signal_list_title_changed = Signal(str, str)
@@ -2769,6 +3136,7 @@ class BoardView(QWidget):
     signal_list_collapsed = Signal(str, bool)   # list_id, collapsed
     signal_list_fund_watch = Signal(str, bool)  # list_id, enabled 资金分配监视
     signal_list_fund_export = Signal(str)       # list_id 导出资金记录 Excel
+    signal_list_duplicate = Signal(str)         # list_id（复制列表含卡片）
     signal_close_requested = Signal()           # 窗口 ✕：最小化到托盘（不退出）
     signal_zoom_requested = Signal()
     signal_card_pomo = Signal(str)              # card_id
@@ -2788,6 +3156,10 @@ class BoardView(QWidget):
     signal_shortcuts_open = Signal()            # 打开快捷键速查
     signal_card_duplicate = Signal(str)         # card_id（复制卡片）
     signal_card_attachment_open = Signal(str)   # card_id（打开首个附件）
+    signal_card_priority = Signal(str, int)     # card_id, priority（快捷编辑）
+    signal_card_due_set = Signal(str, str)      # card_id, ISO 日期（""=清除）
+    signal_card_save_template = Signal(str)     # card_id（另存为模板）
+    signal_files_dropped = Signal(str, list)    # list_id, [文件路径]（拖文件建卡）
     # 多看板
     signal_board_switch = Signal(str)           # board_id
     signal_board_create = Signal()
@@ -2799,6 +3171,8 @@ class BoardView(QWidget):
     signal_batch_label = Signal(list, str)      # card_ids, label_key
     signal_batch_delete = Signal(list)          # card_ids
     signal_batch_archive = Signal(list)         # card_ids
+    signal_batch_edit = Signal(list)            # card_ids（批量编辑对话框）
+    signal_cards_to_today = Signal(list)        # card_ids（拖到「今日」按钮）
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2838,13 +3212,16 @@ class BoardView(QWidget):
         self._toolbar_layout.addWidget(self._stats_label)
         # 注意：不加中间 stretch——弹性全部留给搜索框（右侧控件固定聚集）
 
-        self._today_btn = QPushButton(tr("今日 {n}").format(n=0))
+        self._today_btn = _CardDropButton(tr("今日 {n}").format(n=0))
         self._today_btn.setObjectName("boardToolBtn")
         self._today_btn.setCheckable(True)
         self._today_btn.setCursor(Qt.PointingHandCursor)
-        self._today_btn.setToolTip(tr("只显示未完成的：星标 / 已逾期 / 今天截止"))
+        self._today_btn.setToolTip(
+            tr("只显示未完成的：星标 / 已逾期 / 今天截止\n"
+               "（拖卡片到这里 = 加入今日）"))
         self._today_btn.toggled.connect(self._apply_filter)
         self._today_btn.toggled.connect(self.signal_today_toggled.emit)
+        self._today_btn.signal_cards_dropped.connect(self._on_drop_to_today)
         self._toolbar_layout.addWidget(self._today_btn)
 
         self._search_edit = QLineEdit()
@@ -2899,11 +3276,13 @@ class BoardView(QWidget):
         self._bulk_add_btn.clicked.connect(self.signal_bulk_add.emit)
         self._toolbar_layout.addWidget(self._bulk_add_btn)
 
-        self._archive_btn = QPushButton(tr("归档"))
+        self._archive_btn = _CardDropButton(tr("归档"))
         self._archive_btn.setObjectName("boardToolBtn")
         self._archive_btn.setCursor(Qt.PointingHandCursor)
-        self._archive_btn.setToolTip(tr("查看已归档卡片并恢复"))
+        self._archive_btn.setToolTip(
+            tr("查看已归档卡片并恢复\n（拖卡片到这里 = 直接归档）"))
         self._archive_btn.clicked.connect(self.signal_archive_open.emit)
+        self._archive_btn.signal_cards_dropped.connect(self._on_drop_archive)
         self._toolbar_layout.addWidget(self._archive_btn)
 
         self._calendar_btn = _CalendarIconButton()
@@ -3058,6 +3437,12 @@ class BoardView(QWidget):
         self._sel_done_btn.setCursor(Qt.PointingHandCursor)
         self._sel_done_btn.clicked.connect(self._on_batch_done)
         sel_lay.addWidget(self._sel_done_btn)
+        self._sel_edit_btn = QPushButton(tr("✎ 编辑"))
+        self._sel_edit_btn.setObjectName("boardToolBtn")
+        self._sel_edit_btn.setCursor(Qt.PointingHandCursor)
+        self._sel_edit_btn.setToolTip(tr("批量修改截止日期 / 优先级 / 标题"))
+        self._sel_edit_btn.clicked.connect(self._on_batch_edit)
+        sel_lay.addWidget(self._sel_edit_btn)
         self._sel_label_btn = QPushButton(tr("标签"))
         self._sel_label_btn.setObjectName("boardToolBtn")
         self._sel_label_btn.setCursor(Qt.PointingHandCursor)
@@ -3215,6 +3600,8 @@ class BoardView(QWidget):
         self._calendar_btn.setToolTip(tr("按截止日期在月历中查看与拖动卡片"))
         self._overflow_btn.setToolTip(tr("更多操作"))
         self._sel_done_btn.setText(tr("✓ 切换完成"))
+        self._sel_edit_btn.setText(tr("✎ 编辑"))
+        self._sel_edit_btn.setToolTip(tr("批量修改截止日期 / 优先级 / 标题"))
         self._sel_label_btn.setText(tr("标签"))
         self._sel_move_btn.setText(tr("→ 移动"))
         self._sel_archive_btn.setText(tr("归档"))
@@ -3587,12 +3974,39 @@ class BoardView(QWidget):
     def selection_ids(self) -> list[str]:
         return list(self._selected_ids)
 
+    def list_choices(self) -> list[tuple[str, str]]:
+        """当前看板的 (列表 id, 标题) 序列（卡片"移动到列表"菜单用）"""
+        return [(lst.id, lst.title) for lst in self._lists]
+
+    def template_names(self) -> list[str]:
+        """已保存的卡片模板名（列尾「+ 添加卡片」菜单用）"""
+        from app.models import templates as templates_mod
+        return [t["name"] for t in templates_mod.load_templates()]
+
     def _emit_batch(self, signal) -> None:
         ids = self.selection_ids()
         if not ids:
             return
         signal.emit(ids)
         self.clear_selection()
+
+    def _on_batch_edit(self) -> None:
+        """批量编辑：把选中集交给控制器开对话框（改完由控制器统一落盘）"""
+        ids = self.selection_ids()
+        if not ids:
+            return
+        self.signal_batch_edit.emit(ids)
+        self.clear_selection()
+
+    def _on_drop_archive(self, card_ids: list) -> None:
+        """拖卡片到「归档」按钮：归档（多选在拖拽中被成组带走，一并清选中）"""
+        self.clear_selection()
+        self.signal_batch_archive.emit(card_ids)
+
+    def _on_drop_to_today(self, card_ids: list) -> None:
+        """拖卡片到「今日」按钮：加入今日聚焦"""
+        self.clear_selection()
+        self.signal_cards_to_today.emit(card_ids)
 
     def _on_batch_done(self) -> None:
         ids = self.selection_ids()
@@ -3842,6 +4256,21 @@ class BoardView(QWidget):
         self._search_edit.setFocus()
         self._search_edit.selectAll()
 
+    def paste_target_list_id(self) -> str | None:
+        """粘贴建卡的目标列：焦点卡片所在的列（键盘导航后不用再挑列）
+
+        无焦点卡片（鼠标在任意处按 Ctrl+V）返回 None，由控制器落到首列
+        ——与 Ctrl+N 快速添加的落点一致。
+        """
+        w = QApplication.focusWidget()
+        while w is not None and not isinstance(w, CardWidget):
+            w = w.parentWidget()
+        if isinstance(w, CardWidget):
+            col = w._owning_column()
+            if col is not None:
+                return col.list_id()
+        return None
+
     def _make_column(self, board_list: BoardList,
                      collapsed_ids: set[str] | None = None) -> ListColumn:
         """创建列表列并连接信号（每个列生命周期内只连一次）
@@ -3854,8 +4283,10 @@ class BoardView(QWidget):
         col.signal_card_done.connect(self._on_card_done)
         col.signal_card_delete.connect(self._on_card_delete)
         col.signal_card_move.connect(self.signal_card_move)
+        col.signal_cards_move.connect(self.signal_cards_move)
         col.signal_list_move.connect(self.signal_list_move)
         col.signal_add_card.connect(self.signal_card_add)
+        col.signal_add_from_template.connect(self.signal_add_from_template)
         col.signal_title_changed.connect(self.signal_list_title_changed)
         col.signal_delete_list.connect(self.signal_list_delete)
         col.signal_card_pomo.connect(self.signal_card_pomo)
@@ -3867,6 +4298,13 @@ class BoardView(QWidget):
         col.signal_card_attachment_open.connect(self.signal_card_attachment_open)
         col.signal_card_ctrl_clicked.connect(self._on_card_ctrl_clicked)
         col.signal_card_shift_clicked.connect(self._on_card_shift_clicked)
+        col.signal_card_priority.connect(self.signal_card_priority)
+        col.signal_card_due_set.connect(self.signal_card_due_set)
+        col.signal_files_dropped.connect(self.signal_files_dropped)
+        col.signal_card_save_template.connect(self.signal_card_save_template)
+        # "移动到列表"复用拖拽落位信号（插到目标列顶部，index=0）
+        col.signal_card_move_to.connect(
+            lambda cid, tid: self.signal_card_move.emit(cid, tid, 0))
         # 标签过滤是纯视图态：内部消化，不冒泡控制器
         col.signal_label_clicked.connect(self._on_label_clicked)
         # 过滤态起拖被拒：解释原因（列已禁 drop，用户只会看到禁止光标）
@@ -3876,6 +4314,7 @@ class BoardView(QWidget):
         col.signal_collapsed_changed.connect(self.signal_list_collapsed)
         col.signal_fund_watch.connect(self.signal_list_fund_watch)
         col.signal_fund_export.connect(self.signal_list_fund_export)
+        col.signal_duplicate_requested.connect(self.signal_list_duplicate)
         self._columns.append(col)
         # 恢复上次折叠状态（save=False 不触发持久化回调；建列时不播动画）
         if collapsed_ids is None:

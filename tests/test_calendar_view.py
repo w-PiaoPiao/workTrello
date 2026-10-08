@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-日历视图测试：月历网格结构（补位格/今日高亮）、补位格拒拖放、
-拖放改期信号、条目点击编辑、超量折叠、翻月信号
+日历视图测试：月历网格结构（补位格/今日高亮）、补位格拖放与自动翻月、
+双击空白格建卡、拖放改期信号、条目点击编辑、超量折叠、翻月信号
 
 用法（离屏环境）：
     QT_QPA_PLATFORM=offscreen python tests/test_calendar_view.py
@@ -20,7 +20,13 @@ os.environ["PET_BOARD_DATA_DIR"] = tempfile.mkdtemp()
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from PySide6.QtCore import QMimeData, QPoint, QPointF, Qt
-from PySide6.QtGui import QDragEnterEvent, QDropEvent
+from PySide6.QtGui import (
+    QDragEnterEvent,
+    QDragLeaveEvent,
+    QDragMoveEvent,
+    QDropEvent,
+    QMouseEvent,
+)
 from PySide6.QtWidgets import QApplication
 
 _qapp = QApplication.instance() or QApplication([])
@@ -34,7 +40,7 @@ _LAST_MIME = None   # QDropEvent 不持有 mime 所有权：必须持住引用�
 
 
 def _card_drag_event(kind, card_id="card-1"):
-    """构造携带 MIME_CARD 的拖放事件（kind: dragEnter / drop）
+    """构造携带 MIME_CARD 的拖放事件（kind: dragEnter / dragMove / drop / leave）
 
     mime 存模块级引用——事件对象不接管 mime 所有权，函数局部变量被
     回收后 dropEvent 里访问 mimeData() 是悬空指针（段错误）。
@@ -48,8 +54,28 @@ def _card_drag_event(kind, card_id="card-1"):
     if kind == "dragEnter":
         return QDragEnterEvent(QPoint(10, 10), Qt.DropAction.MoveAction,
                                mime, Qt.LeftButton, Qt.NoModifier)
+    if kind == "dragMove":
+        return QDragMoveEvent(QPoint(10, 10), Qt.DropAction.MoveAction,
+                              mime, Qt.LeftButton, Qt.NoModifier)
+    if kind == "leave":
+        return QDragLeaveEvent()
     return QDropEvent(QPointF(10, 10), Qt.MoveAction, mime,
                       Qt.LeftButton, Qt.NoModifier)
+
+
+def _send_double_click(widget, pos=None) -> None:
+    """给控件派发一个构造的双击事件
+
+    不用 QTest.mouseDClick：离屏平台上它会把 QApplication.mouseButtons()
+    留在 LeftButton（实测），而悬停巡检（notes_popover._revalidate_scope）
+    在"有键按下"时按设计不收浮层——于是后续模块里三个悬停用例集体失败。
+    构造事件直接 sendEvent 不碰全局鼠标状态。
+    """
+    pos = (QPointF(widget.width() / 2, widget.height() / 2)
+           if pos is None else pos)
+    event = QMouseEvent(QMouseEvent.Type.MouseButtonDblClick, pos,
+                        Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+    QApplication.sendEvent(widget, event)
 
 
 class DayCellTest(unittest.TestCase):
@@ -70,14 +96,22 @@ class DayCellTest(unittest.TestCase):
         self.cell.dropEvent(event)
         self.assertTrue(event.isAccepted())
 
-    def test_out_of_month_cell_rejects_drop(self):
-        """上月/下月补位格（iso 为空）不接受拖放，防改出空日期"""
-        filler = _DayCell(31, in_month=False, is_today=False, iso="")
+    def test_out_of_month_cell_accepts_drop_when_dated(self):
+        """补位格带真实日期 → 接受拖放（跨月改期）；无日期格仍拒绝"""
+        filler = _DayCell(31, in_month=False, is_today=False,
+                          iso="2026-08-31", month_offset=-1)
         event = _card_drag_event("dragEnter")
         filler.dragEnterEvent(event)
-        self.assertFalse(event.isAccepted())
+        self.assertTrue(event.isAccepted())
         drop = _card_drag_event("drop")
         filler.dropEvent(drop)
+        self.assertTrue(drop.isAccepted())
+
+    def test_dateless_cell_still_rejects_drop(self):
+        """防御：构造出的无日期格（iso 为空）不得接落点，防改出空日期"""
+        blank = _DayCell(31, in_month=False, is_today=False, iso="")
+        drop = _card_drag_event("drop")
+        blank.dropEvent(drop)
         self.assertFalse(drop.isAccepted())
 
     def test_in_month_cell_accepts_drag_enter(self):
@@ -136,17 +170,74 @@ class CalendarDialogTest(unittest.TestCase):
         self.dlg.set_month(2026, 9, self._due_map())
         cells = self.dlg._cells
         self.assertEqual(len(cells), 35)          # offset 1 + 30 天 → 5 行
-        self.assertEqual(cells[0].iso(), "")      # 首格 = 8/31 补位
+        # 补位格带**真实日期**（不再是空串）：它要渲染当天条目、接拖放，
+        # 还是"拖拽悬停自动翻月"的入口（month_offset 标注方向）
+        self.assertEqual(cells[0].iso(), "2026-08-31")
         self.assertEqual(cells[0]._head.text(), "31")
+        self.assertEqual(cells[0]._month_offset, -1)
+        self.assertFalse(cells[0]._in_month)
         self.assertEqual(cells[1].iso(), "2026-09-01")
+        self.assertEqual(cells[1]._month_offset, 0)
         self.assertEqual(cells[13].iso(), "2026-09-13")
         self.assertEqual(cells[13]._head.text(), "13")
+        self.assertEqual(cells[-1]._month_offset, 1)   # 尾格补下月
         # 今日恰在本月 → 该格样式含 accent 描边与加粗日期号
         # （高亮定义在格的整块样式表 #dayNum 规则里，不在 head 自身）
         if (today.year, today.month) == (2026, 9):
             today_cell = next(c for c in cells if c.iso() == today.isoformat())
             self.assertIn("bold", today_cell.styleSheet())
             self.assertIn("2px solid", today_cell.styleSheet())
+
+    def test_padding_cell_shows_cards_and_accepts_drop(self):
+        """补位格既显示当天条目也接落点（此前是"仅显示、无落点"的死格）"""
+        self.dlg.set_month(2026, 9, {"2026-08-31": [Card(title="上月卡")]})
+        self.assertEqual(len(self.dlg._cells[0]._chip_widgets), 1)
+        got = []
+        self.dlg.signal_due_change.connect(
+            lambda cid, iso: got.append((cid, iso)))
+        self.dlg._cells[0].dropEvent(_card_drag_event("drop", "c9"))
+        self.assertEqual(got, [("c9", "2026-08-31")])
+
+    def test_double_click_empty_cell_requests_create(self):
+        self.dlg.set_month(2026, 9, {})
+        got = []
+        self.dlg.signal_create_requested.connect(got.append)
+        _send_double_click(self.dlg._cells[13])
+        self.assertEqual(got, ["2026-09-13"])
+
+    def test_double_click_padding_cell_does_nothing(self):
+        """补位格双击不建卡：日期属于别的月份，当前视图看不到结果"""
+        self.dlg.set_month(2026, 9, {})
+        got = []
+        self.dlg.signal_create_requested.connect(got.append)
+        _send_double_click(self.dlg._cells[0])
+        self.assertEqual(got, [])
+
+    def test_drag_hover_on_padding_cell_flips_month_after_delay(self):
+        """拖拽停在补位格上 → 等到延时到点才翻月（不是一碰就翻）"""
+        self.dlg.set_month(2026, 9, {})
+        got = []
+        self.dlg.signal_month_changed.connect(lambda y, m: got.append((y, m)))
+        self.dlg._cells[0].dragEnterEvent(_card_drag_event("dragEnter", "c9"))
+        self.assertEqual(got, [])                 # 悬停当下不翻
+        self.assertTrue(self.dlg._flip_timer.isActive())
+        self.dlg._on_flip_timeout()               # 模拟定时器到点
+        self.assertEqual(got, [(2026, 8)])
+
+    def test_drag_hover_on_current_month_cell_does_not_flip(self):
+        self.dlg.set_month(2026, 9, {})
+        self.dlg._cells[13].dragEnterEvent(_card_drag_event("dragEnter", "c9"))
+        self.assertFalse(self.dlg._flip_timer.isActive())
+
+    def test_drag_leave_cancels_flip(self):
+        self.dlg.set_month(2026, 9, {})
+        self.dlg._cells[0].dragEnterEvent(_card_drag_event("dragEnter", "c9"))
+        self.dlg._cells[0].dragLeaveEvent(_card_drag_event("leave"))
+        self.assertFalse(self.dlg._flip_timer.isActive())
+        got = []
+        self.dlg.signal_month_changed.connect(lambda y, m: got.append((y, m)))
+        self.dlg._on_flip_timeout()
+        self.assertEqual(got, [])
 
     def test_set_month_fills_cards_by_date(self):
         self.dlg.set_month(2026, 9, self._due_map())

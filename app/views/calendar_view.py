@@ -10,12 +10,13 @@
 from __future__ import annotations
 
 import calendar as _cal
-from datetime import date
+from datetime import date, timedelta
 
 from PySide6.QtCore import (
     QMimeData,
     QPoint,
     Qt,
+    QTimer,
     Signal,
 )
 from PySide6.QtGui import QDrag
@@ -122,15 +123,24 @@ class _Chip(QLabel):
 
 
 class _DayCell(QFrame):
-    """日期格：日期号 + 卡片条目列表；接受拖放改期"""
+    """日期格：日期号 + 卡片条目列表；接受拖放改期
 
-    signal_drop_card = Signal(str, str)   # card_id, iso_date
-    signal_edit_card = Signal(str)        # card_id
+    上下月补位格同样是**真实日期**（只是配色区分"不在本月"）：它们既渲染
+    当天条目、也接受拖放，还是"拖拽中自动翻月"的入口——拖到灰色的上月
+    格子并停一下，日历会翻到上个月。
+    """
+
+    signal_drop_card = Signal(str, str)    # card_id, iso_date
+    signal_edit_card = Signal(str)         # card_id
+    signal_create_card = Signal(str)       # iso_date（双击空白格新建）
+    signal_drag_hover = Signal(int)        # 拖拽悬停的月份偏移（-1/0/+1）
+    signal_drag_leave = Signal()
 
     def __init__(self, day: int, in_month: bool, is_today: bool,
-                 iso: str, parent=None):
+                 iso: str, month_offset: int = 0, parent=None):
         super().__init__(parent)
         self._iso = iso
+        self._month_offset = month_offset
         self.setAcceptDrops(True)
         self.setObjectName("dayCell")
         # 竖直方向忽略 sizeHint：月历所有行等高（此前某天卡片多就把整行
@@ -162,11 +172,13 @@ class _DayCell(QFrame):
     def iso(self) -> str:
         return self._iso
 
-    def _apply_style(self, hover: bool = False) -> None:
+    def _apply_style(self, hover: bool = False, drop: bool = False) -> None:
         c = AppTheme.colors()
-        border = c["accent"] if self._is_today else c["border"]
-        width = 2 if self._is_today else 1
-        bg = "transparent" if self._in_month else c["mask"]
+        border = c["accent"] if (self._is_today or drop) else c["border"]
+        width = 2 if (self._is_today or drop) else 1
+        bg = ("transparent" if self._in_month else c["mask"])
+        if drop:
+            bg = c["accent_soft"]   # 拖拽落点：整格点亮，与卡片插入线同一套语言
         num_color = (c["accent"] if self._is_today
                      else c["text_primary"] if self._in_month
                      else c["text_disabled"])
@@ -246,10 +258,16 @@ class _DayCell(QFrame):
 
     def dragEnterEvent(self, event) -> None:
         if event.mimeData().hasFormat(MIME_CARD) and self._iso:
+            self._apply_style(drop=True)
+            if self._month_offset:
+                # 补位格：悬停一会儿就翻月（见 CalendarDialog 的翻月定时器）
+                self.signal_drag_hover.emit(self._month_offset)
             event.acceptProposedAction()
 
     def dragMoveEvent(self, event) -> None:
         if event.mimeData().hasFormat(MIME_CARD) and self._iso:
+            if self._month_offset:
+                self.signal_drag_hover.emit(self._month_offset)
             event.acceptProposedAction()
 
     def dropEvent(self, event) -> None:
@@ -257,6 +275,24 @@ class _DayCell(QFrame):
             card_id = bytes(event.mimeData().data(MIME_CARD)).decode("utf-8")
             self.signal_drop_card.emit(card_id, self._iso)
             event.acceptProposedAction()
+
+    def dragLeaveEvent(self, event) -> None:
+        self._apply_style()
+        if self._month_offset:
+            self.signal_drag_leave.emit()
+        super().dragLeaveEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        """双击空白格 → 新建一张截止日为该天的卡片
+
+        补位格不响应：格子显示的是别的月份，双击在那里建卡却看不到结果
+        （当前月视图不会翻过去），只会让人以为没生效。
+        """
+        if event.button() == Qt.LeftButton and self._iso and self._in_month:
+            self.signal_create_card.emit(self._iso)
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
     def enterEvent(self, event) -> None:
         self._apply_style(hover=True)
@@ -273,6 +309,11 @@ class CalendarDialog(QDialog):
     signal_month_changed = Signal(int, int)          # year, month
     signal_due_change = Signal(str, str)             # card_id, iso_date
     signal_edit_requested = Signal(str)              # card_id
+    signal_create_requested = Signal(str)            # iso_date（双击空白格建卡）
+
+    # 拖拽悬停在上下月补位格上多久后自动翻月（毫秒）：够看清落点又不会
+    # 因为"路过"就翻页——补位格只在月历首尾两行，正常拖拽很难误入
+    _FLIP_HOVER_MS = 650
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -282,6 +323,13 @@ class CalendarDialog(QDialog):
         self._year = date.today().year
         self._month = date.today().month
         self._cells: list[_DayCell] = []
+        # 拖拽悬停补位格 → 到点翻月（拖动中的手一直按着，翻月后新格子
+        # 继续接收同一拖拽的 dragMove，落点自然接续）
+        self._flip_offset = 0
+        self._flip_timer = QTimer(self)
+        self._flip_timer.setSingleShot(True)
+        self._flip_timer.setInterval(self._FLIP_HOVER_MS)
+        self._flip_timer.timeout.connect(self._on_flip_timeout)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(AppConfig.UI_DIALOG_MARGIN_H,
@@ -332,6 +380,10 @@ class CalendarDialog(QDialog):
 
         # 底部右对齐按钮行：与归档等对话框同布局（顶部只留导航）
         foot = QHBoxLayout()
+        self._hint_label = QLabel(
+            tr("双击空白格新建卡片 · 拖动条目改期（拖到灰色格自动翻月）"))
+        self._hint_label.setObjectName("calHint")
+        foot.addWidget(self._hint_label)
         foot.addStretch(1)
         self._close_btn = QPushButton(tr("关闭"))
         self._close_btn.setCursor(Qt.PointingHandCursor)
@@ -359,6 +411,23 @@ class CalendarDialog(QDialog):
         self._year, self._month = t.year, t.month
         self.signal_month_changed.emit(t.year, t.month)
 
+    # ── 拖拽悬停自动翻月 ──────────────────────────────────
+
+    def _on_drag_hover(self, month_offset: int) -> None:
+        self._flip_offset = month_offset
+        if not self._flip_timer.isActive():
+            self._flip_timer.start()
+
+    def _on_drag_leave(self) -> None:
+        self._flip_offset = 0
+        self._flip_timer.stop()
+
+    def _on_flip_timeout(self) -> None:
+        offset = self._flip_offset
+        self._flip_offset = 0
+        if offset:
+            self._shift_month(offset)
+
     # ── 数据注入 ──────────────────────────────────────────
 
     def set_month(self, year: int, month: int,
@@ -376,21 +445,18 @@ class CalendarDialog(QDialog):
         # 周一起始偏移（0=周一）
         offset = first.weekday()
         days_in_month = _cal.monthrange(year, month)[1]
-        prev_days = _cal.monthrange(
-            year if month > 1 else year - 1,
-            month - 1 if month > 1 else 12)[1]
         rows = (offset + days_in_month + 6) // 7
         for i in range(rows * 7):
             day_num = i - offset + 1
             r, c = divmod(i, 7)
-            if day_num < 1:
-                # 上月补位（仅显示，无落点）
-                cell = _DayCell(prev_days + day_num, in_month=False,
-                                is_today=False, iso="")
-            elif day_num > days_in_month:
-                # 下月补位
-                cell = _DayCell(day_num - days_in_month, in_month=False,
-                                is_today=False, iso="")
+            if day_num < 1 or day_num > days_in_month:
+                # 上下月补位格：用**真实日期**（不是占位），这样它们既能
+                # 渲染当天条目、也能作为拖放落点、还是自动翻月的入口
+                d = first + timedelta(days=day_num - 1)
+                cell = _DayCell(d.day, in_month=False, is_today=d == today,
+                                iso=d.isoformat(),
+                                month_offset=-1 if day_num < 1 else 1)
+                cell.set_cards(due_map.get(d.isoformat(), []))
             else:
                 d = date(year, month, day_num)
                 iso = d.isoformat()
@@ -399,6 +465,9 @@ class CalendarDialog(QDialog):
                 cell.set_cards(due_map.get(iso, []))
             cell.signal_drop_card.connect(self.signal_due_change)
             cell.signal_edit_card.connect(self.signal_edit_requested)
+            cell.signal_create_card.connect(self.signal_create_requested)
+            cell.signal_drag_hover.connect(self._on_drag_hover)
+            cell.signal_drag_leave.connect(self._on_drag_leave)
             self._grid.addWidget(cell, r, c)
             self._cells.append(cell)
         for c in range(7):
@@ -427,6 +496,11 @@ class CalendarDialog(QDialog):
                 background: transparent;
             }}
             QLabel#weekdayHead {{
+                color: {c['text_secondary']};
+                font-size: 11px;
+                background: transparent;
+            }}
+            QLabel#calHint {{
                 color: {c['text_secondary']};
                 font-size: 11px;
                 background: transparent;

@@ -580,6 +580,167 @@ _zh_en: dict[str, str] = {
     "提前 3 天": "3 days ahead",
     "{n} 天后截止": "Due in {n} days",
     "已切换看板": "Board switched",
+    # ── 快捷编辑 / 捕获 / 拖拽增强 / 归档与模板 / 提醒 / 浮窗 ──
+    '{date} 截止的卡片标题':
+        'Card title due {date}',
+    '{n} 个未能添加':
+        '{n} not added',
+    '{seq}：应用在后台时也能唤起快速添加卡片':
+        '{seq}: quick-add a card even when the app is in the background',
+    '{title} 副本':
+        '{title} copy',
+    '✎ 编辑':
+        '✎ Edit',
+    '一周后':
+        'In a week',
+    '下周一':
+        'Next Monday',
+    '不修改':
+        'No change',
+    '今天':
+        'Today',
+    '明天':
+        'Tomorrow',
+    '后天':
+        'In two days',
+    '今日待办 · 匹配 {n}':
+        'Today · {n} matched',
+    '优先级：{name}':
+        'Priority: {name}',
+    '例：交周报 !P1 #红':
+        'e.g. Weekly report !P1 #red',
+    '例：每周复盘':
+        'e.g. Weekly review',
+    '全局快捷键':
+        'Global shortcut',
+    '全局快捷键注册失败：可能已被其他程序占用':
+        'Could not register the global shortcut - it may be taken by another app',
+    '删除全部归档卡片（可撤销）':
+        'Delete all archived cards (undoable)',
+    '前缀/后缀内容':
+        'Prefix/suffix text',
+    '剪贴板没有文本内容':
+        'The clipboard has no text',
+    '加前缀':
+        'Add prefix',
+    '加后缀':
+        'Add suffix',
+    '匹配 {n} / 共 {total} 张归档 · 本周完成 {m} 张':
+        '{n} of {total} archived · {m} done this week',
+    '双击空白格新建卡片 · 拖动条目改期（拖到灰色格自动翻月）':
+        'Double-click an empty day to add a card · drag entries to reschedule (hover a grey day to flip months)',
+    '另存为模板':
+        'Save as template',
+    '另存为模板…':
+        'Save as template…',
+    '复制列表（含卡片）':
+        'Copy list (with cards)',
+    '已保存模板「{name}」':
+        'Template “{name}” saved',
+    '已删除「{title}」 · {hint}':
+        'Deleted “{title}” · {hint}',
+    '已加入今日 {n} 张卡片':
+        'Added {n} cards to Today',
+    '已加入今日「{title}」':
+        'Added “{title}” to Today',
+    '已启用全局快捷键 {seq}':
+        'Global shortcut {seq} enabled',
+    '已复制列表「{title}」（{n} 张卡片）':
+        'List “{title}” copied ({n} cards)',
+    '已完成在前':
+        'Completed first',
+    '已按模板添加「{title}」':
+        'Added “{title}” from a template',
+    '已推迟提醒 {n} 分钟':
+        'Reminders snoozed for {n} minutes',
+    '已添加 {n} 个文件为卡片':
+        'Added {n} files as cards',
+    '已添加「{title}」':
+        'Added “{title}”',
+    '已添加「{title}」到 {list}':
+        'Added “{title}” to {list}',
+    '已清空 {n} 张归档 · {hint}':
+        'Cleared {n} archived cards · {hint}',
+    '已清除优先级':
+        'Priority cleared',
+    '已清除截止日期':
+        'Due date cleared',
+    '已粘贴添加 {n} 张卡片到 {list}':
+        'Pasted {n} cards into {list}',
+    '已编辑 {n} 张卡片':
+        '{n} cards updated',
+    '已选 {n} 张卡片 · 只应用改动过的项':
+        '{n} cards selected · only changed fields are applied',
+    '应用':
+        'Apply',
+    '当前没有待提醒的截止卡片':
+        'No due cards to remind you about',
+    '彻底删除全部 {n} 张归档卡片？（可撤销）':
+        'Permanently delete all {n} archived cards? (undoable)',
+    '彻底删除这张卡片（可撤销）':
+        'Permanently delete this card (undoable)',
+    '截止日期：{date}':
+        'Due date: {date}',
+    '批量修改截止日期 / 优先级 / 标题':
+        'Edit due date / priority / title in bulk',
+    '批量编辑':
+        'Bulk edit',
+    '按来源列':
+        'By list',
+    '按标题':
+        'By title',
+    '搜索归档卡片…':
+        'Search archived cards…',
+    '替换为':
+        'Replace with',
+    '替换为 / 前缀 / 后缀':
+        'Replace with / prefix / suffix',
+    '查找':
+        'Find',
+    '查找替换':
+        'Find & replace',
+    '查看已归档卡片并恢复\n（拖卡片到这里 = 直接归档）':
+        'View and restore archived cards\n(drop a card here to archive it)',
+    '只显示未完成的：星标 / 已逾期 / 今天截止\n（拖卡片到这里 = 加入今日）':
+        'Only unfinished: starred / overdue / due today\n(drop a card here to add it to Today)',
+    '模板「{name}」已不存在':
+        'Template “{name}” no longer exists',
+    '模板保存失败（数据目录不可写）':
+        'Could not save the template (data folder is not writable)',
+    '模板名称（同名会覆盖）':
+        'Template name (a duplicate name overwrites)',
+    '模板：{name}':
+        'Template: {name}',
+    '没有匹配的归档卡片':
+        'No archived cards match',
+    '没有匹配的待办':
+        'No to-dos match',
+    '没有可添加的文件':
+        'No files to add',
+    '添加今日待办（支持速记）…':
+        'Add a to-do for today (shorthand supported)…',
+    '清空归档':
+        'Clear archive',
+    '移动到列表':
+        'Move to list',
+    '稍后提醒 {n} 分钟':
+        'Remind me in {n} minutes',
+    '空白卡片':
+        'Blank card',
+    '筛选今日待办…':
+        "Filter today's to-dos…",
+    '设为指定日期':
+        'Set to a date',
+    '默认顺序':
+        'Default order',
+
+    '粘贴剪贴板文本建卡（每行一张）':
+        'Paste clipboard text as cards (one per line)',
+    '卡片设优先级 高/中/低（0=清除）':
+        'Set card priority high/mid/low (0 clears)',
+    '卡片移动到其他列表':
+        'Move card to another list',
+
 }
 
 

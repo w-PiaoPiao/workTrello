@@ -103,6 +103,7 @@ class MainWindow(QWidget):
     undo_shortcut = Signal()      # Windows/Linux：Ctrl+Z 触发撤销
     redo_shortcut = Signal()      # Windows/Linux：Ctrl+Y 触发重做
     new_card_shortcut = Signal()  # Windows/Linux：Ctrl+N 触发快速新建卡片
+    paste_shortcut = Signal()     # Ctrl+V：看板内粘贴建卡（文本框内不触发）
     shortcuts_requested = Signal()  # ? 呼出快捷键速查（全平台）
     signal_about_to_expand = Signal()  # 展开动画启动前（控制器延迟构建看板）
 
@@ -214,6 +215,13 @@ class MainWindow(QWidget):
         self._help_shortcut = QShortcut(QKeySequence("?"), self)
         self._help_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
         self._help_shortcut.activated.connect(self.shortcuts_requested.emit)
+
+        # Ctrl/Cmd+V 看板内粘贴建卡。QLineEdit/QPlainTextEdit 对 Paste 会
+        # 接受 ShortcutOverride，文本框聚焦时这条快捷键根本不会触发，
+        # 因此搜索框与各输入框的粘贴行为不受影响（实测确认）。
+        self._paste_shortcut = QShortcut(QKeySequence.Paste, self)
+        self._paste_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+        self._paste_shortcut.activated.connect(self.paste_shortcut.emit)
 
         # macOS 无系统级边缘缩放：右下角自绘把手（仅展开态、非最大化时可见）
         self._resize_grip = _ResizeGrip(self) if AppConfig.IS_MACOS else None

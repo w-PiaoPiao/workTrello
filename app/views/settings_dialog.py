@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from app.config import AppConfig
 from app.i18n import skin_display, tr
+from app.services.global_hotkey import GlobalHotkeyService
 from app.views.controls import ComboBox, SegmentedControl, ToggleSwitch
 from app.views.theme import AppTheme
 
@@ -101,6 +102,8 @@ class SettingsDialog(QDialog):
     signal_always_top_toggled = Signal(bool)
     signal_remind_advance_changed = Signal(int)  # 截止提前提醒天数 0~3
     signal_autostart_toggled = Signal(bool)      # 开机自启动
+    signal_global_hotkey_toggled = Signal(bool)  # 全局快捷键（仅 Windows）
+
     signal_default_view_selected = Signal(str)   # pet / board
 
     def __init__(self, parent=None):
@@ -210,6 +213,18 @@ class SettingsDialog(QDialog):
         self._t_autostart, self._h_autostart = self._sec_window.add_row(
             tr("开机自启动"), tr("登录系统后自动启动，常驻托盘"),
             self._autostart_toggle)
+        # 全局快捷键：仅 Windows 支持（其他平台连行都不占）
+        self._hotkey_toggle = ToggleSwitch()
+        self._hotkey_toggle.toggled.connect(
+            self.signal_global_hotkey_toggled.emit)
+        self._t_hotkey, self._h_hotkey = self._sec_window.add_row(
+            tr("全局快捷键"),
+            tr("{seq}：应用在后台时也能唤起快速添加卡片").format(
+                seq=AppConfig.GLOBAL_HOTKEY_SEQUENCE),
+            self._hotkey_toggle)
+        hotkey_supported = GlobalHotkeyService.is_available()
+        for w in (self._t_hotkey, self._h_hotkey, self._hotkey_toggle):
+            w.setVisible(hotkey_supported)
         page.addWidget(self._sec_window)
 
         # 提醒
@@ -277,7 +292,8 @@ class SettingsDialog(QDialog):
                         remind_advance: int = 0,
                         autostart: bool = False,
                         default_view: str = "pet",
-                        pet_enabled: bool = True) -> None:
+                        pet_enabled: bool = True,
+                        global_hotkey: bool = False) -> None:
         """打开时把当前偏好刷进控件（偏好可能被桌宠菜单等其他入口改过）
 
         全程静音：这是"把真实状态刷进界面"，不是用户按了什么。此前
@@ -287,7 +303,8 @@ class SettingsDialog(QDialog):
         静音后同一份同步逻辑可以随便跑，不再有副作用。
         """
         silent = (self._pet_toggle, self._anim_toggle, self._top_toggle,
-                  self._autostart_toggle, self._remind_combo)
+                  self._autostart_toggle, self._remind_combo,
+                  self._hotkey_toggle)
         prev = [w.blockSignals(True) for w in silent]
         try:
             self._theme_seg.set_value(theme_mode)
@@ -299,6 +316,7 @@ class SettingsDialog(QDialog):
             self._anim_toggle.setChecked(animation)
             self._top_toggle.setChecked(always_top)
             self._autostart_toggle.setChecked(autostart)
+            self._hotkey_toggle.setChecked(global_hotkey)
             idx = self._remind_combo.findData(int(remind_advance))
             if idx >= 0:
                 self._remind_combo.setCurrentIndex(idx)
@@ -321,6 +339,12 @@ class SettingsDialog(QDialog):
         prev = self._autostart_toggle.blockSignals(True)
         self._autostart_toggle.setChecked(on)
         self._autostart_toggle.blockSignals(prev)
+
+    def set_global_hotkey(self, on: bool) -> None:
+        """回写全局快捷键开关，不发信号（注册失败时控制器回滚用）"""
+        prev = self._hotkey_toggle.blockSignals(True)
+        self._hotkey_toggle.setChecked(on)
+        self._hotkey_toggle.blockSignals(prev)
 
     def reapply_theme(self) -> None:
         self.setStyleSheet(self._build_qss())
@@ -354,6 +378,10 @@ class SettingsDialog(QDialog):
         self._h_top.setText(tr("桌宠与看板始终悬浮在其他窗口之上"))
         self._t_autostart.setText(tr("开机自启动"))
         self._h_autostart.setText(tr("登录系统后自动启动，常驻托盘"))
+        self._t_hotkey.setText(tr("全局快捷键"))
+        self._h_hotkey.setText(
+            tr("{seq}：应用在后台时也能唤起快速添加卡片").format(
+                seq=AppConfig.GLOBAL_HOTKEY_SEQUENCE))
         self._sec_remind.retexts(tr("提醒"))
         self._t_remind.setText(tr("截止提前提醒"))
         self._h_remind.setText(tr("距离截止日还剩 N 天时也开始提醒"))

@@ -797,8 +797,7 @@ class CardDialog(QDialog):
             "id": uuid.uuid4().hex,
             "name": p.name,
             "path": str(p),
-            "is_image": p.suffix.lower() in
-            (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"),
+            "is_image": p.suffix.lower() in AppConfig.IMAGE_EXTS,
             "pending": True,
         })
         self._rebuild_attach_rows()
