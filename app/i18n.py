@@ -265,6 +265,7 @@ _zh_en: dict[str, str] = {
     "≡ 有备注": "≡ Notes",
     "有备注": "Notes",
     "标签：{name}": "Label: {name}",
+    "排序": "Sort",
     "番茄 ×{n}": "{n} pomodoros",
     "折叠 / 展开列表": "Collapse / expand list",
     "列表操作": "List actions",

@@ -297,7 +297,8 @@ class LabelChipTest(unittest.TestCase):
         chip = LabelChip("blue")
         self.assertEqual(chip.text(), "")
         self.assertEqual(chip.toolTip(), "蓝色")     # 识别改由 tooltip 承担
-        self.assertEqual((chip.width(), chip.height()), (34, 22))
+        # 高度 22 → 24：阶段 5 把命中区提到可点击标准 24px（视觉不变）
+        self.assertEqual((chip.width(), chip.height()), (34, 24))
         self.assertTrue(chip.isCheckable())
 
     def test_checked_state_drawn_by_pseudo_state(self):

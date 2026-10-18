@@ -68,9 +68,16 @@ class _Section(QFrame):
         self._title = QLabel(title)
         self._title.setObjectName("sectionTitle")
         self._lay.addWidget(self._title)
+        # 语言切换后要按新标题重刷读屏名：登记 (标题标签, 右侧控件)
+        self._a11y_rows: list[tuple[QLabel, object]] = []
 
     def add_row(self, title: str, hint: str, widget) -> tuple[QLabel, QLabel]:
-        """加一行：左侧(标题+说明)，右侧控件（垂直居中）"""
+        """加一行：左侧(标题+说明)，右侧控件（垂直居中）
+
+        顺带把可达性接上：右侧控件补读屏名（名称=行标题、描述=行说明），
+        标题标签 setBuddy 到控件——表单控件的标签关联是读屏识别"这个
+        开关/下拉是干什么的"的唯一线索。
+        """
         row = QHBoxLayout()
         row.setSpacing(12)
         text_col = QVBoxLayout()
@@ -86,10 +93,30 @@ class _Section(QFrame):
         row.addLayout(text_col, 1)
         row.addWidget(widget, 0, Qt.AlignVCenter)
         self._lay.addLayout(row)
+        self._apply_a11y(t, hint, widget)
+        self._a11y_rows.append((t, widget))
         return t, h
+
+    @staticmethod
+    def _apply_a11y(title_label: QLabel, hint: str, widget) -> None:
+        """标题标签 ↔ 控件：读屏名 + buddy 关联"""
+        if hasattr(widget, "set_accessible_text"):
+            widget.set_accessible_text(title_label.text(), hint)
+        else:
+            widget.setAccessibleName(title_label.text())
+            widget.setAccessibleDescription(hint)
+        title_label.setBuddy(widget)
 
     def retexts(self, title: str) -> None:
         self._title.setText(title)
+
+    def sync_a11y(self) -> None:
+        """语言切换后按新行标题重刷读屏名（标题由 SettingsDialog.retexts 更新）"""
+        for title_label, widget in self._a11y_rows:
+            if hasattr(widget, "set_accessible_text"):
+                widget.set_accessible_text(title_label.text())
+            else:
+                widget.setAccessibleName(title_label.text())
 
 
 class SettingsDialog(QDialog):
@@ -397,6 +424,11 @@ class SettingsDialog(QDialog):
         self._about_label.setText(
             f"{AppConfig.APP_NAME}  v{AppConfig.APP_VERSION}\n{tr(_ABOUT_LINE)}")
         self._done_btn.setText(tr("完成"))
+        # 读屏名与行标题同源：标题刚刷新过，这里补一次同步
+        for section in (self._sec_appearance, self._sec_language, self._sec_pet,
+                        self._sec_window, self._sec_remind, self._sec_data,
+                        self._sec_about):
+            section.sync_a11y()
 
     # ── 内部 ──────────────────────────────────────────────
 

@@ -176,7 +176,9 @@ class _PopRow(QFrame):
         else:
             self._badge.hide()
         self._star_btn.set_starred(card.starred)
-        self._star_btn.setToolTip(tr("移出今日") if card.starred else tr("加入今日"))
+        tip = tr("移出今日") if card.starred else tr("加入今日")
+        self._star_btn.setToolTip(tip)
+        self._star_btn.setAccessibleName(tip)   # 图标钮无文字，读屏靠这个
 
     def reapply_theme(self) -> None:
         """行配色快照随主题重下（内容相同也 re-polish，仅主题切换时调用）"""
@@ -457,8 +459,10 @@ class TodayPopover(QWidget):
         head.addStretch(1)
         self._close_btn = icons.IconButton("close", 16,
                                            "text_primary", "white")
-        self._close_btn.setFixedSize(22, 22)
+        self._close_btn.setFixedSize(24, 24)     # 命中区 ≥24（原 22×22）
         self._close_btn.setCursor(Qt.PointingHandCursor)
+        self._close_btn.setToolTip(tr("关闭"))
+        self._close_btn.setAccessibleName(tr("关闭"))
         self._close_btn.clicked.connect(self.close)
         head.addWidget(self._close_btn)
         root.addLayout(head)
@@ -467,12 +471,14 @@ class TodayPopover(QWidget):
         # 勾选和打开已有卡片，记新想法必须绕回看板（或桌宠菜单另一条路）
         self._add_edit = QLineEdit()
         self._add_edit.setPlaceholderText(tr("添加今日待办（支持速记）…"))
+        self._add_edit.setAccessibleName(tr("添加今日待办（支持速记）…"))
         self._add_edit.returnPressed.connect(self._on_quick_add)
         root.addWidget(self._add_edit)
 
         # 搜索：今日清单长起来以后（十几条）翻找同样费劲
         self._search_edit = QLineEdit()
         self._search_edit.setPlaceholderText(tr("筛选今日待办…"))
+        self._search_edit.setAccessibleName(tr("筛选今日待办…"))
         self._search_edit.setClearButtonEnabled(True)
         self._search_edit.textChanged.connect(self._on_search_changed)
         root.addWidget(self._search_edit)

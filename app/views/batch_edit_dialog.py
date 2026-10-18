@@ -56,6 +56,8 @@ class BatchEditDialog(QDialog):
         due_row = QHBoxLayout()
         due_row.setSpacing(6)
         self._due_mode = ComboBox()
+        cap_due.setBuddy(self._due_mode)
+        self._due_mode.setAccessibleName(tr("截止日期"))
         self._due_mode.addItem(tr("不修改"), _NO_CHANGE)
         self._due_mode.addItem(tr("设为指定日期"), "set")
         self._due_mode.addItem(tr("清除日期"), "")
@@ -85,6 +87,8 @@ class BatchEditDialog(QDialog):
         cap_priority.setProperty("cap", True)
         root.addWidget(cap_priority)
         self._priority_mode = ComboBox()
+        cap_priority.setBuddy(self._priority_mode)
+        self._priority_mode.setAccessibleName(tr("优先级"))
         self._priority_mode.addItem(tr("不修改"), _NO_CHANGE)
         for value in (0, 1, 2, 3):
             name = (tr("无") if value == 0
@@ -98,6 +102,8 @@ class BatchEditDialog(QDialog):
         cap_title.setProperty("cap", True)
         root.addWidget(cap_title)
         self._rename_mode = ComboBox()
+        cap_title.setBuddy(self._rename_mode)
+        self._rename_mode.setAccessibleName(tr("标题"))
         self._rename_mode.addItem(tr("不修改"), _NO_CHANGE)
         self._rename_mode.addItem(tr("加前缀"), "prefix")
         self._rename_mode.addItem(tr("加后缀"), "suffix")

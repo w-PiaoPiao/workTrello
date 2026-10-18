@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from PySide6.QtCore import (QPointF, QEasingCurve, QEvent, QRectF, Qt,
                             QVariantAnimation, Signal)
 from PySide6.QtGui import QColor, QPainter, QPen
@@ -17,6 +19,8 @@ from PySide6.QtWidgets import (QAbstractButton, QButtonGroup, QComboBox,
 from app.config import AppConfig
 from app.views import motion, tokens
 from app.views.theme import AppTheme, to_qcolor
+
+logger = logging.getLogger(__name__)
 
 
 class _WheelIgnoreMixin:
@@ -83,6 +87,25 @@ class ToggleSwitch(QAbstractButton):
     def reapply_theme(self) -> None:
         self.update()
 
+    def set_accessible_text(self, name: str, description: str = "") -> None:
+        """读屏文本入口：名称（设置行标题）+ 描述（行说明）
+
+        `QWidget.setAccessibleName` 本身就能用，这里再包一层是因为设置页
+        每一行都是"标题 + 说明"两段，调用点需要一次给全（见
+        `settings_dialog._Section.add_row`）。
+        """
+        self.setAccessibleName(name)
+        if description:
+            self.setAccessibleDescription(description)
+
+    def focusInEvent(self, event) -> None:
+        super().focusInEvent(event)
+        self.update()
+
+    def focusOutEvent(self, event) -> None:
+        super().focusOutEvent(event)
+        self.update()
+
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -102,6 +125,12 @@ class ToggleSwitch(QAbstractButton):
         x = 3 + self._pos * (self.width() - d - 6)
         painter.setBrush(QColor("#FFFFFF"))
         painter.drawEllipse(QRectF(x, 3, d, d))
+        # 焦点环：自绘控件没有系统焦点提示，键盘用户看不出焦点落在哪个开关
+        if self.hasFocus():
+            painter.setPen(QPen(to_qcolor(c["focus_ring"]), 1.5))
+            painter.setBrush(Qt.NoBrush)
+            ring = QRectF(0.75, 0.75, self.width() - 1.5, self.height() - 1.5)
+            painter.drawRoundedRect(ring, ring.height() / 2, ring.height() / 2)
         painter.end()
 
     def _animate_to(self, target: float) -> None:
@@ -145,12 +174,19 @@ class SegmentedControl(QFrame):
     态，高亮块会偏差几个像素；而布局落位按钮本身不会惊动容器的 resizeEvent，
     没有任何时机能补上这一笔。改为监听按钮自身的 Move/Resize 触发重绘（见
     eventFilter），绘制时现取，偏差从结构上不可能发生。
+
+    **键盘可达**：容器是这一组的唯一 tab 站（`Qt.StrongFocus`），左右/上下
+    方向键在选项间移动并广播 `changed`，Home/End 跳首尾；焦点在容器或任一
+    按钮上时画一圈 focus_ring。按钮自身是 `Qt.ClickFocus`——点击后焦点会落到
+    按钮上（读屏按单个按钮播报），但不各占一个 tab 站，否则三组设置会把 Tab
+    链切得又长又碎。
     """
 
     changed = Signal(str)   # 新选中的 value
 
     def __init__(self, options: list[tuple[str, str]], parent=None):
         super().__init__(parent)
+        self.setFocusPolicy(Qt.StrongFocus)
         self._values = [v for v, _ in options]
         lay = QHBoxLayout(self)
         lay.setContentsMargins(3, 3, 3, 3)
@@ -163,7 +199,8 @@ class SegmentedControl(QFrame):
             btn.setObjectName("segmentBtn")
             btn.setCheckable(True)
             btn.setCursor(Qt.PointingHandCursor)
-            btn.setFocusPolicy(Qt.NoFocus)
+            btn.setFocusPolicy(Qt.ClickFocus)
+            btn.setAccessibleName(label)     # 读屏按按钮播报选项名
             btn.clicked.connect(lambda _=False, v=value: self._on_clicked(v))
             btn.installEventFilter(self)   # 布局落位 → 重绘（见 eventFilter）
             self._group.addButton(btn)
@@ -186,6 +223,68 @@ class SegmentedControl(QFrame):
     def _on_clicked(self, value: str) -> None:
         self._move_pill(value, animate=True)
         self.changed.emit(value)
+
+    # ── 键盘可达 ──────────────────────────────────────────
+
+    def _focused(self) -> bool:
+        """焦点在容器上或任一按钮上
+
+        按钮是 ClickFocus：点一下焦点就进了按钮，此时焦点环不能消失。
+        """
+        if self.hasFocus():
+            return True
+        return any(b.hasFocus() for b in self._buttons.values())
+
+    def _select(self, value: str, animate: bool) -> None:
+        """置为选中（含按钮 checked 态与高亮块）
+
+        点击路径由 Qt 先翻转 checked，键盘/程序路径必须自己补这一步——
+        少了它高亮块会动、按钮文字色却还停在旧项上。
+        """
+        btn = self._buttons.get(value)
+        if btn is None:
+            return
+        if not btn.isChecked():
+            btn.setChecked(True)
+        self._move_pill(value, animate=animate)
+
+    def _step(self, step: int) -> None:
+        """按 step 移动选中项（首尾环绕）并广播 changed"""
+        if not self._values:
+            return
+        current = self.value()
+        if current in self._values:
+            idx = self._values.index(current)
+        else:
+            idx = -step      # 尚未选中任何一项：下一步落在首项
+        self._emit_select(self._values[(idx + step) % len(self._values)])
+
+    def _emit_select(self, value: str) -> None:
+        self._select(value, animate=True)
+        self.changed.emit(value)
+
+    def keyPressEvent(self, event) -> None:
+        key = event.key()
+        if key in (Qt.Key_Left, Qt.Key_Up):
+            self._step(-1)
+        elif key in (Qt.Key_Right, Qt.Key_Down):
+            self._step(1)
+        elif key == Qt.Key_Home and self._values:
+            self._emit_select(self._values[0])
+        elif key == Qt.Key_End and self._values:
+            self._emit_select(self._values[-1])
+        else:
+            super().keyPressEvent(event)
+            return
+        event.accept()
+
+    def focusInEvent(self, event) -> None:
+        super().focusInEvent(event)
+        self.update()
+
+    def focusOutEvent(self, event) -> None:
+        super().focusOutEvent(event)
+        self.update()
 
     def _paint_rect(self) -> QRectF:
         """本次绘制该画的高亮块几何
@@ -232,38 +331,70 @@ class SegmentedControl(QFrame):
     def paintEvent(self, event) -> None:
         # 基类先画（宿主将来若给容器下发底色，高亮块才不会压在它下面）
         super().paintEvent(event)
-        rect = self._paint_rect()
-        if rect.isEmpty():
-            return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         c = AppTheme.colors()
+        r = tokens.radius('pill')
+        rect = self._paint_rect()
+        if rect.isEmpty():
+            # 还没选中任何一项：焦点环画在整组外框上，否则键盘用户看不到焦点
+            if self._focused():
+                self._paint_focus_ring(painter, QRectF(self.rect()), r)
+            painter.end()
+            return
         # accent_soft 是半透明 rgba() 色值：QColor 直接构造会解析失败画成
         # 纯黑（选中高亮块曾整块发黑），必须走 to_qcolor
         painter.setPen(QPen(to_qcolor(c["accent"]), 1.5))
         painter.setBrush(to_qcolor(c["accent_soft"]))
-        r = tokens.radius('pill')
         painter.drawRoundedRect(rect.adjusted(0.75, 0.75, -0.75, -0.75), r, r)
+        if self._focused():
+            self._paint_focus_ring(painter, rect, r)
         painter.end()
 
+    @staticmethod
+    def _paint_focus_ring(painter: QPainter, rect: QRectF, radius: float) -> None:
+        """焦点环：贴着选中块外沿描一圈 focus_ring
+
+        与高亮块同一套圆角（tokens.radius('pill')），只描边不填充；
+        容器四周留了 3px 内边距，外扩 1.2px 不会画出控件之外。
+        """
+        ring = rect.adjusted(-1.2, -1.2, 1.2, 1.2)
+        painter.setPen(QPen(to_qcolor(AppTheme.colors()["focus_ring"]), 1.5))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(ring, radius + 1.2, radius + 1.2)
+
     def eventFilter(self, obj, event) -> bool:
-        """按钮被布局挪动/改尺寸 → 重绘高亮块
+        """按钮被布局挪动/改尺寸 → 重绘高亮块；焦点进出 → 重绘画焦点环
 
         容器自身的 resizeEvent 不是可靠时机（Qt 可能先发它、之后再 activate
         布局，见类注释），盯按钮自己的 Move/Resize 才对得上。
         """
-        if (event.type() in (QEvent.Move, QEvent.Resize)
-                and self._selected is not None):
+        etype = event.type()
+        if etype in (QEvent.Move, QEvent.Resize) and self._selected is not None:
             self.update()
+        elif etype in (QEvent.FocusIn, QEvent.FocusOut):
+            # 按钮是 ClickFocus：点击后焦点进按钮，焦点环得跟着亮/灭
+            self.update()
+        elif etype == QEvent.KeyPress and obj in self._buttons.values():
+            # 焦点已在某个按钮上时方向键仍由容器处理（否则按了没反应）
+            self.keyPressEvent(event)
+            return event.isAccepted()
         return super().eventFilter(obj, event)
 
     def set_value(self, value: str) -> None:
-        btn = self._buttons.get(value)
-        if btn is None:
-            return
-        if not btn.isChecked():
-            btn.setChecked(True)
-        self._move_pill(value, animate=False)   # 同步路径不播动画
+        """同步真实偏好：静音（不发 changed）+ 瞬时落位
+
+        未知值回退首项。此前直接 return，控件会停在"零选中"——高亮块留在
+        上一次的位置、没有任何按钮是 checked，界面呈现的是一个**假状态**；
+        偏好被手工改坏或新旧版本取值不一致时就会看到它。
+        """
+        if value not in self._buttons:
+            logger.warning("SegmentedControl 收到未知取值 %r（合法值 %r），回退首项",
+                           value, self._values)
+            if not self._values:
+                return
+            value = self._values[0]
+        self._select(value, animate=False)   # 同步路径不播动画
 
     def value(self) -> str | None:
         for v, btn in self._buttons.items():
@@ -277,6 +408,7 @@ class SegmentedControl(QFrame):
             btn = self._buttons.get(value)
             if btn is not None:
                 btn.setText(label)
+                btn.setAccessibleName(label)   # 读屏名与显示文案同源
 
     def reapply_theme(self) -> None:
         # 样式表由 SettingsDialog 统一下发（子控件继承），此处仅重绘

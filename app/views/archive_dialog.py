@@ -86,6 +86,7 @@ class _ArchiveRow(QFrame):
             # 完成标记改用矢量勾：✅ 是彩色 emoji，与同排的线性图标/文字
             # 不同调，且按平台渲染成不同字形与基线
             self._done_mark = QLabel()
+            self._done_mark.setAccessibleName(tr("已完成"))
             self._done_mark.setPixmap(
                 icons.pixmap("check", 16, "success"))
             lay.addWidget(self._done_mark, 0)
@@ -210,9 +211,12 @@ class ArchiveDialog(QDialog):
         tools.setSpacing(8)
         self._search_edit = QLineEdit()
         self._search_edit.setPlaceholderText(tr("搜索归档卡片…"))
+        self._search_edit.setAccessibleName(tr("搜索归档卡片…"))
         self._search_edit.setClearButtonEnabled(True)
         self._search_edit.textChanged.connect(lambda _t: self._render())
         tools.addWidget(self._search_edit, 1)
+        # 排序下拉不设 accessibleName：需要一个"排序"词条，而 i18n 词典
+        # 不在本阶段写作用域内（读屏靠条目文本本身播报当前值）
         self._sort_combo = ComboBox()   # 滚轮不改值（防悬停误触）
         self._sort_combo.setCursor(Qt.PointingHandCursor)
         for value, label in (("default", tr("默认顺序")),

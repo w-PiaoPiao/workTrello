@@ -102,6 +102,10 @@ def _remove_button_style(c: dict) -> str:
     零尺寸——按钮还在、也点得到，但 ✕ 一个像素都不画，用户看到的就是
     "能加清单项、却没有删除按钮"。显式给出 padding（或 min-width/height）
     即恢复正常。同款坑（背景不透明）在卡片删除钮上没有触发。
+
+    阶段 3 起按钮内容改成矢量图标（`icons.IconButton`，QIcon 由 QStyle 画在
+    内容区，不受文字绘制区塌陷影响），`padding: 0` 继续保留为显式声明，
+    别因为"现在是图标"就删掉——同一条 QSS 还守着盒模型不变量。
     """
     return f"""
         QPushButton {{
@@ -178,7 +182,8 @@ class LabelChip(QPushButton):
         super().__init__(parent)
         self._key = key
         self.setCheckable(True)
-        self.setFixedSize(34, 22)
+        # 34×24：色块本身只有 34×22 的观感，但命中区抬到 24 高（触控/手抖）
+        self.setFixedSize(34, 24)
         self.setCursor(Qt.PointingHandCursor)
         self.setToolTip(label_display(key))
         self.reapply()
@@ -254,6 +259,7 @@ class CardDialog(QDialog):
         cap.setProperty("cap", True)
         form.addWidget(cap)
         self._title_edit = QLineEdit()
+        cap.setBuddy(self._title_edit)     # 标签 ↔ 输入框：读屏与助记键的关联
         self._title_edit.textChanged.connect(self._clear_title_error)
         if card:
             self._title_edit.setText(card.title)
@@ -285,6 +291,7 @@ class CardDialog(QDialog):
         notes_header.addWidget(self._preview_btn)
         form.addLayout(notes_header)
         self._notes_edit = QPlainTextEdit()
+        cap2.setBuddy(self._notes_edit)
         self._notes_edit.setFixedHeight(90)
         self._notes_edit.setPlaceholderText(
             tr("补充说明、链接、清单…\n支持 Markdown：# 标题 **加粗** - [ ] 待办\n（记进度时点右上角「插入当前时间」）"))
@@ -309,6 +316,7 @@ class CardDialog(QDialog):
         cap_cl = QLabel(tr("清单"))
         cap_cl.setProperty("cap", True)
         form.addWidget(cap_cl)
+        # buddy 在「添加清单项」按钮创建后补（见下）
         self._check_rows: list[tuple[QCheckBox, QLineEdit]] = []
         self._checklist_host = QWidget()
         self._checklist_layout = QVBoxLayout(self._checklist_host)
@@ -317,6 +325,7 @@ class CardDialog(QDialog):
         form.addWidget(self._checklist_host)
         cl_btn_row = QHBoxLayout()
         self._add_check_btn = QPushButton(tr("添加清单项"))
+        cap_cl.setBuddy(self._add_check_btn)
         self._add_check_btn.setFlat(True)
         self._add_check_btn.setCursor(Qt.PointingHandCursor)
         icons.apply_icon(self._add_check_btn, "add", 16, "accent")
@@ -352,6 +361,8 @@ class CardDialog(QDialog):
             labels_row.addWidget(chip)
         labels_row.addStretch(1)
         form.addLayout(labels_row)
+        if self._label_chips:              # 色块组：buddy 指向首个色块
+            cap3.setBuddy(self._label_chips[0])
 
         # 截止日期 + 完成
         row = QGridLayout()
@@ -360,6 +371,7 @@ class CardDialog(QDialog):
         cap4.setProperty("cap", True)
         row.addWidget(cap4, 0, 0)
         self._due_edit = DateEdit()   # 滚轮/触控板滑动不改值（防悬停误触）
+        cap4.setBuddy(self._due_edit)
         # 截止日期可选：新建/无日期默认"未设置"，提交 due_date=None，不再默认今天。
         # 未设置态显示灰色"未设置"文字（而非禁用的日期框），设置后才是日期选择框
         has_due = card is not None and bool(card.due_date)
@@ -414,6 +426,7 @@ class CardDialog(QDialog):
         repeat_row = QHBoxLayout()
         repeat_row.setSpacing(6)
         self._repeat_combo = ComboBox()   # 滚轮不切项（防悬停误触）
+        cap5.setBuddy(self._repeat_combo)
         self._repeat_combo.setCursor(Qt.PointingHandCursor)
         for key in AppConfig.REPEAT_ORDER:
             self._repeat_combo.addItem(repeat_display(key) or tr("不重复"), key)
@@ -455,6 +468,8 @@ class CardDialog(QDialog):
             btn.setStyleSheet(_selector_button_style(c))
             btn.clicked.connect(self._on_priority_clicked)
             self._priority_choices[key] = btn
+            if key == 0:                   # 优先级组：buddy 指向首项
+                cap6.setBuddy(btn)
             priority_row.addWidget(btn)
         selected_p = (card.priority if card is not None
                       and card.priority in self._priority_choices else 0)
@@ -479,6 +494,7 @@ class CardDialog(QDialog):
         self._workdir = (card.workdir if card else "")
         self._workdir_label = QLabel()
         self._workdir_browse_btn = QPushButton(tr("浏览…"))
+        cap7.setBuddy(self._workdir_browse_btn)
         self._workdir_browse_btn.setFlat(True)
         self._workdir_browse_btn.setCursor(Qt.PointingHandCursor)
         self._workdir_clear_btn = QPushButton(tr("清除"))
@@ -509,6 +525,7 @@ class CardDialog(QDialog):
         form.addWidget(self._attach_rows_host)
         attach_btn_row = QHBoxLayout()
         self._attach_add_btn = QPushButton(tr("添加附件…"))
+        cap8.setBuddy(self._attach_add_btn)
         self._attach_add_btn.setFlat(True)
         self._attach_add_btn.setCursor(Qt.PointingHandCursor)
         icons.apply_icon(self._attach_add_btn, "attach", 16, "accent")
@@ -672,10 +689,11 @@ class CardDialog(QDialog):
         edit.returnPressed.connect(
             lambda: self._add_check_row("", False, focus=True))
         remove = icons.IconButton("close", 16, "text_secondary", "danger")
-        remove.setFixedSize(22, 22)
+        remove.setFixedSize(24, 24)          # 命中区 ≥24（原 22×22）
         remove.setFlat(True)
         remove.setCursor(Qt.PointingHandCursor)
         remove.setToolTip(tr("删除该清单项"))
+        remove.setAccessibleName(tr("删除该清单项"))
         remove.setStyleSheet(_remove_button_style(AppTheme.colors()))
         remove.clicked.connect(lambda: self._remove_check_row(row))
         lay.addWidget(check)
@@ -755,10 +773,11 @@ class CardDialog(QDialog):
                 QDesktopServices.openUrl(QUrl.fromLocalFile(p)))
             remove = icons.IconButton("close", 16, "text_secondary", "danger")
             remove.setObjectName("attachRemove")
-            remove.setFixedSize(22, 22)
+            remove.setFixedSize(24, 24)      # 命中区 ≥24（原 22×22）
             remove.setFlat(True)
             remove.setCursor(Qt.PointingHandCursor)
             remove.setToolTip(tr("移除附件"))
+            remove.setAccessibleName(tr("移除附件"))
             remove.setStyleSheet(_remove_button_style(AppTheme.colors()))
             remove.clicked.connect(
                 lambda _=False, i=idx: self._remove_attachment(i))
@@ -932,6 +951,7 @@ class CardDialog(QDialog):
         cap_s.setProperty("cap", True)
         start_row.addWidget(cap_s)
         self._fund_start_edit = DateEdit()   # 滚轮/触控板滑动不改值
+        cap_s.setBuddy(self._fund_start_edit)
         self._fund_start_edit.setDate(QDate(start.year, start.month,
                                             start.day))
         self._fund_start_edit.dateChanged.connect(
@@ -1032,10 +1052,11 @@ class CardDialog(QDialog):
                 lambda _qd, s=step, de=date_edit:
                 self._on_fund_step_date(s, de))
             clear = icons.IconButton("close", 16, "text_secondary", "danger")
-            clear.setFixedSize(22, 22)
+            clear.setFixedSize(24, 24)       # 命中区 ≥24（原 22×22）
             clear.setFlat(True)
             clear.setCursor(Qt.PointingHandCursor)
             clear.setToolTip(tr("清除该环节办理时间"))
+            clear.setAccessibleName(tr("清除该环节办理时间"))
             clear.setStyleSheet(_remove_button_style(AppTheme.colors()))
             clear.clicked.connect(
                 lambda _=False, de=date_edit: de.setDate(_FUND_DATE_SENTINEL))

@@ -143,6 +143,8 @@ class QuickAddDialog(QDialog):
         root.addWidget(cap)
 
         self._edit = QLineEdit()
+        cap.setBuddy(self._edit)          # 标签 ↔ 输入框（读屏/助记键关联）
+        self._edit.setAccessibleName(label)
         self._edit.setPlaceholderText(placeholder)
         if initial_text:
             self._edit.setText(initial_text)
@@ -270,6 +272,8 @@ class BulkAddDialog(QDialog):
         list_cap.setProperty("cap", True)
         row.addWidget(list_cap)
         self._combo = ComboBox()   # 滚轮不切项（防悬停误触）
+        list_cap.setBuddy(self._combo)
+        self._combo.setAccessibleName(tr("添加到列表："))
         self._combo.addItems(list_names)
         row.addWidget(self._combo, 1)
         row.addWidget(self._count_label)
