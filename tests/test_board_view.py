@@ -300,7 +300,7 @@ class BoardViewRefreshTest(unittest.TestCase):
         cw = self.view._columns[0]._card_widgets[0]
         badges = self._badges(cw)
         self.assertIn("牵头·财政", badges)
-        self.assertIn("🧭 1/2", badges)
+        self.assertIn("1/2", badges)
         # 有已过期期限 → 超期展示优先于下一道日期
         self.assertIn("2周期限超 6 天", badges)
         self.assertIn("danger", [tone for _b, tone in cw._meta_badges])
@@ -343,10 +343,10 @@ class BoardViewRefreshTest(unittest.TestCase):
         lists[0].cards.append(card)
         self.view.refresh(lists)
         cw = self.view._columns[0]._card_widgets[0]
-        self.assertIn("🧭 0/2", self._badges(cw))
+        self.assertIn("0/2", self._badges(cw))
         card.fund["steps"][0]["done"] = True
         self.view.refresh(lists)
-        self.assertIn("🧭 1/2", self._badges(cw), "环节进度变化后徽标未刷新")
+        self.assertIn("1/2", self._badges(cw), "环节进度变化后徽标未刷新")
 
     def test_fund_tooltip_contains_flow_and_days(self):
         """tooltip 汇总流程摘要与环节耗时明细"""
@@ -373,7 +373,7 @@ class BoardViewRefreshTest(unittest.TestCase):
         lists[0].cards.append(card)
         self.view.refresh(lists)
         cw = self.view._columns[0]._card_widgets[0]
-        self.assertNotIn("🧭 1/1", self._badges(cw))
+        self.assertNotIn("1/1", self._badges(cw))
         self.assertIn("配合", self._badges(cw))
 
     def test_assist_fund_tooltip_mentions_deadline_only(self):
@@ -445,7 +445,7 @@ class BoardViewRefreshTest(unittest.TestCase):
         self.assertEqual(self._badges(cw), [])
         lists[0].cards[0].pomodoros = 3
         self.view.refresh(lists)
-        self.assertIn("🍅 ×3", self._badges(cw),
+        self.assertIn("番茄 ×3", self._badges(cw),
                       "番茄数变化后徽章未刷新")
 
     def test_repeat_change_refreshes_badge(self):
@@ -1006,7 +1006,7 @@ class BoardViewRefreshTest(unittest.TestCase):
         self.assertEqual(received["set"], cw.card().id)
 
     def test_workdir_badge_click_emits_open(self):
-        """点击 📂 徽章发出打开信号（事件过滤器 press 拦截路径）"""
+        """点击工作目录徽章发出打开信号（事件过滤器 press 拦截路径）"""
         from PySide6.QtCore import QEvent, QPointF, Qt
         from PySide6.QtGui import QMouseEvent
         lists = make_lists([("待办", ["A"])])
@@ -1026,7 +1026,7 @@ class BoardViewRefreshTest(unittest.TestCase):
         self.assertEqual(received, [cw.card().id])
 
     def test_workdir_badge_hidden_without_dir(self):
-        """未设置目录不构建 📂 徽章（可选字段常态）"""
+        """未设置目录不构建工作目录徽章（可选字段常态）"""
         lists = make_lists([("待办", ["A"])])
         self.assertFalse(lists[0].cards[0].workdir)
         self.view.refresh(lists)

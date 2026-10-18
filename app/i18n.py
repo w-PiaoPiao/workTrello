@@ -264,6 +264,8 @@ _zh_en: dict[str, str] = {
     "泳道内暂无资金卡片，未导出": "No fund cards in this lane; nothing exported",
     "≡ 有备注": "≡ Notes",
     "有备注": "Notes",
+    "标签：{name}": "Label: {name}",
+    "番茄 ×{n}": "{n} pomodoros",
     "折叠 / 展开列表": "Collapse / expand list",
     "列表操作": "List actions",
     "拖动调整看板大小": "Drag to resize the board",

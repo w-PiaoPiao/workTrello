@@ -66,7 +66,7 @@ class NotesBadgeTest(unittest.TestCase):
     def test_badge_only_when_notes(self):
         c1, c2, _c3 = self._cards()
         self.assertIsNotNone(c1._notes_badge)
-        self.assertEqual(c1._notes_badge.text(), "≡ 有备注")
+        self.assertEqual(c1._notes_badge.text(), "有备注")
         self.assertIsNone(c2._notes_badge)      # 无备注无徽章
 
     def test_badge_has_no_native_tooltip(self):

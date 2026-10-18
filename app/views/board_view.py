@@ -158,7 +158,8 @@ _BADGE_TONES = tuple(_BADGE_TONE_COLORS)
 
 # 工作目录徽章的显示文本（真实路径放徽章 tooltip；收集/构建/事件过滤
 # 三处靠它识别是目录徽章）
-WORKDIR_BADGE_TEXT = "📂"
+WORKDIR_BADGE_TEXT = "工作目录"
+ATTACH_BADGE_TEXT = "附件"
 
 
 @lru_cache(maxsize=4)
@@ -726,8 +727,8 @@ class CardWidget(QFrame):
         self._meta_badges: list[tuple[QLabel, str]] = []
         self._notes_badge: QLabel | None = None    # "≡ 有备注"徽章（悬停弹备注预览）
         self._more_badge: QLabel | None = None     # 装不下的徽章用 "…" 提示
-        self._workdir_badge: QLabel | None = None  # "📂"徽章（点击打开工作目录）
-        self._attach_badge: QLabel | None = None   # "📎"徽章（点击打开首个附件）
+        self._workdir_badge: QLabel | None = None  # 工作目录徽章（点击打开）
+        self._attach_badge: QLabel | None = None   # 附件徽章（点击打开首个）
         self._fit_state: tuple = ()                # 徽章显示组合缓存（避免重复重排）
         self._fit_width: int | None = None         # 上次徽章取舍时的卡片宽度
         self._fingerprint: tuple = ()
@@ -816,7 +817,7 @@ class CardWidget(QFrame):
         # 今日聚焦开关放首位：星标是"加入今日"的唯一入口，此前必须打开
         # 编辑对话框才能勾选，是规划链路上最贵的操作
         act_star = menu.addAction(
-            tr("☆ 移出今日") if self._card.starred else tr("⭐ 加入今日"))
+            tr("移出今日") if self._card.starred else tr("加入今日"))
         menu.addSeparator()
         # 高频字段的快捷编辑：优先级/截止/换列此前一律"打开对话框→改→
         # 保存"三步走，是日常整理看板最费步数的路径
@@ -826,16 +827,16 @@ class CardWidget(QFrame):
         menu.addSeparator()
         # 工作目录：有目录先给"打开"，设置项无目录也提供（含更改语义，
         # 清除走编辑对话框）
-        act_workdir_open = (menu.addAction(tr("📂 打开工作目录"))
+        act_workdir_open = (menu.addAction(tr("打开工作目录"))
                             if self._card.workdir else None)
-        act_workdir_set = menu.addAction(tr("📁 设置工作目录…"))
-        act_attach_open = (menu.addAction(tr("📎 打开附件"))
+        act_workdir_set = menu.addAction(tr("设置工作目录…"))
+        act_attach_open = (menu.addAction(tr("打开附件"))
                            if self._card.attachments else None)
         menu.addSeparator()
         if self._card.id == self._focusing_id:
-            act_pomo = menu.addAction(tr("⏹ 停止专注"))
+            act_pomo = menu.addAction(tr("停止专注"))
         else:
-            act_pomo = menu.addAction(tr("▶ 开始专注 25 分钟"))
+            act_pomo = menu.addAction(tr("开始专注 25 分钟"))
         menu.addSeparator()
         act_duplicate = menu.addAction(tr("复制卡片"))
         act_save_tpl = menu.addAction(tr("另存为模板…"))
@@ -1069,30 +1070,31 @@ class CardWidget(QFrame):
                 f_done, f_total = card.fund_progress()
                 if f_total:
                     meta_items.append(
-                        (f"🧭 {f_done}/{f_total}",
+                        (f"{f_done}/{f_total}",
                          "success" if f_done == f_total else "accent", False))
         if card.due_date:
             text, overdue = _fmt_due(card.due_date)
             meta_items.append((text, "danger" if overdue else "accent", False))
         if card.repeat != "never":
-            meta_items.append((f"🔁 {repeat_display(card.repeat)}",
+            meta_items.append((repeat_display(card.repeat),
                                "text_secondary", False))
         if card.checklist:
             done, total = card.checklist_progress()
             # 全部勾完转 success 色：一眼可辨"只差归档/收尾"
-            meta_items.append((f"☑ {done}/{total}",
+            meta_items.append((f"{done}/{total}",
                                "success" if done == total else "accent",
                                False))
         if card.attachments:
             n = len(card.attachments)
-            meta_items.append(("📎" if n == 1 else f"📎 ×{n}",
+            meta_items.append((ATTACH_BADGE_TEXT if n == 1 else f"{ATTACH_BADGE_TEXT} ×{n}",
                                "text_secondary", False))
         if card.notes:
-            meta_items.append((tr("≡ 有备注"), "text_secondary", True))
+            meta_items.append((tr("有备注"), "text_secondary", True))
         if card.pomodoros:
-            meta_items.append((f"🍅 ×{card.pomodoros}", "text_secondary", False))
+            meta_items.append((tr("番茄 ×{n}").format(n=card.pomodoros),
+                               "text_secondary", False))
         if card.workdir:
-            # "📂"占位文本，真实路径放 tooltip；有目录才显示，点击打开
+            # 占位文本，真实路径放 tooltip；有目录才显示，点击打开
             meta_items.append((WORKDIR_BADGE_TEXT, "text_secondary", False))
 
         if meta_items:
@@ -1126,7 +1128,7 @@ class CardWidget(QFrame):
                     badge.setCursor(Qt.PointingHandCursor)
                     badge.setToolTip(card.workdir)
                     badge.installEventFilter(self)
-                elif text.startswith("📎"):
+                elif text.startswith(ATTACH_BADGE_TEXT):
                     # 附件徽章：点击打开首个附件；全部附件名走 tooltip
                     self._attach_badge = badge
                     badge.setCursor(Qt.PointingHandCursor)
@@ -3558,12 +3560,12 @@ class BoardView(QWidget):
         self._sel_count_label = QLabel()
         self._sel_count_label.setObjectName("selCount")
         sel_lay.addWidget(self._sel_count_label)
-        self._sel_done_btn = QPushButton(tr("✓ 切换完成"))
+        self._sel_done_btn = QPushButton(tr("切换完成"))
         self._sel_done_btn.setObjectName("boardToolBtn")
         self._sel_done_btn.setCursor(Qt.PointingHandCursor)
         self._sel_done_btn.clicked.connect(self._on_batch_done)
         sel_lay.addWidget(self._sel_done_btn)
-        self._sel_edit_btn = QPushButton(tr("✎ 编辑"))
+        self._sel_edit_btn = QPushButton(tr("编辑"))
         self._sel_edit_btn.setObjectName("boardToolBtn")
         self._sel_edit_btn.setCursor(Qt.PointingHandCursor)
         self._sel_edit_btn.setToolTip(tr("批量修改截止日期 / 优先级 / 标题"))
@@ -3725,8 +3727,8 @@ class BoardView(QWidget):
         self._archive_btn.setToolTip(tr("查看已归档卡片并恢复"))
         self._calendar_btn.setToolTip(tr("按截止日期在月历中查看与拖动卡片"))
         self._overflow_btn.setToolTip(tr("更多操作"))
-        self._sel_done_btn.setText(tr("✓ 切换完成"))
-        self._sel_edit_btn.setText(tr("✎ 编辑"))
+        self._sel_done_btn.setText(tr("切换完成"))
+        self._sel_edit_btn.setText(tr("编辑"))
         self._sel_edit_btn.setToolTip(tr("批量修改截止日期 / 优先级 / 标题"))
         self._sel_label_btn.setText(tr("标签"))
         self._sel_move_btn.setText(tr("→ 移动"))
@@ -3993,9 +3995,9 @@ class BoardView(QWidget):
         menu.addSeparator()
         act_new = menu.addAction(tr("+ 新建看板"))
         act_new.triggered.connect(self.signal_board_create.emit)
-        act_rename = menu.addAction(tr("✏ 重命名看板"))
+        act_rename = menu.addAction(tr("重命名看板"))
         act_rename.triggered.connect(self.signal_board_rename.emit)
-        act_delete = menu.addAction(tr("🗑 删除看板"))
+        act_delete = menu.addAction(tr("删除看板"))
         act_delete.setEnabled(len(self._board_meta) > 1)
         act_delete.triggered.connect(
             lambda: self.signal_board_delete.emit(self._current_board_id))
@@ -4269,11 +4271,11 @@ class BoardView(QWidget):
         self._apply_filter()
 
     def _update_label_chip(self) -> None:
-        """过滤 chip：过滤态显示「🏷 红 ✕」，清除后隐藏"""
+        """过滤 chip：过滤态显示「标签：红」，点它清除过滤"""
         if self._label_filter:
             name = AppConfig.LABEL_NAMES.get(self._label_filter,
                                              self._label_filter)
-            self._label_chip.setText(f"🏷 {name} ✕")
+            self._label_chip.setText(tr("标签：{name}").format(name=name))
             self._label_chip.show()
         else:
             self._label_chip.hide()
