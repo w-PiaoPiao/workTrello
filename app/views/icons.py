@@ -411,16 +411,17 @@ def apply_icon(button, name: str, size: int = 16, color=None) -> None:
 # ── 独立图标按钮 ──────────────────────────────────────────────
 
 class IconButton(QPushButton):
-    """自绘矢量图标按钮
+    """矢量图标按钮（独立图标钮：✕ / 星标 / 日历翻页 …）
 
-    与 `setIcon()` 的区别：QSS 的 `color` 管不到 QIcon（悬停变色会失效），
-    而本类在 `paintEvent` 里自己取色，所以：
+    为什么不是 `setIcon()` 一行了事：QSS 的 `color` 管不到 QIcon，
+    原有 ✕ 按钮"常态次要色、悬停危险红"的悬停反馈会丢。本类在
+    `enterEvent` / `leaveEvent` 里换一份图标（换的是同一个引擎，不重建
+    像素），于是：
 
-    - 悬停色（`hover_color`）能跟随 `:hover` 语义，与原有 ✕ 按钮
-      "常态次要色、悬停危险红" 的行为一致；
-    - 主题切换时 `update()` 即换色，不需要重建图标；
-    - 图标绘制不经过 QStyle 的文字绘制区，不会踩到"padding: 0 把内容区
-      压成 0，字一个像素都不画"那个坑（`_remove_button_style` 的注释）。
+    - 悬停换色（`hover_color`）与原来的 `:hover { color: … }` 等价；
+    - 图标引擎每次绘制都读主题色，主题切换不需要重建控件；
+    - `icon()` 恒非空、文本为空，`QStyle` 负责把图标画在内容区，
+      背景/边框仍由 QSS 驱动——与原来的文字按钮走同一条绘制路径。
     """
 
     def __init__(self, name: str, size: int = 16, color=None,
@@ -432,39 +433,33 @@ class IconButton(QPushButton):
         self._hover_color = hover_color
         self._hovered = False
         self.setIconSize(QSize(size, size))
+        self._sync_icon()
+
+    def _sync_icon(self) -> None:
+        color = self._color
+        if self._hovered and self._hover_color is not None:
+            color = self._hover_color
+        self.setIcon(icon(self._icon_name, self._icon_size, color))
 
     # ── 状态 ──
     def set_icon_name(self, name: str) -> None:
         if name != self._icon_name:
             self._icon_name = name
-            self.update()
+            self._sync_icon()
 
     def set_colors(self, color=None, hover_color=None) -> None:
         self._color = color
         self._hover_color = hover_color
-        self.update()
+        self._sync_icon()
 
     def enterEvent(self, event) -> None:
         self._hovered = True
         super().enterEvent(event)
-        self.update()
+        if self._hover_color is not None:
+            self._sync_icon()
 
     def leaveEvent(self, event) -> None:
         self._hovered = False
         super().leaveEvent(event)
-        self.update()
-
-    def paintEvent(self, event) -> None:
-        # 先让 QSS 画背景/边框（悬停底色等仍由样式表驱动），再叠加矢量图标；
-        # 图标由本类直接绘制，不经过 QStyle 的文字绘制区，所以不会踩到
-        # "padding: 0 把内容区压成 0，字一个像素都不画"那个坑
-        # （`_remove_button_style` 的注释）。
-        super().paintEvent(event)
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        color = self._color
-        if self._hovered and self._hover_color is not None:
-            color = self._hover_color
-        paint(painter, self._icon_name, min(self.width(), self.height()),
-              color)
-        painter.end()
+        if self._hover_color is not None:
+            self._sync_icon()

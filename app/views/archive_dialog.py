@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 from app.config import AppConfig
 from app.i18n import tr
 from app.models.board import BoardList, Card
-from app.views import tokens
+from app.views import icons, tokens
 from app.views.controls import ComboBox
 from app.views.theme import AppTheme
 
@@ -82,7 +82,16 @@ class _ArchiveRow(QFrame):
         lay.setContentsMargins(8, 4, 8, 4)
         lay.setSpacing(6)
 
-        self._title = _ElidedLabel(f"{'✅ ' if card.done else ''}{card.title}")
+        if card.done:
+            # 完成标记改用矢量勾：✅ 是彩色 emoji，与同排的线性图标/文字
+            # 不同调，且按平台渲染成不同字形与基线
+            self._done_mark = QLabel()
+            self._done_mark.setPixmap(
+                icons.pixmap("check", 16, "success"))
+            lay.addWidget(self._done_mark, 0)
+        else:
+            self._done_mark = None
+        self._title = _ElidedLabel(card.title)
         self._title.setObjectName("archiveTitle")
         # 来源列表名封顶：长列表名同样不得挤走「恢复」；下限保证它
         # 在带长标题的行里也看得见（排序维度之一，不能是隐形字段）。
@@ -112,6 +121,9 @@ class _ArchiveRow(QFrame):
 
     def reapply_theme(self) -> None:
         c = AppTheme.colors()
+        if self._done_mark is not None:
+            # 完成勾是 QPixmap 快照，主题切换时重画一次才不残留旧色
+            self._done_mark.setPixmap(icons.pixmap("check", 16, "success"))
         self.setStyleSheet(f"""
             QFrame#archiveRow {{
                 background: {c['bg_card']};

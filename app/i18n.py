@@ -218,7 +218,9 @@ _zh_en: dict[str, str] = {
     "⭐ 加入今日": "⭐ Add to Today",
     "☆ 移出今日": "☆ Remove from Today",
     "⏹ 停止专注": "⏹ Stop focus",
+    "停止专注": "Stop focus",
     "▶ 开始专注 25 分钟": "▶ Focus 25 min",
+    "开始专注 25 分钟": "Focus 25 min",
     "已逾期": "Overdue",
     "今天截止": "Due today",
     "明天截止": "Due tomorrow",
@@ -261,6 +263,7 @@ _zh_en: dict[str, str] = {
     "导出失败：{err}": "Export failed: {err}",
     "泳道内暂无资金卡片，未导出": "No fund cards in this lane; nothing exported",
     "≡ 有备注": "≡ Notes",
+    "有备注": "Notes",
     "折叠 / 展开列表": "Collapse / expand list",
     "列表操作": "List actions",
     "拖动调整看板大小": "Drag to resize the board",
@@ -269,11 +272,11 @@ _zh_en: dict[str, str] = {
     "新建卡片": "New Card",
     "标题": "Title",
     "备注": "Notes",
-    "⏱ 插入当前时间": "⏱ Insert time",
+    "插入当前时间": "Insert time",
     "在备注光标处插入当前时间（如 09-08 14:30）":
         "Insert the current time at the cursor (e.g. 09-08 14:30)",
-    "补充说明、链接、清单…\n（记进度时点右上角「⏱ 插入当前时间」）":
-        "Details, links, checklists…\nUse \"⏱ Insert time\" to log progress",
+    "补充说明、链接、清单…\n（记进度时点右上角「插入当前时间」）":
+        "Details, links, checklists…\nUse \"Insert time\" to log progress",
     "标签": "Labels",
     "截止日期": "Due date",
     "未设置": "Not set",
@@ -366,14 +369,19 @@ _zh_en: dict[str, str] = {
     "文件可能被其他程序占用，请稍后重试":
         "The file may be in use by another program — try again later",
     "全部完成！桌宠为你鼓掌 🎉": "All done! The pet applauds you 🎉",
+    "全部完成！桌宠为你鼓掌": "All done! The pet applauds you",
     "今日已完成 3 张，节奏不错！🌱": "3 done today — nice pace! 🌱",
+    "今日已完成 3 张，节奏不错！": "3 done today — nice pace!",
     "今日已完成 5 张，收工级表现！🏆": "5 done today — outstanding! 🏆",
+    "今日已完成 5 张，收工级表现！": "5 done today — outstanding!",
     "已完成 {n} 张卡片，继续加油！": "{n} cards done — keep it up!",
     "截止提醒：{items}": "Due reminders: {items}",
     "等 {n} 项": "and {n} more",
     "专注中 {time} · {title}": "Focusing {time} · {title}",
     "专注完成！累计 {n} 个番茄 🍅": "Focus done — {n} 🍅 in total",
+    "专注完成！累计 {n} 个番茄": "Focus done — {n} tomatoes in total",
     "专注完成！休息一下 🎉": "Focus done! Take a break 🎉",
+    "专注完成！休息一下": "Focus done! Take a break",
     "已结束专注": "Focus stopped",
     "切换专注": "Switch Focus",
     "正在专注「{title}」，切换将放弃当前进度。\n继续？":
@@ -390,8 +398,8 @@ _zh_en: dict[str, str] = {
         "Nothing archived yet — right-click a card to archive it",
     # ── 今日浮窗 ──
     "今日待办 · {n}": "Today · {n}",
-    "今天没有待办 🎉": "Nothing due today 🎉",
-    "今日已完成 {n} 张 🎉": "{n} done today 🎉",
+    "今天没有待办": "Nothing due today",
+    "今日已完成 {n} 张": "{n} done today",
     "移出今日": "Remove from Today",
     "加入今日": "Add to Today",
     "点击徽章固定": "Click badge to pin",
@@ -427,9 +435,9 @@ _zh_en: dict[str, str] = {
     # ── 数据恢复 ──
     "看板数据异常": "Board Data Error",
     "看板数据文件{detail}，{note}检测到最近一次成功保存的副本（{name}），"
-    "是否用它恢复数据？\n选择「否」则以默认看板启动。":
+    "是否用它恢复数据？\n选择「否」则以空看板继续。":
         "The board data file {detail}. {note}A recent good copy was found "
-        "({name}). Restore it?\nChoose \"No\" to start with the default "
+        "({name}). Restore it?\nChoose \"No\" to continue with an empty "
         "board.",
     "已损坏并隔离": "was corrupted and quarantined",
     "暂时无法读取": "can't be read right now",
@@ -498,36 +506,38 @@ _zh_en: dict[str, str] = {
     "导入 Markdown": "Import Markdown",
     # ── 卡片对话框：清单 / 附件 / 预览 / 重复 ──
     "清单": "Checklist",
-    "+ 添加清单项": "+ Add item",
+    "添加清单项": "Add item",
     "清单项内容": "Checklist item",
     "删除该清单项": "Remove item",
     "{done}/{total} 已完成": "{done}/{total} done",
     "附件": "Attachments",
-    "📎 添加附件…": "📎 Add file…",
+    "添加附件…": "Add file…",
     "添加附件": "Add Attachment",
-    "📋 粘贴图片": "📋 Paste image",
+    "粘贴图片": "Paste image",
     "把剪贴板中的图片存为卡片附件": "Attach the clipboard image to this card",
     "打开": "Open",
     "移除附件": "Remove attachment",
     "粘贴图片 {time}.png": "Pasted image {time}.png",
     "剪贴板中没有图片": "No image in the clipboard",
-    "👁 预览": "👁 Preview",
+    "预览": "Preview",
     "按 Markdown 渲染备注预览": "Render notes as Markdown preview",
     "（无内容）": "(empty)",
-    "补充说明、链接、清单…\n支持 Markdown：# 标题 **加粗** - [ ] 待办\n（记进度时点右上角「⏱ 插入当前时间」）":
+    "补充说明、链接、清单…\n支持 Markdown：# 标题 **加粗** - [ ] 待办\n（记进度时点右上角「插入当前时间」）":
         "Details, links, checklists…\nMarkdown supported: # heading "
-        "**bold** - [ ] todo\nUse \"⏱ Insert time\" to log progress",
+        "**bold** - [ ] todo\nUse \"Insert time\" to log progress",
     "每 N 天重复一次": "Repeat every N days",
     " 天": " days",
     # ── 卡片右键 ──
     "复制卡片": "Duplicate Card",
     "📎 打开附件": "📎 Open attachment",
+    "打开附件": "Open attachment",
     "附件文件不存在（可能已被移动或删除）":
         "Attachment file is missing (moved or deleted?)",
     "附件复制失败：{err}": "Failed to copy attachment: {err}",
     # ── 批量操作 ──
     "已选 {n} 张": "{n} selected",
     "✓ 切换完成": "✓ Toggle done",
+    "切换完成": "Toggle done",
     "🏷 标签": "🏷 Label",
     "→ 移动": "→ Move",
     "📥 归档": "📥 Archive",

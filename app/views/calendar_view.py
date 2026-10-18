@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (
 from app.config import AppConfig
 from app.i18n import tr, weekday_short
 from app.models.board import Card
-from app.views import tokens
+from app.views import icons, tokens
 from app.views.board_view import MIME_CARD
 from app.views.theme import AppTheme
 
@@ -337,7 +337,7 @@ class CalendarDialog(QDialog):
         root.setSpacing(8)
 
         head = QHBoxLayout()
-        self._prev_btn = QPushButton("◀")
+        self._prev_btn = icons.IconButton("chevron-left", 16)
         self._prev_btn.setFixedWidth(36)
         self._prev_btn.setCursor(Qt.PointingHandCursor)
         self._prev_btn.clicked.connect(lambda: self._shift_month(-1))
@@ -345,7 +345,7 @@ class CalendarDialog(QDialog):
         self._month_label = QLabel()
         self._month_label.setObjectName("calMonth")
         head.addWidget(self._month_label, 1, Qt.AlignCenter)
-        self._next_btn = QPushButton("▶")
+        self._next_btn = icons.IconButton("chevron-right", 16)
         self._next_btn.setFixedWidth(36)
         self._next_btn.setCursor(Qt.PointingHandCursor)
         self._next_btn.clicked.connect(lambda: self._shift_month(1))

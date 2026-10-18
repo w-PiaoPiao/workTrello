@@ -8,11 +8,10 @@
 
 from __future__ import annotations
 
-import math
 from datetime import date
 
-from PySide6.QtCore import QPoint, QPointF, QRect, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
+from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal
+from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -27,10 +26,9 @@ from PySide6.QtWidgets import (
 from app.config import AppConfig
 from app.i18n import tr
 from app.models.board import BoardList, Card
-from app.views import motion, tokens
+from app.views import icons, motion, tokens
 from app.views.board_view import _CardCheckButton
 from app.views.theme import AppTheme
-from app.views import tokens
 
 _ROW_MIN_H = 42
 # 上限跟着 chrome 一起抬：加了两行输入后若不抬，可视行数会从 6 行掉到 4 行
@@ -73,23 +71,14 @@ class _StarButton(QPushButton):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         c = AppTheme.colors()
-        cx, cy = self.width() / 2, self.height() / 2
-        r_out = min(self.width(), self.height()) * 0.40
-        r_in = r_out * 0.45
-        path = QPolygonF()
-        for i in range(10):
-            ang = math.radians(-90 + i * 36)
-            r = r_out if i % 2 == 0 else r_in
-            path.append(QPointF(cx + r * math.cos(ang),
-                                cy + r * math.sin(ang)))
         if self._starred:
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(c["accent"]))
+            color = c["accent"]
         else:
-            painter.setPen(QPen(QColor(c["accent"] if self._hover
-                                       else c["text_disabled"]), 1.4))
-            painter.setBrush(Qt.NoBrush)
-        painter.drawPolygon(path)
+            color = c["accent"] if self._hover else c["text_disabled"]
+        # 星形几何收在 icons 工厂里（与 board_view 的星标、工具栏图标同一套
+        # 画法）；实心态用填充版，描边态用线框版
+        icons.paint(painter, "star-filled" if self._starred else "star",
+                    min(self.width(), self.height()), color)
         painter.end()
 
 
@@ -297,13 +286,13 @@ class TodayPopover(QWidget):
         show_done = self._done_count is not None and self._done_count > 0
         if show_done:
             done_label.setText(
-                tr("今日已完成 {n} 张 🎉").format(n=self._done_count))
+                tr("今日已完成 {n} 张").format(n=self._done_count))
             self._apply_done_label_style()
 
         if not items:
             empty = QLabel(tr("没有匹配的待办")
                            if self._query else
-                           tr("今天没有待办 🎉"))
+                           tr("今天没有待办"))
             empty.setAlignment(Qt.AlignCenter)
             self._empty_label = empty
             self._apply_empty_label_style()
@@ -466,7 +455,8 @@ class TodayPopover(QWidget):
             " background: transparent;")
         head.addWidget(self._title_label)
         head.addStretch(1)
-        self._close_btn = QPushButton("✕")
+        self._close_btn = icons.IconButton("close", 16,
+                                           "text_primary", "white")
         self._close_btn.setFixedSize(22, 22)
         self._close_btn.setCursor(Qt.PointingHandCursor)
         self._close_btn.clicked.connect(self.close)

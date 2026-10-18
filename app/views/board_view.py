@@ -3362,6 +3362,9 @@ class BoardView(QWidget):
 
         self._settings_btn = _GearButton()
         self._settings_btn.setObjectName("boardThemeBtn")   # 同款圆形玻璃底
+        # 与日历/主题键同尺寸：不设的话 `border-radius: 17px` 画出来是圆角
+        # 矩形而不是圆，且比左右邻居宽——工具栏上最扎眼的一处不一致
+        self._settings_btn.setFixedSize(34, 34)
         self._settings_btn.setCursor(Qt.PointingHandCursor)
         self._settings_btn.setToolTip(tr("设置"))
         self._settings_btn.clicked.connect(self.signal_settings_clicked.emit)
@@ -3423,8 +3426,14 @@ class BoardView(QWidget):
         # 收纳优先级（低 → 高）：空间不足时从前往后收进「»」菜单。
         # 顺序按"冗余度"排：统计数字在列头也有、日历在 macOS 菜单栏也有，
         # 而「+ 添加列表」是空看板引导指向的唯一入口，放最后。
+        # 「今日」与看板标题排在最后两级：标题的 88px 是剩余项里最宽的一个，
+        # 而它同时有 tooltip 与「»」菜单两条退路——极窄窗口下唯一还能让的。
         self._overflow_order = ("stats", "calendar", "bulk_add", "export",
-                                "archive", "add_list")
+                                "archive", "add_list", "today", "title")
+        # 搜索框的弹性范围：原始最小宽 → 硬下限。窄到下限仍放不下时，
+        # 「今日」开关已被收进「»」菜单，工具栏不可能再重叠。
+        self._search_min_w = self._search_edit.minimumWidth()
+        self._search_min_floor = 72
         self._toolbar_items: list[tuple[str, QWidget]] = [
             ("title", self._title_btn),
             ("stats", self._stats_label),
@@ -4225,27 +4234,31 @@ class BoardView(QWidget):
         if (not self._search_query() and not self._label_filter
                 and not self._today_btn.isChecked()):
             self._pinned_ids.clear()   # 无任何过滤：豁免集随之失效
-        total = 0
-        filtered = False
+        visibles: dict = {}
         for lst, col in zip(self._lists, self._columns):
             visible = self._visible_cards_for(lst)
+            visibles[lst.id] = visible
             col.set_visible_cards(visible)
-            if visible is not None:
-                filtered = True
-            total += len(visible or [])
-        # 无过滤时 visible 全是 None（sum 恒 0）：角标要显示全板今日聚焦数，
-        # 否则"今天有事要办"在最重要的常态下提示"今日 0"
-        self._set_today_count(total if filtered else self._today_focus_total())
-        if self._search_query():
-            self._stats_label.setText(tr("匹配 {n} 张").format(n=total))
-        else:
-            self.update_stats(self._lists)
+        # 角标恒为"今日聚焦总数"。此前过滤态下会改成匹配数，于是输入 "OKR"
+        # 让 chip 变成「今日 2」——标签说今日、数值是匹配数，用户读到的
+        # 是一句假话。匹配数另有出口（统计行），不该挤进今日角标。
+        self._set_today_count(self._today_focus_total())
+        # 统计行文案统一由 update_stats 决定（搜索 → 匹配数；标签过滤 →
+        # "标签 X · N 张"；常态 → 总数/完成数）。把刚算好的 visibles 传进去，
+        # 避免同一输入把全板文本再扫一遍。
+        self.update_stats(self._lists, visibles=visibles)
+        # 统计行是「匹配 N 张」的唯一渲染点，而它在窄窗收纳顺序里排第一——
+        # 搜索时最该看到的数字反而最先消失。过滤态下强制它可见。
+        if self._search_query() or self._label_filter:
+            self._stats_label.show()
+        # 过滤态会显隐标签 chip、匹配数文案也会变宽，工具栏可用宽度随之变化：
+        # 只在 resizeEvent 里重算，会让这些变化把工具栏挤出窗口，直到下次
+        # 缩放才恢复。_apply_toolbar_overflow 在隐藏集未变时自身早退，很便宜。
+        self._apply_toolbar_overflow()
 
     def _today_count_from(self, visibles: dict) -> int:
-        """角标数：有任一列处于过滤态 → 匹配数；全无过滤 → 今日聚焦总数"""
-        if all(v is None for v in visibles.values()):
-            return self._today_focus_total()
-        return sum(len(v or []) for v in visibles.values())
+        """角标数：恒为今日聚焦总数（见 _apply_filter 的说明）"""
+        return self._today_focus_total()
 
     def _today_focus_total(self) -> int:
         """全板今日聚焦卡数（不含归档卡）"""
@@ -4464,6 +4477,24 @@ class BoardView(QWidget):
                             getattr(self, "_label_chip", None))
                 if w is not None and not w.isHidden()]
 
+    @staticmethod
+    def _min_width_of(widget) -> int:
+        """控件在布局里实际占用的最小宽（收纳判定用）
+
+        必须优先取 `minimumWidth()`，不能只用 `minimumSizeHint()`：
+        - `setFixedWidth` 的按钮（"+ 添加列表" 96 / "+ 批量" 72）的
+          minimumSizeHint 只有 80 / 56 —— 低估 32px；
+        - `setFixedSize` 的自绘控件（交通灯）的 minimumSizeHint 是**无效值
+          -1** —— 直接求和反而把总宽算小 55px。
+        两处叠加曾让收纳判定以为"还放得下"，而实际布局早已压到重叠：
+        实测 900px 下搜索框与"+ 添加列表"叠了 15px。
+        """
+        min_w = widget.minimumWidth()
+        if min_w > 0:
+            return min_w
+        hint = widget.minimumSizeHint().width()
+        return hint if hint > 0 else 0
+
     def _apply_toolbar_overflow(self) -> None:
         """窄窗收纳：放不下的次要按钮折进「»」菜单
 
@@ -4478,7 +4509,7 @@ class BoardView(QWidget):
         margins = lay.contentsMargins()
         avail = self.width() - margins.left() - margins.right()
         spacing = lay.spacing()
-        aux_w = sum(w.minimumSizeHint().width()
+        aux_w = sum(self._min_width_of(w)
                     for w in self._aux_toolbar_widgets())
 
         def needed_width(hidden: set) -> int:
@@ -4489,9 +4520,12 @@ class BoardView(QWidget):
                     continue
                 if key == "overflow" and not hidden:
                     continue    # 没有收纳项时「»」自身隐藏，不占宽
-                # 搜索框有弹性：空间不足时它先收缩到自己的最小宽
-                total += (widget.minimumWidth() if key == "search"
-                          else widget.minimumSizeHint().width())
+                # 显式设过最小宽的控件按它算，而不是 minimumSizeHint：
+                # `setFixedWidth` 的按钮（"+ 添加列表" 96 / "+ 批量" 72）的
+                # minimumSizeHint 只有 80 / 56——按 hint 估算会低估 32px，
+                # 收纳判定于是以为"还放得下"，实际布局早已压到重叠
+                # （实测 900px 下搜索框与"+ 添加列表"叠了 15px）。
+                total += self._min_width_of(widget)
                 n += 1
             return total + spacing * max(0, n - 1)
 
@@ -4500,6 +4534,21 @@ class BoardView(QWidget):
             if needed_width(hidden) <= avail:
                 break
             hidden.add(key)
+
+        # ── 终局降级：先把搜索框压到硬下限，再确认是否还要收更多 ──
+        # 上面的循环把可收纳项收完就停，但剩余不可收纳项（标题 + 搜索 +
+        # 齿轮 + 主题 + »）在小屏上仍可能超宽，而 _effective_min_size 允许
+        # 窗口窄到 320px。此前没有兜底——正是本函数 docstring 说要防的那种
+        # 重叠：控件直接叠在一起，且没有任何恢复路径。
+        # 搜索框是可压缩项，先扣它；仍不够才把「今日」也收进「»」菜单。
+        over = needed_width(hidden) - avail
+        if over > 0:
+            target = max(self._search_min_floor, self._search_min_w - over)
+            if target != self._search_edit.minimumWidth():
+                self._search_edit.setMinimumWidth(target)
+        if needed_width(hidden) > avail:
+            hidden.add("today")
+
         if hidden == set(self._overflow_hidden):
             return
         self._overflow_hidden = [k for k in self._overflow_order
@@ -4519,7 +4568,10 @@ class BoardView(QWidget):
         空白菜单项——优先读显式文案表，按钮文本兜底。
         """
         labels = {"calendar": tr("日历"), "export": tr("导出"),
-                  "archive": tr("归档"), "add_list": tr("+ 添加列表")}
+                  "archive": tr("归档"), "add_list": tr("+ 添加列表"),
+                  # 「今日」按钮的 text() 是动态的（"今日 5"），进菜单要固定文案
+                  "today": tr("今日聚焦"),
+                  "title": tr("切换 / 管理看板")}
         self._overflow_menu.clear()
         by_key = dict(self._toolbar_items)
         actionable = 0

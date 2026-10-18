@@ -47,7 +47,7 @@ from app.models.board import (
     fund_steps_for_kind,
 )
 from app.models.markdown_lite import render_markdown
-from app.views import tokens
+from app.views import icons, tokens
 from app.views.controls import ComboBox, DateEdit, SpinBox
 from app.views.theme import AppTheme, primary_button_style
 
@@ -671,7 +671,7 @@ class CardDialog(QDialog):
         edit.setPlaceholderText(tr("清单项内容"))
         edit.returnPressed.connect(
             lambda: self._add_check_row("", False, focus=True))
-        remove = QPushButton("✕")
+        remove = icons.IconButton("close", 16, "text_secondary", "danger")
         remove.setFixedSize(22, 22)
         remove.setFlat(True)
         remove.setCursor(Qt.PointingHandCursor)
@@ -737,8 +737,11 @@ class CardDialog(QDialog):
             lay = QHBoxLayout(row)
             lay.setContentsMargins(0, 0, 0, 0)
             lay.setSpacing(6)
-            icon = "🖼" if att.get("is_image") else "📄"
-            name = QLabel(f"{icon} {att.get('name', '')}")
+            kind = QLabel()
+            kind.setPixmap(icons.pixmap(
+                "image" if att.get("is_image") else "file",
+                16, "text_secondary"))
+            name = QLabel(att.get("name", ""))
             name.setStyleSheet(
                 f"color: {AppTheme.colors()['text_primary']};"
                 f" {tokens.font_css(12)}; background: transparent;")
@@ -750,7 +753,8 @@ class CardDialog(QDialog):
             open_btn.clicked.connect(
                 lambda _=False, p=att.get("path", ""):
                 QDesktopServices.openUrl(QUrl.fromLocalFile(p)))
-            remove = QPushButton("✕")
+            remove = icons.IconButton("close", 16, "text_secondary", "danger")
+            remove.setObjectName("attachRemove")
             remove.setFixedSize(22, 22)
             remove.setFlat(True)
             remove.setCursor(Qt.PointingHandCursor)
@@ -758,6 +762,7 @@ class CardDialog(QDialog):
             remove.setStyleSheet(_remove_button_style(AppTheme.colors()))
             remove.clicked.connect(
                 lambda _=False, i=idx: self._remove_attachment(i))
+            lay.addWidget(kind)
             lay.addWidget(name, 1)
             lay.addWidget(open_btn)
             lay.addWidget(remove)
@@ -1026,7 +1031,7 @@ class CardDialog(QDialog):
             date_edit.dateChanged.connect(
                 lambda _qd, s=step, de=date_edit:
                 self._on_fund_step_date(s, de))
-            clear = QPushButton("✕")
+            clear = icons.IconButton("close", 16, "text_secondary", "danger")
             clear.setFixedSize(22, 22)
             clear.setFlat(True)
             clear.setCursor(Qt.PointingHandCursor)

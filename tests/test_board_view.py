@@ -26,7 +26,12 @@ from unittest.mock import patch
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QDrag
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QPushButton, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 _qapp = QApplication.instance() or QApplication([])
 
@@ -1690,6 +1695,127 @@ class TodayBadgeTest(unittest.TestCase):
             date.today() + timedelta(days=3)).isoformat()
         self.view.refresh(self.lists)
         self.assertEqual(self.view._today_count, 0)
+
+    def test_badge_not_hijacked_by_search_count(self):
+        """搜索时角标仍报今日聚焦数，不能变成匹配数
+
+        此前 `_apply_filter` 在过滤态下把角标改成匹配总数，于是输入一个
+        命中 2 张的查询会让 chip 显示「今日 2」——标签说"今日"、数值却是
+        匹配数，是一句假话；而它在窄窗下又是唯一还看得见的指标。
+        """
+        self.lists[0].cards[0].due_date = date.today().isoformat()
+        self.view.refresh(self.lists)
+        self.assertEqual(self.view._today_count, 1)
+
+        self.view._search_edit.setText("A")     # 命中 1 张（另一张是 B）
+        self.view._search_timer.stop()
+        self.view._apply_filter()
+        self.assertEqual(self.view._today_count, 1,
+                         "搜索把今日角标改成了匹配数")
+        self.assertIn("今日 1", self.view._today_btn.text())
+        # 匹配数走统计行，两条信息各归其位
+        self.assertIn("匹配", self.view._stats_label.text())
+
+    def test_stats_stays_visible_while_filtering(self):
+        """过滤态下统计行必须可见——它是「匹配 N 张」的唯一出口
+
+        统计行在窄窗收纳顺序里排第一，此前一搜索它就消失，于是"查询生效了
+        没有"这个最该看到的反馈反而最先不见。
+        """
+        self.view.refresh(self.lists)
+        self.view.resize(700, 500)
+        self.view._apply_toolbar_overflow()
+        self.view._search_edit.setText("A")
+        self.view._search_timer.stop()
+        self.view._apply_filter()
+        self.assertFalse(self.view._stats_label.isHidden(),
+                         "过滤态下统计行被收纳隐藏了")
+
+
+class ToolbarFitTest(unittest.TestCase):
+    """窄窗工具栏：任何宽度下都不得重叠（含屏幕极窄的终局降级）"""
+
+    def setUp(self):
+        # 放进宿主容器再缩放：BoardView 在真实应用里是 MainWindow 的子控件，
+        # 而**顶层**控件 resize() 会被自身 minimumSizeHint 顶回去（实测请求
+        # 320px 实际仍是 953px）——直接对顶层 resize 会让"窄窗"用例在 953px
+        # 下空跑一遍然后假绿。
+        self.host = QWidget()
+        host_lay = QVBoxLayout(self.host)
+        host_lay.setContentsMargins(0, 0, 0, 0)
+        self.view = BoardView()
+        host_lay.addWidget(self.view)
+        self.view.refresh(make_lists([("待办", ["A", "B", "C"])]))
+        self.host.resize(1100, 500)
+        self.host.show()
+        QApplication.processEvents()
+
+    def tearDown(self):
+        self.host.hide()
+        self.host.deleteLater()
+
+    def _layout_at(self, width):
+        # 用 setFixedWidth 而不是 resize：离屏平台上顶层控件的 resize() 会被
+        # minimumSizeHint 顶回去（实测请求 320px 实际仍是 953px），窄窗用例
+        # 会在 953px 下空跑一遍然后假绿——本用例第一版就踩了这个坑。
+        self.host.setFixedWidth(width)
+        QApplication.processEvents()
+        self.view._apply_toolbar_overflow()
+        QApplication.processEvents()
+
+    def _visible_toolbar_widgets(self):
+        out = []
+        for key, widget in self.view._toolbar_items:
+            if key == "overflow" and widget.isHidden():
+                continue
+            if not widget.isHidden():
+                out.append((key, widget))
+        return out
+
+    def test_no_overlap_down_to_very_narrow(self):
+        """320px（_effective_min_size 允许的最窄）也不得让控件互相压叠
+
+        此前 `_apply_toolbar_overflow` 把可收纳项隐藏完就停，剩余不可收纳项
+        合计仍超宽时没有任何兜底——正是它自己 docstring 说要防的那种重叠，
+        而且没有恢复路径。
+        """
+        for width in (900, 760, 640, 560, 480, 400, 320):
+            with self.subTest(width=width):
+                self._layout_at(width)
+                items = self._visible_toolbar_widgets()
+                rects = [(k, w.geometry()) for k, w in items]
+                for i in range(len(rects)):
+                    for j in range(i + 1, len(rects)):
+                        k1, r1 = rects[i]
+                        k2, r2 = rects[j]
+                        self.assertFalse(
+                            r1.intersects(r2),
+                            f"{width}px 下 {k1} 与 {k2} 重叠: {r1} / {r2}")
+
+    def test_terminal_fallback_hides_today_before_overlapping(self):
+        """极窄时「今日」被收进「»」菜单，而不是留在外面压叠"""
+        self._layout_at(320)
+        self.assertIn("today", self.view._overflow_hidden)
+        self.assertTrue(self.view._today_btn.isHidden())
+
+    def test_overflow_recovers_on_widening(self):
+        """变宽后必须恢复：收纳是双向的，不能收进去就出不来"""
+        self._layout_at(320)
+        self.assertTrue(self.view._overflow_hidden)
+        self._layout_at(1100)
+        self.assertEqual(self.view._overflow_hidden, [])
+        self.assertFalse(self.view._today_btn.isHidden())
+
+    def test_gear_button_matches_siblings(self):
+        """齿轮键与日历/主题键同尺寸
+
+        不设 setFixedSize 时 `border-radius: 17px` 画出来是圆角矩形而非圆，
+        且比左右邻居宽——工具栏上最扎眼的一处不一致。
+        """
+        self.assertEqual(self.view._settings_btn.size(),
+                         self.view._theme_btn.size())
+        self.assertEqual(self.view._settings_btn.size(),
+                         self.view._calendar_btn.size())
 
 
 class RawDropIndexTest(unittest.TestCase):
