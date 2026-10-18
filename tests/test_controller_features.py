@@ -260,12 +260,21 @@ class ControllerFeatureTest(unittest.TestCase):
         同时清掉 .prev：测试意图是"唯一历史数据 = 这份快照"，若落盘链
         恰好留有带卡的 .prev，恢复引导会优先选它（更新的候选），断言
         就会被套件里其他测试的落盘残留干扰。
+
+        **时间戳必须取"现在"**，不能写死。恢复候选按文件名升序取最新
+        （见 json_io._snapshot_paths），而测试进程共享同一个数据目录：
+        套件启动时 AppController 会留下当天的启动快照。此前这里写死
+        `20260909_100000_000000`，只要系统日期晚于 9 月 9 日，那些
+        `2026xxxx_*` 的会话快照就排在种子快照之后并胜出，断言随机失败
+        ——典型症状是单模块跑必过、全量跑偶发红，且换个模块顺序就能翻转。
         """
         import json
+        from datetime import datetime
         path = self.c._store.path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.with_name(path.name + ".prev").unlink(missing_ok=True)
-        snap = path.with_name(path.name + ".snap.20260909_100000_000000.bak")
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        snap = path.with_name(f"{path.name}.snap.{stamp}.bak")
         doc = {"app": "桌宠看板", "lists": [
             {"id": "l1", "title": "待办",
              "cards": [Card(title=title).to_dict()]}]}

@@ -25,8 +25,16 @@ class TrafficLights(QWidget):
     _RADIUS = 6.0
     _GAP = 8.0
     _FILL = ((255, 95, 87), (254, 188, 46), (40, 200, 64))
-    _SYMBOL = QColor(66, 44, 20, 175)
+    # 悬停符号：压在红/黄/绿填充上的深色字形。原 (66,44,20,175) 合成后
+    # 红 2.76:1 / 黄 3.75 / 绿 3.40 —— 红键（最要紧的那一个）低于非文本
+    # 组件 3:1 的门槛，而这三个符号是唯一解释按钮作用的东西。
+    # (30,20,8,215) 合成后 红 4.87 / 黄 7.67 / 绿 6.32，且仍是柔和的半透明。
+    _SYMBOL = QColor(30, 20, 8, 215)
     _TIP_DELAY_MS = 600
+    # 命中区外扩：12px 是 macOS 红绿灯的规范**观感**尺寸，但 12px 的命中区
+    # 远低于 24px 可点击标准，且圆与圆之间的 8px 间隙原本是死区。
+    # 保持视觉不变，只把判定矩形四周外扩。
+    _HIT_PAD = 5.0
 
     @staticmethod
     def _tip_texts() -> tuple[str, str, str]:
@@ -54,10 +62,22 @@ class TrafficLights(QWidget):
         return QRectF(1 + index * (d + self._GAP), 1, d, d)
 
     def _index_at(self, pos: QPointF) -> int:
+        """光标落在哪一枚（命中区比视觉圆大一圈）
+
+        外扩后相邻键的命中区会重叠，重叠处按"离圆心更近"裁决——直接返回
+        第一个命中的会让右键在边界上抢走本该属于左键的点击。
+        """
+        best, best_dist = -1, None
         for i in range(3):
-            if self._circle_rect(i).contains(pos):
-                return i
-        return -1
+            rect = self._circle_rect(i).adjusted(-self._HIT_PAD, -self._HIT_PAD,
+                                                 self._HIT_PAD, self._HIT_PAD)
+            if not rect.contains(pos):
+                continue
+            c = rect.center()
+            dist = (pos.x() - c.x()) ** 2 + (pos.y() - c.y()) ** 2
+            if best_dist is None or dist < best_dist:
+                best, best_dist = i, dist
+        return best
 
     # ── 绘制 ──────────────────────────────────────────────
 

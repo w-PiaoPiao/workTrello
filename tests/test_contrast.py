@@ -130,14 +130,9 @@ def _themes() -> dict:
 # ── 仍未达标项（棘轮：只能变少）───────────────────────────────
 #
 # 每一项都必须能在计划文档里找到对应的阶段；修好后测试会变红提醒删除。
-KNOWN_SURFACE_FAILURES = {
-    # 空列提示：QLabel#columnHint 目前仍取 text_disabled（board_view.py，阶段 2）
-    ("light", "column_hint_on_panel"),
-    ("dark", "column_hint_on_panel"),
-    # 红绿灯悬停符号写死 QColor(66,44,20,175)（traffic_lights.py，阶段 5）
-    ("light", "traffic_glyph_on_fill"),
-    ("dark", "traffic_glyph_on_fill"),
-}
+# 全部已达标。**保持为空**：任何新出现的失败都会让测试变红并列出组合。
+# 若某项确实是"先记账、后续阶段修"，把它加进来并注明归属阶段。
+KNOWN_SURFACE_FAILURES: set = set()
 
 
 def _measure_surface_pairs(colors: dict) -> dict:
@@ -153,22 +148,24 @@ def _measure_surface_pairs(colors: dict) -> dict:
     out["placeholder_on_search_glass"] = contrast_ratio(
         colors["text_muted"], glass)
 
-    # 空列提示：`QLabel#columnHint` **当前实际**取的是 text_disabled
-    # （board_view.py 尚未改）。这里按现状度量，改完后会变成"已达标"，
-    # 届时把它换成 text_muted 并把条目从 KNOWN 里删掉。
+    # 空列提示：`QLabel#columnHint` 已改取 text_muted
     panel = composite(colors["bg_panel"], colors["board_bg_mid"])
-    out["column_hint_on_panel"] = contrast_ratio(colors["text_disabled"], panel)
+    out["column_hint_on_panel"] = contrast_ratio(colors["text_muted"], panel)
 
     # 搜索框焦点环：focus_ring 压在 glass_hover 上
     out["focus_ring_on_glass_hover"] = contrast_ratio(
         colors["focus_ring"],
         composite(colors["glass_hover"], colors["board_bg_mid"]))
 
-    # 红绿灯悬停符号：QColor(66,44,20,175) 半透明压在红/黄/绿填充上，
-    # 必须按合成后的实际颜色算，取最差的一枚
+    # 红绿灯悬停符号：直接读控件里的常量，而不是在测试里抄一份——
+    # 抄一份的话改了代码测试还绿，等于没测。注意填充色是控件自带的
+    # macOS 原生三色，**不随主题变**，所以这里不能用 colors["danger"]。
+    from app.views.traffic_lights import TrafficLights
+    sym = TrafficLights._SYMBOL
+    glyph = (sym.red(), sym.green(), sym.blue(), sym.alpha() / 255)
     out["traffic_glyph_on_fill"] = min(
-        contrast_ratio(composite((66, 44, 20, 175 / 255), f), f)
-        for f in (colors["danger"], colors["warning"], colors["success"]))
+        contrast_ratio(composite(glyph, fill), fill)
+        for fill in TrafficLights._FILL)
     return out
 
 

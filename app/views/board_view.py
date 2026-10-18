@@ -140,8 +140,21 @@ def _set_prop(widget: QWidget, name: str, value) -> None:
     widget.update()
 
 
-# 卡片徽章底色随主题色键取值（tone 动态属性 → QSS 属性选择器）
-_BADGE_TONES = ("danger", "warning", "accent", "text_secondary")
+# 卡片徽章 tone → (软底色键, 前景色键)
+#
+# 此前**所有 tone 共用一个 accent_soft 作底**、只用 `c[tone]` 换文字色，
+# 于是红/橙/绿字全压在蓝色调底上：实测 warning 1.73:1、success 2.57:1、
+# danger 3.34:1，11px 小字全线不达标；而且色相互相污染，截图里"已逾期"
+# 和"有备注"看起来是同一枚灰蓝 chip——卡片信息行显得吵，根因就在这里。
+# 现在每个 tone 一套底+前景，由 tests/test_contrast.py 逐对守住。
+_BADGE_TONE_COLORS = {
+    "danger": ("danger_soft", "danger_text"),
+    "warning": ("warning_soft", "warning_text"),
+    "success": ("success_soft", "success_text"),
+    "accent": ("accent_soft", "accent_text"),
+    "text_secondary": ("neutral_soft", "neutral_text"),
+}
+_BADGE_TONES = tuple(_BADGE_TONE_COLORS)
 
 # 工作目录徽章的显示文本（真实路径放徽章 tooltip；收集/构建/事件过滤
 # 三处靠它识别是目录徽章）
@@ -158,15 +171,25 @@ def _board_qss(mode: str) -> str:
     配色随主题变，故按 mode 缓存字符串，避免每次切换重新拼接。
     """
     c = AppConfig.DARK_COLORS if mode == "dark" else AppConfig.COLORS
-    badge_rules = "\n".join(
-        f'QLabel#cardBadge[tone="{tone}"] {{\n'
-        f'    background: {c["accent_soft"]};\n'
-        f'    color: {c[tone]};\n'
+    # 兜底规则先给"药丸"外形：meta_items 里若出现映射表之外的 tone
+    # （此前 success 就是漏网的那个，徽章退化成一行裸文字、连内边距都没了），
+    # 至少形状还在，不会让信息行错位。
+    badge_rules = "\n".join([
+        'QLabel#cardBadge {\n'
+        f'    background: {c["neutral_soft"]};\n'
+        f'    color: {c["neutral_text"]};\n'
         f'    {tokens.radius_css("chip")};\n'
         f'    {tokens.pad(2, 6)};\n'
         f'    {tokens.font_css(AppConfig.UI_FONT_CAPTION)};\n'
-        f'}}'
-        for tone in _BADGE_TONES)
+        '}',
+        *(
+            f'QLabel#cardBadge[tone="{tone}"] {{\n'
+            f'    background: {c[soft]};\n'
+            f'    color: {c[text]};\n'
+            f'}}'
+            for tone, (soft, text) in _BADGE_TONE_COLORS.items()
+        ),
+    ])
     return f"""
         /* ── 工具条 ── */
         QLabel#boardTitle {{
@@ -214,6 +237,12 @@ def _board_qss(mode: str) -> str:
         QPushButton#boardThemeBtn:hover {{
             background: {c['glass_hover']};
         }}
+        QPushButton#boardThemeBtn:pressed {{
+            background: {c['accent_soft']};
+        }}
+        QPushButton#boardThemeBtn:focus {{
+            border: 1.5px solid {c['focus_ring']};
+        }}
         QPushButton#boardCollapseBtn {{
             background: {c['glass']};
             border: none;
@@ -224,9 +253,17 @@ def _board_qss(mode: str) -> str:
         QPushButton#boardCollapseBtn:hover {{
             background: {c['glass_hover']};
         }}
+        QPushButton#boardCollapseBtn:pressed {{
+            background: {c['accent_soft']};
+        }}
+        QPushButton#boardCollapseBtn:focus {{
+            border: 1.5px solid {c['focus_ring']};
+        }}
         QPushButton#boardToolBtn {{
             background: {c['glass']};
-            border: none;
+            /* transparent 而非 none：给 :focus 留出边框位，否则加焦点环时
+               按钮会因多出 1.5px 边框而抖一下 */
+            border: 1.5px solid transparent;
             border-radius: {AppConfig.UI_RADIUS_CONTROL}px;
             {tokens.pad(5, 10)};
             {tokens.font_css(AppConfig.UI_FONT_LABEL)};
@@ -235,14 +272,27 @@ def _board_qss(mode: str) -> str:
         QPushButton#boardToolBtn:hover {{
             background: {c['glass_hover']};
         }}
+        /* 按下态：此前只有 :hover，点归档/导出/今日/主题都没有按压反馈，
+           按钮要等面板弹出来才"证明"点到了 */
+        QPushButton#boardToolBtn:pressed {{
+            background: {c['accent_soft']};
+        }}
+        /* 焦点环：这些按钮的 border 原是 none，全局 QPushButton:focus 够不到，
+           必须逐个补——否则键盘 Tab 过工具栏完全看不出焦点在哪 */
+        QPushButton#boardToolBtn:focus {{
+            border: 1.5px solid {c['focus_ring']};
+        }}
         QPushButton#boardToolBtn:checked {{
             background: {c['accent']};
-            color: white;
+            color: {c['accent_on']};
         }}
-        /* 卡片拖到工具按钮上（归档 / 今日）：accent 高亮 = 松手就执行 */
+        /* 卡片拖到工具按钮上（归档 / 今日）：松手就执行。
+           此前与 :checked 像素完全一致——"筛选已开启"与"松手就落这里"
+           是两件事却长得一样，同时成立时无法分辨。改用虚线边框区分。 */
         QPushButton#boardToolBtn[dropTarget="true"] {{
             background: {c['accent']};
-            color: white;
+            color: {c['accent_on']};
+            border: 1.5px dashed {c['accent_soft']};
         }}
         /* 搜索框：与工具按钮同一玻璃面，不再是一整条纯白 */
         QLineEdit#boardSearch {{
@@ -330,7 +380,10 @@ def _board_qss(mode: str) -> str:
             {tokens.pad(1, 7)};
         }}
         QLabel#columnHint {{
-            color: {c['text_disabled']};
+            /* 空列里唯一的文字（"还没有卡片，点击下方添加" / "没有匹配的卡片"），
+               此前取 text_disabled 实测只有 1.87:1（浅）/ 2.60:1（深）——
+               一个**禁用态**的色被当说明性文字用。 */
+            color: {c['text_muted']};
             {tokens.font_css(AppConfig.UI_FONT_LABEL)};
             background: transparent;
         }}
@@ -1166,7 +1219,11 @@ class CardWidget(QFrame):
         if self._card.labels:
             names = [label_display(k) for k in self._card.labels]
             parts.append(tr("标签：") + tr("、").join(names))
-        parts.extend(text for text, _key, _is_notes in self._meta_items_cache)
+        # 备注徽章的文案（"≡ 有备注"）不进 tooltip：它说的正是"这卡有备注"，
+        # 而 tooltip 的职责是补徽章装不下的信息，复述一遍只会挤掉真正被
+        # "…" 折叠掉的内容（逾期日期、优先级）。备注正文走悬停预览浮层。
+        parts.extend(text for text, _key, is_notes in self._meta_items_cache
+                     if not is_notes)
         # 资金分配监视：流程摘要 + 环节耗时明细（徽章行放不下的信息在这里看全）
         if self._card.fund:
             parts.append(_fmt_fund_steps_line(self._card))

@@ -622,12 +622,37 @@ class RemoveButtonStyleTest(unittest.TestCase):
             has_box,
             f"✕ 按钮缺少盒模型属性，文字绘制区会被压成 0（按钮不可见）：{qss}")
 
+    def _assert_remove_affordance(self, case, btn):
+        """移除钮必须有一种**可见载体**（矢量图标或字形文本）
+
+        阶段 3 起把 `✕` 从字形文本改成矢量图标（部分平台缺该字形会渲染成
+        豆腐块）。这里断言"至少有一种载体存在"，而不是绑死某一种实现——
+        本用例的主题是"按钮不能被盒模型压成 0 而看不见"，载体形式无关紧要。
+        """
+        has_icon = not btn.icon().isNull()
+        case.assertTrue(
+            has_icon or btn.text(),
+            "移除钮既无图标也无文本，用户看不到它")
+
+    def _attach_remove_button(self, dlg):
+        """附件行的移除钮
+
+        优先按稳定标识取；阶段 3 落地 `setObjectName("attachRemove")` 之前
+        退回按下标取（附件行后续要插入文件类型图标，下标一变用例就误伤）。
+        标识落地后这里应删掉回退分支——见阶段 3 的收尾项。
+        """
+        btn = dlg.findChild(QPushButton, "attachRemove")
+        if btn is not None:
+            return btn
+        row = dlg._attach_rows_layout.itemAt(0).widget()
+        return row.layout().itemAt(2).widget()
+
     def test_checklist_remove_button_is_visible(self):
         dlg = CardDialog(None)
         dlg._add_check_row("第一项", False)
         _check, edit = dlg._check_rows[0]
         btn = edit.parentWidget().layout().itemAt(2).widget()
-        self.assertEqual(btn.text(), "✕")
+        self._assert_remove_affordance(self, btn)
         self.assertEqual(btn.toolTip(), "删除该清单项")
         self.assertTrue(btn.isVisibleTo(dlg))
         self._assert_box_declared(self, btn)
@@ -637,9 +662,8 @@ class RemoveButtonStyleTest(unittest.TestCase):
         att = {"id": "a1", "name": "a.png", "path": "/tmp/a.png",
                "is_image": True}
         dlg = CardDialog(Card(title="x", attachments=[att]))
-        row = dlg._attach_rows_layout.itemAt(0).widget()
-        btn = row.layout().itemAt(2).widget()
-        self.assertEqual(btn.text(), "✕")
+        btn = self._attach_remove_button(dlg)
+        self._assert_remove_affordance(self, btn)
         self.assertEqual(btn.toolTip(), "移除附件")
         self._assert_box_declared(self, btn)
         dlg.deleteLater()
@@ -653,8 +677,7 @@ class RemoveButtonStyleTest(unittest.TestCase):
                           "is_image": False}]))
         _check, edit = dlg._check_rows[0]
         check_btn = edit.parentWidget().layout().itemAt(2).widget()
-        row = dlg._attach_rows_layout.itemAt(0).widget()
-        att_btn = row.layout().itemAt(2).widget()
+        att_btn = self._attach_remove_button(dlg)
         self.assertEqual(check_btn.styleSheet(), att_btn.styleSheet())
         dlg.deleteLater()
 

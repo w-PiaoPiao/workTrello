@@ -61,12 +61,18 @@ def primary_button_style(c: dict) -> str:
         QPushButton {{
             background: {c['accent']};
             color: {c['accent_on']};
-            border: none;
+            border: 1.5px solid transparent;
             border-radius: {tokens.radius('control')}px;
             {tokens.pad_preset(AppConfig.UI_PAD_PRIMARY)};
             font-weight: bold;
         }}
         QPushButton:hover {{ background: {c['accent_hover']}; }}
+        QPushButton:pressed {{ background: {c['accent_hover']}; }}
+        QPushButton:focus {{ border: 1.5px solid {c['focus_ring']}; }}
+        QPushButton:disabled {{
+            background: {c['mask']};
+            color: {c['text_disabled']};
+        }}
     """
 
 
@@ -293,7 +299,7 @@ class _Theme(QObject):
                 selection-background-color: {c['accent']};
             }}
             QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus {{
-                border: 1.5px solid {c['accent']};
+                border: 1.5px solid {c['focus_ring']};
             }}
             QDateEdit, QTimeEdit, QDateTimeEdit, QSpinBox {{
                 background: {c['bg_card']};
@@ -302,6 +308,14 @@ class _Theme(QObject):
                 border-radius: {tokens.radius('control')}px;
                 {tokens.pad_preset(AppConfig.UI_PAD_INPUT_DENSE)};
                 selection-background-color: {c['accent']};
+            }}
+            /* 禁用态必须显式写：样式表一旦设了背景/边框，Qt 就不再套用调色板的
+               禁用变暗，于是"不修改"状态的日期框看起来完全可用，点了没反应也
+               没有解释（批量编辑对话框正是靠 setEnabled 灰掉字段的）。
+               此前全项目只有归档对话框一处写了 :disabled，这是把它变成默认。 */
+            QDateEdit:disabled, QTimeEdit:disabled, QDateTimeEdit:disabled,
+            QSpinBox:disabled, QComboBox:disabled {{
+                color: {c['text_disabled']};
             }}
             QDateEdit::drop-down, QDateTimeEdit::drop-down {{
                 border: none;
@@ -314,7 +328,7 @@ class _Theme(QObject):
                 border-radius: {tokens.radius('control')}px;
                 {tokens.pad(5, 10)};
             }}
-            QComboBox:focus {{ border: 1px solid {c['accent']}; }}
+            QComboBox:focus {{ border: 1.5px solid {c['focus_ring']}; }}
             QComboBox::drop-down {{
                 border: none;
                 width: 20px;
@@ -341,6 +355,19 @@ class _Theme(QObject):
             }}
             QPushButton:hover {{ background: {c['bg_hover']}; }}
             QPushButton:pressed {{ background: {c['accent_soft']}; }}
+            /* 焦点环：这是键盘可用性的地基。样式表一旦给按钮设了背景/边框，
+               Qt 就不再画原生焦点矩形——全项目原来只有 4 条 :focus 规则
+               （都是文本框），于是 Tab 过按钮、对话框按钮行、标签色块时
+               完全看不出焦点在哪，"键盘可操作"等于形同虚设。 */
+            QPushButton:focus, QCheckBox:focus {{
+                border: 1.5px solid {c['focus_ring']};
+            }}
+            /* 禁用态：同上，样式表会吃掉调色板的变暗，必须显式写 */
+            QPushButton:disabled {{
+                color: {c['text_disabled']};
+                background: {c['mask']};
+                border-color: transparent;
+            }}
             QMenu {{
                 background: {c['bg_card']};
                 border: 1px solid {c['border']};
