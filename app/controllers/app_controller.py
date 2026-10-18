@@ -1851,6 +1851,21 @@ class AppController(QObject):
             i18n.register(dlg.retexts)          # 语言切换整页刷新
             AppTheme.register(dlg.reapply_theme)
             self._settings_dialog = dlg
+        self.sync_settings_dialog()
+        self._settings_dialog.show()
+        self._settings_dialog.raise_()
+        self._settings_dialog.activateWindow()
+
+    def sync_settings_dialog(self) -> None:
+        """把当前偏好刷进设置对话框的控件
+
+        单独抽一层是为了给冒烟测试留接缝：设置页只在打开时同步一次，
+        截图脚本若跳过这一步，抓到的就是"没有任何选中态、开关全关"的
+        假象（分段控件没有选中高亮、两个开关画在关闭位），参考图会与
+        真实界面不符，误导后续的视觉核对。
+        """
+        if self._settings_dialog is None:
+            return
         self._settings_dialog.sync_from_prefs(
             theme_mode=AppConfig.get_theme_mode(),
             lang=i18n.lang(),
@@ -1862,9 +1877,6 @@ class AppController(QObject):
             default_view=AppConfig.get_default_view(),
             pet_enabled=self._window.is_pet_enabled(),
             global_hotkey=self._hotkeys.is_registered())
-        self._settings_dialog.show()
-        self._settings_dialog.raise_()
-        self._settings_dialog.activateWindow()
 
     def _autostart_state(self) -> bool:
         """开机自启动的实际状态（以系统启动项为准，反向收编用户的外部改动）

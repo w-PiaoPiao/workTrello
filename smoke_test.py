@@ -89,14 +89,17 @@ def take_board_en() -> None:
 
 def take_settings_en() -> None:
     try:
+        # 走控制器的真实打开路径：它会把当前偏好同步进控件（分段控件选中高亮、
+        # 开关的真实开合）。此前这里直接 grab 一个从未同步过的对话框，抓到的
+        # 是"没有任何选中态、开关全在关闭位"的假象，参考图与真实界面不符，
+        # 会误导后续所有基于截图的视觉核对。
+        controller._on_settings_open()
         dlg = controller._settings_dialog
-        if dlg is None:
-            from app.views.settings_dialog import SettingsDialog
-            dlg = SettingsDialog(window)
         dlg.retexts()
         dlg.repaint()
         dlg.grab().save(str(Path(__file__).parent / "smoke_settings_en.png"))
         print("[smoke] smoke_settings_en.png saved")
+        dlg.close()
     except Exception:
         print("[smoke] ERROR in settings_en:")
         traceback.print_exc()
