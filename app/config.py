@@ -328,7 +328,11 @@ class AppConfig:
     PET_WIDTH = 132
     PET_HEIGHT = 132
     PET_BADGE_SIZE = 22
-    PET_CLICK_THRESHOLD = 8
+    # 单击 vs 拖拽的判定阈值（曼哈顿距离）。原为 8px（每轴约 6px）——落在
+    # 「用户还会顺手挪动这个 132px 目标」的正常手抖范围内：想把桌宠挪几个
+    # 像素，却触发了整个窗口的形态切换，是本应用最刺眼的一次误触。
+    # 与 CARD_DRAG_THRESHOLD(10) 对齐并略高。
+    PET_CLICK_THRESHOLD = 12
     PET_CANVAS_MARGIN = 14      # 绘制边距（容纳漂浮/跳跃超程，避免裁剪）
     PET_FLOAT_MS = 1600
     PET_FLOAT_DELTA = 5

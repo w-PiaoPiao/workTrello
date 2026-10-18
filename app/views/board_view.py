@@ -534,29 +534,54 @@ class _CardCheckButton(QPushButton):
     # 两段折线长度为常量（P 序列恒定）：paintEvent 每帧 math.hypot 纯浪费
     _P01 = math.hypot(_P1[0] - _P0[0], _P1[1] - _P0[1])
     _P12 = math.hypot(_P2[0] - _P1[0], _P2[1] - _P1[1])
-    # 完成态画笔常量：paintEvent 每帧新建 QPen + cap/join 设置纯重复，
-    # QPen 是值语义，setPen 内部拷贝，多控件共享安全
-    _CHECK_PEN = QPen(QColor("#FFFFFF"), 1.8)
-    _CHECK_PEN.setCapStyle(Qt.RoundCap)
-    _CHECK_PEN.setJoinStyle(Qt.RoundJoin)
+
     # 完整对勾路径缓存（(0,0) 原点，绘制时 translate 到框左上角）：
     # 完成态 progress 恒为 1，逐帧新建 QPainterPath 纯重复
     _CHECK_PATH_FULL: QPainterPath | None = None
 
+    # 对勾色：压在 success 填充上。深色主题的 success 是亮绿，白对勾只有
+    # 1.99:1——勾选框的整个意义就是那个对勾，却在深色下几乎看不见。
+    # 与主按钮同思路：填充亮时文字反相。
+    @staticmethod
+    def _check_color() -> QColor:
+        return QColor(AppTheme.colors()["success_on"])
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFlat(True)
-        self.setFixedSize(20, 20)
+        # 命中区 24×24（可点击标准），视觉勾选框仍是 16px 居中绘制——
+        # 这是全板最高频的操作，此前 20×20 是整个界面上最小的目标之一
+        self.setFixedSize(24, 24)
         self.setCursor(Qt.PointingHandCursor)
         self.setToolTip(tr("点击切换完成状态"))
+        # 可 check：QPushButton 不可 check 时读屏只报 "button"，
+        # 永远不报勾选状态——完成与否只由删除线和绿底承载，非视觉用户
+        # 拿不到这个信息。setCheckable 让 QAccessible 暴露 checked。
+        self.setCheckable(True)
+        self.setAccessibleName(tr("切换完成状态"))
         self._done = False
         self._check_anim: QVariantAnimation | None = None
         self._check_progress = 1.0   # 对勾描画进度 0..1（1=完整对勾）
+
+    def enterEvent(self, event) -> None:
+        """悬停变色必须自己请求重绘
+
+        paintEvent 里按 `underMouse()` 取 accent 色，但没有 enter/leave
+        时不会有人来触发重绘——悬停高亮要等别的控件恰好让本卡重画才出现，
+        而这是全板最高频的操作，反馈不能是"看运气"。
+        """
+        super().enterEvent(event)
+        self.update()
+
+    def leaveEvent(self, event) -> None:
+        super().leaveEvent(event)
+        self.update()
 
     def set_done(self, done: bool) -> None:
         if self._done == done:
             return
         self._done = done
+        self.setChecked(done)       # 同步给无障碍层
         self.update()
         if done and motion.enabled():
             self._start_check_anim()
@@ -596,11 +621,18 @@ class _CardCheckButton(QPushButton):
         box = QRect((self.width() - 16) // 2, (self.height() - 16) // 2, 16, 16)
         radius = 4.5
         if self._done:
-            # 完成：主题色填充 + 白色对勾（按描画进度截取路径）
+            # 完成：主题色填充 + 对勾（按描画进度截取路径）
             painter.setPen(Qt.NoPen)
             painter.setBrush(QColor(c["success"]))
             painter.drawRoundedRect(box, radius, radius)
-            painter.setPen(self._CHECK_PEN)
+            # 对勾色随主题：深色的 success 是亮绿，白对勾只有 1.99:1
+            pen = _CHECK_PENS.get(c["success_on"])
+            if pen is None:
+                pen = QPen(self._check_color(), 1.8)
+                pen.setCapStyle(Qt.RoundCap)
+                pen.setJoinStyle(Qt.RoundJoin)
+                _CHECK_PENS[c["success_on"]] = pen
+            painter.setPen(pen)
             total = self._P01 + self._P12
             d = self._check_progress * total
             if d >= total:
@@ -642,6 +674,10 @@ class _CardCheckButton(QPushButton):
             painter.drawRoundedRect(box, radius, radius)
         painter.end()
 
+
+# 完成态对勾画笔按颜色缓存：颜色随主题变（success_on），
+# 每帧新建 QPen + 设 cap/join 是纯重复；QPen 值语义，多控件共享安全
+_CHECK_PENS: dict = {}
 
 # 未完成态勾选框画笔按颜色 hex 缓存：paintEvent 每帧新建 QPen 纯重复
 # （hex 键随主题切换自动换 key，同 _CHECK_PEN 的类常量范式，但颜色取自
@@ -804,6 +840,11 @@ class CardWidget(QFrame):
         act_duplicate = menu.addAction(tr("复制卡片"))
         act_save_tpl = menu.addAction(tr("另存为模板…"))
         act_archive = menu.addAction(tr("归档"))
+        # 删除也放进右键菜单：此前只有"归档"，而 ✕ 只在悬停时出现，
+        # 于是"删掉这张卡"在鼠标路径上也得先悬停再瞄准一个小按钮。
+        # 放在归档之后并靠分隔线隔开，避免误点（删除有撤销兜底）。
+        menu.addSeparator()
+        act_delete = menu.addAction(tr("删除卡片"))
         chosen = _popup_menu(menu, self.mapToGlobal(pos))
         menu.deleteLater()   # exec 返回即弃用：挂在卡片控件上会随卡片累积
         card_id = self._card.id
@@ -833,6 +874,8 @@ class CardWidget(QFrame):
             self.signal_card_save_template.emit(card_id)
         elif chosen is act_archive:
             self.signal_card_archive.emit(card_id)
+        elif chosen is act_delete:
+            self.signal_delete_requested.emit(card_id)
 
     def card(self) -> Card:
         return self._card
@@ -1459,8 +1502,15 @@ class CardWidget(QFrame):
 
         1/2/3/0 直接设优先级、M 换列：这两件事在整理看板时最频繁，此前
         每次都要"打开对话框→改→保存"，键盘用户尤其吃亏。
+        Delete/Backspace 删除：删除此前**完全没有键盘路径**——右上角的 ✕
+        只在悬停时创建并显示，而隐藏控件连 Tab 都跳过；右键菜单里也只有
+        "归档"没有"删除"。删除本身有撤销兜底，不需要二次确认。
         """
         key = event.key()
+        if key in (Qt.Key_Delete, Qt.Key_Backspace):
+            self.signal_delete_requested.emit(self._card.id)
+            event.accept()
+            return
         if key in (Qt.Key_Return, Qt.Key_Enter):
             self.signal_edit_requested.emit(self._card)
             event.accept()
@@ -3350,6 +3400,9 @@ class BoardView(QWidget):
         self._calendar_btn.setFixedSize(34, 34)
         self._calendar_btn.setCursor(Qt.PointingHandCursor)
         self._calendar_btn.setToolTip(tr("按截止日期在月历中查看与拖动卡片"))
+        # 自绘图标按钮没有文字，读屏只会报 "button"——accessibleName 是
+        # 它唯一能被念出来的名字
+        self._calendar_btn.setAccessibleName(tr("日历视图"))
         self._calendar_btn.clicked.connect(self.signal_calendar_open.emit)
         self._toolbar_layout.addWidget(self._calendar_btn)
 
@@ -3367,6 +3420,7 @@ class BoardView(QWidget):
         self._settings_btn.setFixedSize(34, 34)
         self._settings_btn.setCursor(Qt.PointingHandCursor)
         self._settings_btn.setToolTip(tr("设置"))
+        self._settings_btn.setAccessibleName(tr("设置"))
         self._settings_btn.clicked.connect(self.signal_settings_clicked.emit)
         self._toolbar_layout.addWidget(self._settings_btn)
 
@@ -3375,6 +3429,7 @@ class BoardView(QWidget):
         self._theme_btn.setCursor(Qt.PointingHandCursor)
         self._theme_btn.setFixedSize(34, 34)
         self._theme_btn.setToolTip(tr("切换浅色 / 深色主题"))
+        self._theme_btn.setAccessibleName(tr("切换浅色 / 深色主题"))
         self._theme_btn.clicked.connect(self._on_theme_clicked)
         self._toolbar_layout.addWidget(self._theme_btn)
 
@@ -3383,6 +3438,7 @@ class BoardView(QWidget):
         self._collapse_btn.setCursor(Qt.PointingHandCursor)
         self._collapse_btn.setFixedSize(34, 34)
         self._collapse_btn.setToolTip(tr("折叠为桌宠"))
+        self._collapse_btn.setAccessibleName(tr("折叠为桌宠"))
         self._collapse_btn.clicked.connect(self.signal_collapse_clicked.emit)
         self._toolbar_layout.addWidget(self._collapse_btn)
 
@@ -3418,6 +3474,7 @@ class BoardView(QWidget):
         self._overflow_btn.setObjectName("boardToolBtn")
         self._overflow_btn.setCursor(Qt.PointingHandCursor)
         self._overflow_btn.setToolTip(tr("更多操作"))
+        self._overflow_btn.setAccessibleName(tr("更多操作"))
         self._overflow_menu = QMenu(self)
         self._overflow_btn.setMenu(self._overflow_menu)
         self._overflow_btn.hide()

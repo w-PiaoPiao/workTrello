@@ -410,12 +410,21 @@ class PetView(QWidget):
         self._press_global = QPoint()
         self._count = 0
         self._focus_mode = False
+        self._mood = "happy"      # 供 tooltip 解释表情（见 _update_tooltip）
         self._animations_enabled = True
         self._badge_override: str | None = None   # 番茄钟倒计时等临时文本
         self._celebrating = None                  # 庆祝动画组
 
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        # 折叠态的应用**就是**这只小家伙，但它此前没有任何"我可以点"的暗示：
+        # 唯一线索是悬停放大 12%，而那是装饰性的。补三样——
+        # 手型光标（桌面应用的通用"可点"语言）、tooltip（写清左右键各做什么）、
+        # 焦点策略与无障碍名（否则键盘与读屏用户完全够不着折叠态）。
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setAccessibleName(AppConfig.APP_NAME)
+        self._update_tooltip()
 
         base = AppConfig.PET_WIDTH - 2 * AppConfig.PET_CANVAS_MARGIN
         self._pet_canvas = PetCanvas(base, self)
@@ -724,6 +733,7 @@ class PetView(QWidget):
     def set_focus_mode(self, on: bool) -> None:
         """专注模式：桌宠打瞌睡（闭眼），暂停空闲小动作"""
         self._focus_mode = on
+        self._update_tooltip()
         if on:
             self.stop_idle()
         else:
@@ -757,6 +767,27 @@ class PetView(QWidget):
 
     def set_mood(self, mood: str) -> None:
         self._pet_canvas.set_mood(mood)
+        # 表情必须能解释自己：此前"难过脸"只在有卡片逾期时出现，界面上
+        # 没有任何地方说明为什么——用户要么当成装饰（于是忽略真实的逾期
+        # 信号），要么当成 bug。把原因写进 tooltip，和角标数字说同一件事。
+        self._mood = mood
+        self._update_tooltip()
+
+    def _update_tooltip(self) -> None:
+        """桌宠 tooltip：交互方式 + 角标含义 + 表情原因
+
+        折叠态没有菜单栏、没有标题栏，tooltip 是唯一能就地解释自己的地方。
+        """
+        lines = [tr("单击展开看板；右键打开菜单")]
+        if self._focus_mode:
+            lines.append(tr("专注进行中"))
+        elif self._count:
+            lines.append(tr("今日聚焦 {n} 张").format(n=self._count))
+        if self._mood == "sad":
+            lines.append(tr("有卡片已逾期"))
+        elif self._mood == "worried":
+            lines.append(tr("今天有卡片截止"))
+        self.setToolTip("\n".join(lines))
 
     def celebrate(self) -> None:
         """全部完成庆祝：连跳两次后恢复待机"""
@@ -792,6 +823,7 @@ class PetView(QWidget):
             return
         self._count = count
         self._layout_badge()
+        self._update_tooltip()   # 角标数字的含义写在 tooltip 里
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -841,6 +873,10 @@ class PetView(QWidget):
 
     # ── 鼠标交互 ──────────────────────────────────────────
 
+    def _show_context_menu(self, global_pos) -> None:
+        """弹出桌宠右键菜单（鼠标右键与键盘菜单键共用同一入口）"""
+        self._context_menu.exec(global_pos)
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.LeftButton:
             self._press_global = event.globalPosition().toPoint()
@@ -848,7 +884,7 @@ class PetView(QWidget):
             self._forward_to_window(event)
             event.accept()
         elif event.button() == Qt.RightButton:
-            self._context_menu.exec(event.globalPosition().toPoint())
+            self._show_context_menu(event.globalPosition().toPoint())
             event.accept()
         else:
             super().mousePressEvent(event)
@@ -862,6 +898,24 @@ class PetView(QWidget):
             event.accept()
             return
         super().mouseMoveEvent(event)
+
+    def keyPressEvent(self, event) -> None:
+        """键盘操作折叠态：Return/空格展开看板，菜单键弹右键菜单
+
+        折叠态没有标题栏、没有菜单栏，此前键盘与读屏用户**完全够不着**它：
+        打不开看板、开不了快速添加、进不去设置、也退不出应用，只能先去
+        找托盘图标。桌宠是应用的主入口，不能只有鼠标能走。
+        """
+        key = event.key()
+        if key in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+            self.signal_expand_clicked.emit()
+            event.accept()
+            return
+        if key == Qt.Key_Menu:      # 键盘上的"右键"键
+            self._show_context_menu(self.rect().center())
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.LeftButton and self._pressed:

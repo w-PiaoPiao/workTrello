@@ -328,6 +328,13 @@ _zh_en: dict[str, str] = {
     "今日清单": "Today List",
     "暂停动画": "Pause animations",
     "换皮肤": "Skin",
+    # 折叠态的自我说明（tooltip）：没有标题栏与菜单栏，这里是唯一能就地
+    # 解释「怎么交互 / 角标数字是什么 / 为什么是这张脸」的地方
+    "单击展开看板；右键打开菜单": "Click to open the board; right-click for menu",
+    "专注进行中": "Focus session running",
+    "今日聚焦 {n} 张": "{n} in today's focus",
+    "有卡片已逾期": "Some cards are overdue",
+    "今天有卡片截止": "Something is due today",
     # ── 托盘 ──
     "隐藏": "Hide",
     "显示": "Show",

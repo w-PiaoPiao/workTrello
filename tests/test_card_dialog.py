@@ -623,25 +623,21 @@ class RemoveButtonStyleTest(unittest.TestCase):
             f"✕ 按钮缺少盒模型属性，文字绘制区会被压成 0（按钮不可见）：{qss}")
 
     def _assert_remove_affordance(self, case, btn):
-        """移除钮必须有一种**可见载体**（矢量图标或字形文本）
+        """移除钮必须带矢量图标
 
-        阶段 3 起把 `✕` 从字形文本改成矢量图标（部分平台缺该字形会渲染成
-        豆腐块）。这里断言"至少有一种载体存在"，而不是绑死某一种实现——
-        本用例的主题是"按钮不能被盒模型压成 0 而看不见"，载体形式无关紧要。
+        阶段 3 起 `✕` 从字形文本改为 `icons.IconButton`（部分平台缺该字形
+        会渲染成豆腐块）。断言图标存在性比断言文本更强：图标不会被 QSS
+        盒模型悄悄压成 0——正是本用例的主题（"按钮不能看不见"）。
         """
-        has_icon = not btn.icon().isNull()
-        case.assertTrue(
-            has_icon or btn.text(),
-            "移除钮既无图标也无文本，用户看不到它")
+        case.assertFalse(
+            btn.icon().isNull(),
+            "移除钮没有矢量图标，用户看不到它")
 
     def _attach_remove_button(self, dlg):
-        """附件行的移除钮
-
-        优先按稳定标识取；阶段 3 落地 `setObjectName("attachRemove")` 之前
-        退回按下标取（附件行后续要插入文件类型图标，下标一变用例就误伤）。
-        标识落地后这里应删掉回退分支——见阶段 3 的收尾项。
-        """
+        """附件行的移除钮（阶段 3 已落地 attachRemove 标识，直接按名取）"""
         btn = dlg.findChild(QPushButton, "attachRemove")
+        self.assertIsNotNone(btn, "附件移除钮缺少 attachRemove 标识")
+        return btn
         if btn is not None:
             return btn
         row = dlg._attach_rows_layout.itemAt(0).widget()
