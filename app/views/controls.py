@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QAbstractButton, QButtonGroup, QComboBox,
                                QSpinBox)
 
 from app.config import AppConfig
-from app.views import motion
+from app.views import motion, tokens
 from app.views.theme import AppTheme, to_qcolor
 
 
@@ -242,7 +242,7 @@ class SegmentedControl(QFrame):
         # 纯黑（选中高亮块曾整块发黑），必须走 to_qcolor
         painter.setPen(QPen(to_qcolor(c["accent"]), 1.5))
         painter.setBrush(to_qcolor(c["accent_soft"]))
-        r = AppConfig.UI_RADIUS_PILL
+        r = tokens.radius('pill')
         painter.drawRoundedRect(rect.adjusted(0.75, 0.75, -0.75, -0.75), r, r)
         painter.end()
 

@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 from app.config import AppConfig
 from app.i18n import tr, weekday_short
 from app.models.board import Card
+from app.views import tokens
 from app.views.board_view import MIME_CARD
 from app.views.theme import AppTheme
 
@@ -86,9 +87,9 @@ class _Chip(QLabel):
                 color: {color};
                 background: {bg};
                 border: 1px solid {c['border']};
-                border-radius: 5px;
-                font-size: 11px;
-                padding: 1px 5px;
+                border-radius: {tokens.radius('chip')}px;
+                {tokens.font_css(11)};
+                {tokens.pad(1, 5)};
             }}
             QLabel#calChip:hover {{ border: 1px solid {c['accent']}; }}
         """)
@@ -186,17 +187,17 @@ class _DayCell(QFrame):
             QFrame#dayCell {{
                 background: {bg};
                 border: {width}px solid {border};
-                border-radius: 8px;
+                border-radius: {tokens.radius('control')}px;
             }}
             QLabel#dayNum {{
                 color: {c['accent'] if hover else num_color};
-                font-size: 11px;
+                {tokens.font_css(11)};
                 font-weight: {'bold' if self._is_today else 'normal'};
                 background: transparent;
             }}
             QPushButton#dayMore {{
                 color: {c['text_secondary']};
-                font-size: 10px;
+                {tokens.font_css(11)};
                 text-align: left;
                 background: transparent;
                 border: none;
@@ -332,10 +333,7 @@ class CalendarDialog(QDialog):
         self._flip_timer.timeout.connect(self._on_flip_timeout)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(AppConfig.UI_DIALOG_MARGIN_H,
-                                AppConfig.UI_DIALOG_MARGIN_V,
-                                AppConfig.UI_DIALOG_MARGIN_H,
-                                AppConfig.UI_DIALOG_MARGIN_V - 2)
+        root.setContentsMargins(*tokens.dialog_margins(bottom_trim=2))
         root.setSpacing(8)
 
         head = QHBoxLayout()
@@ -491,26 +489,26 @@ class CalendarDialog(QDialog):
             QDialog {{ background: {c['bg_primary']}; }}
             QLabel#calMonth {{
                 color: {c['text_primary']};
-                font-size: 15px;
+                {tokens.font_css(15)};
                 font-weight: bold;
                 background: transparent;
             }}
             QLabel#weekdayHead {{
                 color: {c['text_secondary']};
-                font-size: 11px;
+                {tokens.font_css(11)};
                 background: transparent;
             }}
             QLabel#calHint {{
                 color: {c['text_secondary']};
-                font-size: 11px;
+                {tokens.font_css(11)};
                 background: transparent;
             }}
             QPushButton {{
                 background: {c['bg_card']};
                 color: {c['text_primary']};
                 border: 1px solid {c['border']};
-                border-radius: {AppConfig.UI_RADIUS_CONTROL}px;
-                padding: {AppConfig.UI_PAD_SECONDARY};
+                border-radius: {tokens.radius('control')}px;
+                {tokens.pad_preset(AppConfig.UI_PAD_SECONDARY)};
             }}
             QPushButton:hover {{ background: {c['bg_hover']}; }}
         """)

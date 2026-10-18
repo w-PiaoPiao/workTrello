@@ -11,7 +11,7 @@ from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QTimer, Qt
 from PySide6.QtWidgets import QGraphicsOpacityEffect, QLabel
 
 from app.config import AppConfig
-from app.views import motion
+from app.views import motion, tokens
 
 
 class Toast(QLabel):
@@ -21,14 +21,14 @@ class Toast(QLabel):
         super().__init__(parent)
         self.setAlignment(Qt.AlignCenter)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self.setStyleSheet("""
-            QLabel {
+        self.setStyleSheet(f"""
+            QLabel {{
                 background: rgba(22, 27, 36, 0.92);
                 color: #FFFFFF;
-                border-radius: 8px;
-                padding: 7px 16px;
-                font-size: 12px;
-            }
+                {tokens.radius_css('control')};
+                {tokens.pad(7, 16)};
+                {tokens.font_css(AppConfig.UI_FONT_LABEL)};
+            }}
         """)
         self.hide()
 

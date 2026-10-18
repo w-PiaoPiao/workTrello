@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 from app.config import AppConfig
 from app.i18n import label_display, tr
 from app.models.quick_syntax import parse_quick_input
+from app.views import tokens
 from app.views.controls import ComboBox
 from app.views.theme import AppTheme, primary_button_style
 
@@ -53,25 +54,25 @@ def _input_dialog_style(c: dict) -> str:
         QDialog {{ background: {c['bg_primary']}; }}
         QLabel[cap="true"] {{
             color: {c['text_secondary']};
-            font-size: 12px;
+            {tokens.font_css(12)};
             font-weight: bold;
         }}
         QLabel#syntaxTip, QLabel#bulkHint, QLabel#bulkCount {{
             color: {c['text_secondary']};
-            font-size: 11px;
+            {tokens.font_css(11)};
             background: transparent;
         }}
         QLabel#bulkCount[over="true"] {{ color: {c['danger']}; }}
         QLabel#syntaxHit {{
             color: {c['accent']};
-            font-size: 11px;
+            {tokens.font_css(11)};
             background: {c['accent_soft']};
-            border-radius: 6px;
-            padding: 3px 8px;
+            border-radius: {tokens.radius('chip')}px;
+            {tokens.pad(3, 8)};
         }}
         QLabel#inputError {{
             color: {c['danger']};
-            font-size: 11px;
+            {tokens.font_css(11)};
             background: transparent;
         }}
         QLineEdit[error="true"], QPlainTextEdit[error="true"] {{
@@ -82,8 +83,8 @@ def _input_dialog_style(c: dict) -> str:
             background: {c['bg_card']};
             color: {c['text_primary']};
             border: 1px solid {c['border']};
-            border-radius: 8px;
-            padding: 6px 14px;
+            border-radius: {tokens.radius('control')}px;
+            {tokens.pad_preset(AppConfig.UI_PAD_SECONDARY)};
         }}
         QPushButton:hover {{ background: {c['bg_hover']}; }}
     """
@@ -134,10 +135,7 @@ class QuickAddDialog(QDialog):
         self._ok_btn.setDefault(True)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(AppConfig.UI_DIALOG_MARGIN_H,
-                                AppConfig.UI_DIALOG_MARGIN_V,
-                                AppConfig.UI_DIALOG_MARGIN_H,
-                                AppConfig.UI_DIALOG_MARGIN_V - 2)
+        root.setContentsMargins(*tokens.dialog_margins(bottom_trim=2))
         root.setSpacing(8)
 
         cap = QLabel(label)
@@ -241,10 +239,7 @@ class BulkAddDialog(QDialog):
         self._ok_btn.setDefault(True)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(AppConfig.UI_DIALOG_MARGIN_H,
-                                AppConfig.UI_DIALOG_MARGIN_V,
-                                AppConfig.UI_DIALOG_MARGIN_H,
-                                AppConfig.UI_DIALOG_MARGIN_V - 2)
+        root.setContentsMargins(*tokens.dialog_margins(bottom_trim=2))
         root.setSpacing(8)
 
         hint = QLabel(tr("每行一张卡片，行内支持速记：明天 / 周五 / 3天后 /"

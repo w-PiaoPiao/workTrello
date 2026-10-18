@@ -32,7 +32,7 @@ from PySide6.QtWidgets import QFrame, QLabel, QScrollArea, QVBoxLayout
 from shiboken6 import isValid as is_valid
 
 from app.views.theme import AppTheme
-from app.views import motion
+from app.views import motion, tokens
 from app.config import AppConfig
 from app.i18n import tr
 
@@ -135,23 +135,23 @@ class NotesPopover(QFrame):
             QFrame#notesPopoverPanel {{
                 background: {c['popover_bg']};
                 border: 1px solid {c['popover_border']};
-                border-radius: {AppConfig.UI_RADIUS_PANEL}px;
+                border-radius: {tokens.radius('panel')}px;
             }}
             QLabel#popTitle {{
                 color: {c['text_secondary']};
-                font-size: 10px;
+                {tokens.font_css(11)};
                 font-weight: bold;
                 letter-spacing: 1px;
                 background: transparent;
             }}
             QLabel#popBody {{
                 color: {c['text_primary']};
-                font-size: 12px;
+                {tokens.font_css(12)};
                 background: transparent;
             }}
             QLabel#popHint {{
                 color: {c['text_disabled']};
-                font-size: 10px;
+                {tokens.font_css(11)};
                 background: transparent;
             }}
         """)
@@ -172,7 +172,7 @@ class NotesPopover(QFrame):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(Qt.NoPen)
-        base_radius = float(AppConfig.UI_RADIUS_PANEL)
+        base_radius = float(tokens.radius('panel'))
         for i in range(_SHADOW, 0, -1):
             alpha = int(26 * (1 - i / (_SHADOW + 1)) ** 2) + 3
             col = QColor(shadow)

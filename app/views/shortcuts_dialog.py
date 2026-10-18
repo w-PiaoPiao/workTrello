@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from app.config import AppConfig
 from app.i18n import tr
+from app.views import tokens
 from app.views.theme import AppTheme
 
 
@@ -65,10 +66,8 @@ class ShortcutsDialog(QDialog):
         self.setMinimumWidth(420)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(AppConfig.UI_DIALOG_MARGIN_H,
-                        AppConfig.UI_DIALOG_MARGIN_V - 2,
-                        AppConfig.UI_DIALOG_MARGIN_H,
-                        AppConfig.UI_DIALOG_MARGIN_V - 4)
+        root.setContentsMargins(
+            *tokens.dialog_margins(bottom_trim=4, top=16))
         root.setSpacing(6)
 
         for action, key in _shortcut_rows():
@@ -108,20 +107,20 @@ class ShortcutsDialog(QDialog):
             QDialog {{ background: {c['bg_primary']}; }}
             QLabel#scAction {{
                 color: {c['text_primary']};
-                font-size: 13px;
+                {tokens.font_css(13)};
                 background: transparent;
             }}
             QLabel#scKey {{
                 color: {c['accent']};
-                font-size: 12px;
+                {tokens.font_css(12)};
                 font-weight: bold;
                 background: {c['accent_soft']};
-                border-radius: 6px;
-                padding: 2px 8px;
+                border-radius: {tokens.radius('chip')}px;
+                {tokens.pad(2, 8)};
             }}
             QFrame#scRow {{
                 background: {c['bg_card']};
                 border: 1px solid {c['border']};
-                border-radius: 8px;
+                border-radius: {tokens.radius('control')}px;
             }}
         """)

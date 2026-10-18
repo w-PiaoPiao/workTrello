@@ -65,7 +65,7 @@ from PySide6.QtWidgets import (
 from app.config import AppConfig
 from app.i18n import label_display, priority_name, repeat_display, tr
 from app.models.board import FUND_KIND_LABELS, BoardList, Card
-from app.views import motion
+from app.views import motion, tokens
 from app.views.notes_popover import (
     hide_notes_popover,
     notes_pinned_for,
@@ -162,27 +162,27 @@ def _board_qss(mode: str) -> str:
         f'QLabel#cardBadge[tone="{tone}"] {{\n'
         f'    background: {c["accent_soft"]};\n'
         f'    color: {c[tone]};\n'
-        f'    border-radius: 6px;\n'
-        f'    padding: 2px 6px;\n'
-        f'    font-size: 11px;\n'
+        f'    {tokens.radius_css("chip")};\n'
+        f'    {tokens.pad(2, 6)};\n'
+        f'    {tokens.font_css(AppConfig.UI_FONT_CAPTION)};\n'
         f'}}'
         for tone in _BADGE_TONES)
     return f"""
         /* ── 工具条 ── */
         QLabel#boardTitle {{
-            font-size: 17px;
+            {tokens.font_css(AppConfig.UI_FONT_DISPLAY)};
             font-weight: bold;
             color: {c['text_primary']};
             background: transparent;
         }}
         QPushButton#boardTitleBtn {{
-            font-size: 17px;
+            {tokens.font_css(AppConfig.UI_FONT_DISPLAY)};
             font-weight: bold;
             color: {c['text_primary']};
             background: transparent;
             border: none;
-            border-radius: 8px;
-            padding: 3px 8px;
+            {tokens.radius_css('control')};
+            {tokens.pad(3, 8)};
         }}
         QPushButton#boardTitleBtn:hover {{
             background: {c['glass']};
@@ -190,25 +190,25 @@ def _board_qss(mode: str) -> str:
         QFrame#selectionBar {{
             background: {c['glass']};
             border: 1px solid {c['border']};
-            border-radius: 12px;
+            {tokens.radius_css('panel')};
         }}
         QLabel#selCount {{
             color: {c['text_primary']};
-            font-size: 12px;
+            {tokens.font_css(AppConfig.UI_FONT_LABEL)};
             font-weight: bold;
             background: transparent;
         }}
         QLabel#boardStats {{
-            font-size: 12px;
+            {tokens.font_css(AppConfig.UI_FONT_LABEL)};
             color: {c['text_primary']};
             background: {c['glass']};
-            border-radius: 8px;
-            padding: 3px 10px;
+            {tokens.radius_css('control')};
+            {tokens.pad(3, 10)};
         }}
         QPushButton#boardThemeBtn {{
             background: {c['glass']};
             border: none;
-            border-radius: 17px;
+            border-radius: {tokens.circle_radius(34)}px;
             color: {c['text_primary']};
         }}
         QPushButton#boardThemeBtn:hover {{
@@ -217,7 +217,7 @@ def _board_qss(mode: str) -> str:
         QPushButton#boardCollapseBtn {{
             background: {c['glass']};
             border: none;
-            border-radius: 17px;
+            border-radius: {tokens.circle_radius(34)}px;
             font-weight: bold;
             color: {c['text_primary']};
         }}
@@ -228,8 +228,8 @@ def _board_qss(mode: str) -> str:
             background: {c['glass']};
             border: none;
             border-radius: {AppConfig.UI_RADIUS_CONTROL}px;
-            padding: 5px 10px;
-            font-size: 12px;
+            {tokens.pad(5, 10)};
+            {tokens.font_css(AppConfig.UI_FONT_LABEL)};
             color: {c['text_primary']};
         }}
         QPushButton#boardToolBtn:hover {{
@@ -249,7 +249,7 @@ def _board_qss(mode: str) -> str:
             background: {c['glass']};
             border: 1px solid transparent;
             border-radius: {AppConfig.UI_RADIUS_CONTROL}px;
-            padding: 6px 10px;
+            {tokens.pad_preset(AppConfig.UI_PAD_INPUT)};
             color: {c['text_primary']};
         }}
         /* 聚焦态必须自设：id 选择器优先级高于全局 QLineEdit:focus，
@@ -264,8 +264,8 @@ def _board_qss(mode: str) -> str:
             color: {c['text_secondary']};
             border: 1.5px dashed {c['border']};
             border-radius: {AppConfig.UI_RADIUS_CONTROL}px;
-            padding: 7px;
-            font-size: 12px;
+            {tokens.pad_all(7)};
+            {tokens.font_css(AppConfig.UI_FONT_LABEL)};
         }}
         QPushButton#addBoardBtn:hover {{
             background: {c['accent_soft']};
@@ -279,7 +279,7 @@ def _board_qss(mode: str) -> str:
             color: {c['text_primary']};
             border: none;
             border-radius: {AppConfig.UI_RADIUS_CONTROL}px;
-            padding: 5px 10px;
+            {tokens.pad(5, 10)};
         }}
         QPushButton#addBoardBtn[variant="toolbar"]:hover {{
             background: {c['glass_hover']};
@@ -289,7 +289,7 @@ def _board_qss(mode: str) -> str:
         /* 空看板引导叠在蓝紫渐变上：中性灰在渐变里几乎看不见 */
         QLabel#emptyBoardHint {{
             color: {c['hint_on_board']};
-            font-size: 15px;
+            {tokens.font_css(AppConfig.UI_FONT_TITLE)};
             background: transparent;
         }}
 
@@ -305,39 +305,41 @@ def _board_qss(mode: str) -> str:
         QFrame#listColumn {{
             background: {c['bg_panel']};
             border: 1px solid {c['border']};
-            border-radius: 14px;
+            {tokens.radius_css('shell')};
         }}
         QFrame#listColumn[drop="true"] {{
             border: 2px solid {c['accent']};
         }}
+        /* 拖拽插入指示线：条高仅 3px，Qt 会把圆角夹到短边的一半
+           （1.5px），所以写 2px 还是 6px 渲染完全一致，取最近的 chip 档 */
         QFrame#dropIndicator {{
             background: {c['accent']};
-            border-radius: 2px;
+            {tokens.radius_css('chip')};
         }}
         QLabel#listTitle {{
-            font-size: 14px;
+            {tokens.font_css(AppConfig.UI_FONT_TITLE)};
             font-weight: bold;
             color: {c['text_primary']};
             background: transparent;
         }}
         QLabel#listCount {{
             color: {c['text_secondary']};
-            font-size: 11px;
+            {tokens.font_css(AppConfig.UI_FONT_CAPTION)};
             background: {c['mask']};
             border-radius: {AppConfig.UI_RADIUS_CHIP}px;
-            padding: 1px 7px;
+            {tokens.pad(1, 7)};
         }}
         QLabel#columnHint {{
             color: {c['text_disabled']};
-            font-size: 12px;
+            {tokens.font_css(AppConfig.UI_FONT_LABEL)};
             background: transparent;
         }}
         QPushButton#listCollapseBtn {{
             background: transparent;
             color: {c['text_secondary']};
             border: none;
-            border-radius: 12px;
-            font-size: 13px;
+            {tokens.radius_css('panel')};
+            {tokens.font_css(AppConfig.UI_FONT_BODY)};
             padding: 0;
         }}
         QPushButton#listCollapseBtn[collapsed="true"] {{
@@ -353,18 +355,18 @@ def _board_qss(mode: str) -> str:
         }}
         QLineEdit#renameEdit {{
             background: {c['bg_card']};
-            font-size: 14px;
+            {tokens.font_css(AppConfig.UI_FONT_TITLE)};
             font-weight: bold;
             color: {c['text_primary']};
-            padding: 0 4px;
-            border-radius: 6px;
+            padding: 0 {tokens.space(4)}px;
+            {tokens.radius_css('chip')};
         }}
 
         /* ── 卡片 ── */
         QFrame#cardFrame {{
             background: {c['bg_card']};
             border: 1px solid {c['border']};
-            border-radius: 10px;
+            {tokens.radius_css('card')};
         }}
         QFrame#cardFrame:hover {{
             border: 1px solid {c['accent']};
@@ -374,7 +376,7 @@ def _board_qss(mode: str) -> str:
             background: {c['bg_hover']};
         }}
         QLabel#cardTitle {{
-            font-size: 13px;
+            {tokens.font_css(AppConfig.UI_FONT_BODY)};
             font-weight: 500;
             color: {c['text_primary']};
             background: transparent;
@@ -388,8 +390,8 @@ def _board_qss(mode: str) -> str:
             background: {c['mask']};
             color: {c['text_primary']};
             border: none;
-            border-radius: {AppConfig.CARD_DELETE_BTN_H // 2}px;
-            font-size: 10px;
+            border-radius: {tokens.circle_radius(AppConfig.CARD_DELETE_BTN_H)}px;
+            {tokens.font_css(AppConfig.UI_FONT_CAPTION)};
             font-weight: bold;
             padding: 0;
         }}
@@ -1594,7 +1596,8 @@ class ListHeader(QWidget):
 
         dot = QLabel()
         dot.setFixedSize(8, 8)
-        dot.setStyleSheet(f"background: {accent}; border-radius: 4px;")
+        dot.setStyleSheet(
+            f"background: {accent}; border-radius: {tokens.circle_radius(8)}px;")
         layout.addWidget(dot)
 
         # 资金分配监视泳道徽记（启用监视的列才显示）

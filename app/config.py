@@ -381,15 +381,35 @@ class AppConfig:
     # 此前同一种"药丸选择器"在三个对话框里有三套圆角与内边距
     # （6/7/9px 圆角 × 三种 padding），次按钮有四种 padding，
     # 靠人工记忆维持一致不可持续。
+    UI_RADIUS_SHELL = 14         # 看板列外壳
     UI_RADIUS_PANEL = 12         # 分区卡片 / 浮层外壳
+    UI_RADIUS_CARD = 10          # 卡片
     UI_RADIUS_CONTROL = 8        # 输入框 / 按钮 / 列表行
     UI_RADIUS_CHIP = 6           # 徽章 / 色块 / 键帽
     UI_RADIUS_PILL = 8           # 药丸选择器（分段按钮 / 皮肤 / 优先级）
+    # 圆形一律按 size/2 现算（见 tokens.circle_radius），不再写死 17px
     UI_PAD_PRIMARY = "7px 22px"      # 主按钮
     UI_PAD_SECONDARY = "6px 14px"    # 次按钮
     UI_PAD_PILL = "4px 12px"         # 药丸选择器
+    UI_PAD_INPUT = "6px 10px"        # 输入框（常规）
+    UI_PAD_INPUT_DENSE = "4px 8px"   # 输入框（紧凑：日期 / 数字 / 下拉）
     UI_DIALOG_MARGIN_H = 20      # 对话框内容左右边距
     UI_DIALOG_MARGIN_V = 18      # 对话框内容上下边距
+
+    # ── 字号阶梯（px）──────────────────────────────────────────
+    # 此前 65 处 font-size 硬编码在 7 个档位上（10/11/12/13/14/15/17），
+    # 同一语义角色在不同界面取不同值（分区标题在设置页 12px、在备注浮层
+    # 10px）。收敛成 5 档，并**取消 10px**——它低于两个平台舒适可读的下限。
+    UI_FONT_DISPLAY = 17         # 看板标题（应用级标题）
+    UI_FONT_TITLE = 15           # 对话框 / 分区标题、日历月份、列标题
+    UI_FONT_BODY = 13            # 卡片标题、正文、表单文字
+    UI_FONT_LABEL = 12           # 按钮、统计、次要标签
+    UI_FONT_CAPTION = 11         # 徽章、提示（最小档，不得再低）
+
+    # ── 间距阶梯（px）──────────────────────────────────────────
+    # QSS padding 曾有 24 种取值、setContentsMargins 21 种组合、setSpacing
+    # 8 种取值，同类字段高度相差 1~2px。取 8 档覆盖实际用到的全部区间。
+    UI_SPACE = (2, 4, 6, 8, 12, 16, 20, 24)
 
     # ── 交互 ──────────────────────────────────────────────────────
     CARD_DRAG_THRESHOLD = 10    # 卡片按下后超过该位移才判定为拖拽（像素）
@@ -431,18 +451,44 @@ class AppConfig:
         "bg_hover": "#E7F0FB",
         "text_primary": "#1D2733",
         "text_secondary": "#5C6B7A",
+        # 提示/占位文字专用。此前这些位置借用了 text_disabled，实测
+        # 搜索框占位 1.58:1、空列提示 1.87:1 —— 把"禁用态"的色当
+        # "说明性文字"用，是这两处读不清的根因。
+        "text_muted": "#5C6B7A",
         "text_disabled": "#A5B0BC",
-        "accent": "#2F6BFF",
-        "accent_hover": "#1F58E0",
-        "accent_soft": "rgba(47, 107, 255, 0.12)",
+        # accent 同时用作填充与文字：原 #2F6BFF 白字压上去只有 4.50:1
+        # （正好卡在门槛上），当文字压在白底也是 4.50。压深一档后
+        # 两个方向分别到 5.40 / 4.80。
+        "accent": "#2A60E4",
+        "accent_hover": "#2557D6",
+        "accent_on": "#FFFFFF",      # 压在 accent 填充上的文字/字形
+        "accent_text": "#2A60E4",    # accent 当文字用（徽章 / 链接）
+        "accent_soft": "rgba(42, 96, 228, 0.12)",
         "success": "#1FA971",
+        "success_soft": "#E2F6EC",
+        "success_text": "#177C53",
+        "success_on": "#FFFFFF",
         "danger": "#E5484D",
+        "danger_soft": "#FDE7E8",
+        "danger_text": "#BD3B3F",
+        "danger_on": "#FFFFFF",
         "warning": "#F5A623",
-        "border": "rgba(29, 39, 51, 0.10)",
-        "board_bg_start": "#5B8DEF",
-        "board_bg_mid": "#7C6CE8",
-        "board_bg_end": "#B46BE8",
-        # 工具栏「玻璃白」：白色半透明面浮在渐变背景上（浅色主题）
+        "warning_soft": "#FFF1DA",
+        "warning_text": "#946415",
+        # 浅色的 warning 填充是亮橙：白字压上去只有 2.03:1，必须用深色字
+        "warning_on": "#10131A",
+        # 中性软底 + 前景（备注 / 附件这类"无严重性"的徽章）。
+        # 单独取前景而不是复用 text_secondary：后者在深色软底上只有 4.30:1。
+        "neutral_soft": "#EDF1F5",
+        "neutral_text": "#5C6B7A",
+        # 焦点环单独取色：accent 直接当焦点环时，深色下压在 glass_hover 上
+        # 只有 2.57:1，低于非文本组件 3:1 的门槛。
+        "focus_ring": "#2A60E4",
+        "border": "rgba(29, 39, 51, 0.14)",
+        "board_bg_start": "#EEF2F7",
+        "board_bg_mid": "#EBEFF6",
+        "board_bg_end": "#E7ECF5",
+        # 工具栏「玻璃白」：白色半透明面浮在板底上（浅色主题）
         "glass": "rgba(255, 255, 255, 0.70)",
         "glass_hover": "rgba(255, 255, 255, 0.92)",
         # 备注悬浮预览：底色必须不透明——半透明时下方卡片文字会透上来，
@@ -456,9 +502,11 @@ class AppConfig:
         "mask_hover": "rgba(128, 128, 128, 0.30)",
         # 滚动条把手
         "scroll_handle": "rgba(128, 128, 128, 0.35)",
-        # 空看板引导文字：叠在渐变板底上，必须恒为亮色（两主题板底都压得住）
-        "hint_on_board": "rgba(255, 255, 255, 0.92)",
         "scroll_handle_hover": "rgba(128, 128, 128, 0.55)",
+        # 空看板引导：板底改为中性后它不再是"叠在渐变上的亮色"，而是压在
+        # 近中性底上的说明文字。原 rgba(255,255,255,0.92) 在浅色板底上
+        # 只有 2.98:1——新手唯一能看到的一句引导却是最读不清的文字。
+        "hint_on_board": "#5C6B7A",
     }
 
     # ── 颜色（深色）──────────────────────────────────────────
@@ -469,17 +517,35 @@ class AppConfig:
         "bg_hover": "#333947",
         "text_primary": "#E6EAF0",
         "text_secondary": "#9AA5B4",
+        "text_muted": "#A7B1BF",
         "text_disabled": "#5C6672",
+        # 深色下 accent 保持明亮作填充，但填充上的文字必须反相：
+        # 白字压 #5B8DEF 只有 3.23:1，而 #10131A 有 5.75:1。
+        # 与 label_style 的深色反相是同一套思路。
         "accent": "#5B8DEF",
         "accent_hover": "#7CA6F5",
+        "accent_on": "#10131A",
+        "accent_text": "#82ACFF",
         "accent_soft": "rgba(91, 141, 239, 0.22)",
         "success": "#3FCF8E",
+        "success_soft": "#2A4843",
+        "success_text": "#3FCF8E",
+        "success_on": "#10131A",
         "danger": "#FF6B6E",
+        "danger_soft": "#4D363E",
+        "danger_text": "#FF8284",
+        "danger_on": "#10131A",
         "warning": "#FFB65C",
-        "border": "rgba(230, 234, 240, 0.12)",
-        "board_bg_start": "#1B2233",
-        "board_bg_mid": "#221B36",
-        "board_bg_end": "#2E1B3A",
+        "warning_soft": "#4D433A",
+        "warning_text": "#FFB65C",
+        "warning_on": "#10131A",
+        "neutral_soft": "#393E48",
+        "neutral_text": "#A7B1BF",
+        "focus_ring": "#8FB4FF",
+        "border": "rgba(230, 234, 240, 0.16)",
+        "board_bg_start": "#16181D",
+        "board_bg_mid": "#181B22",
+        "board_bg_end": "#1B1F27",
         # 工具栏「玻璃白」：深色下为低透明白，靠提亮而非变灰区分层级
         "glass": "rgba(255, 255, 255, 0.12)",
         "glass_hover": "rgba(255, 255, 255, 0.20)",
@@ -491,7 +557,7 @@ class AppConfig:
         "mask_hover": "rgba(128, 128, 128, 0.30)",
         "scroll_handle": "rgba(128, 128, 128, 0.35)",
         "scroll_handle_hover": "rgba(128, 128, 128, 0.55)",
-        "hint_on_board": "rgba(255, 255, 255, 0.92)",
+        "hint_on_board": "#9AA5B4",
     }
 
     # ── 图片扩展名（附件图标 / 拖入文件的看图判定）────────────
@@ -500,11 +566,26 @@ class AppConfig:
     # ── 卡片标签色板（key → (背景, 文字)）────────────────────
     LABEL_COLORS = {
         "blue":   ("#DAE8FF", "#1D4ED8"),
-        "green":  ("#D7F5E0", "#15803D"),
-        "orange": ("#FFE8CC", "#C2570A"),
+        "green":  ("#D7F5E0", "#147B3A"),
+        "orange": ("#FFE8CC", "#AC4D09"),
         "red":    ("#FFDADA", "#B91C1C"),
         "purple": ("#EBDBFF", "#6D28D9"),
         "teal":   ("#D2F2F0", "#0F766E"),
+    }
+
+    # ── 卡片标签色板（深色）──────────────────────────────────
+    # 此前深色**复用浅色那份 pastel 底**，只把文字统一压成 #10131A：
+    # 对比度够（14~16:1），但六种色的选中边框全变成同一个近黑色，选中态
+    # 只剩"淡彩填充"一个载体；而且六枚高亮色块成了深色界面上最亮的物体，
+    # 标签比卡片标题还抢眼，层级是反的。
+    # 改为各自从饱和色派生：软底 = 该色 18% 叠在 bg_card 上，前景提亮到达标。
+    DARK_LABEL_COLORS = {
+        "blue":   ("#243051", "#7095FF"),
+        "green":  ("#233934", "#2FB560"),
+        "orange": ("#3E302B", "#F37B25"),
+        "red":    ("#40272F", "#FF6161"),
+        "purple": ("#332A51", "#B17FFF"),
+        "teal":   ("#22383E", "#29B0A5"),
     }
 
     # ── 标签色中文名（卡片色条 / 对话框色块的悬浮提示）──────────

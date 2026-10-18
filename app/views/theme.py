@@ -17,6 +17,7 @@ from PySide6.QtGui import QColor, QPalette
 from PySide6.QtCore import QObject, Qt, Signal
 
 from app.config import AppConfig
+from app.views import tokens
 
 logger = logging.getLogger(__name__)
 
@@ -51,14 +52,18 @@ def to_qcolor(spec) -> QColor:
 
 def primary_button_style(c: dict) -> str:
     """主操作按钮（accent 实心）统一样式：卡片 / 快速添加 / 设置 / 快捷键
-    对话框共用同一份 token 化规则，改圆角/内边距只动 config 一处"""
+    对话框共用同一份 token 化规则，改圆角/内边距只动 config 一处
+
+    文字色取 `accent_on` 而不是写死白色：深色主题的 accent 是亮蓝，
+    白字压上去只有 3.23:1——每个对话框的主按钮都不达标。浅色仍是白色。
+    """
     return f"""
         QPushButton {{
             background: {c['accent']};
-            color: white;
+            color: {c['accent_on']};
             border: none;
-            border-radius: {AppConfig.UI_RADIUS_CONTROL}px;
-            padding: {AppConfig.UI_PAD_PRIMARY};
+            border-radius: {tokens.radius('control')}px;
+            {tokens.pad_preset(AppConfig.UI_PAD_PRIMARY)};
             font-weight: bold;
         }}
         QPushButton:hover {{ background: {c['accent_hover']}; }}
@@ -183,8 +188,11 @@ class _Theme(QObject):
         pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#FFFFFF"))
         pal.setColor(QPalette.ColorRole.ToolTipBase, QColor(c["bg_card"]))
         pal.setColor(QPalette.ColorRole.ToolTipText, QColor(c["text_primary"]))
+        # 占位文字走 text_muted 而不是 text_disabled：占位符是**说明性文字**
+        # 不是禁用控件，借用禁用色让搜索框占位实测只有 1.58:1（浅）/1.90:1（深），
+        # 界面上最主要的筛选入口反而最读不清。
         pal.setColor(QPalette.ColorRole.PlaceholderText,
-                     QColor(c["text_disabled"]))
+                     QColor(c["text_muted"]))
         for role in (QPalette.ColorRole.Text, QPalette.ColorRole.ButtonText,
                      QPalette.ColorRole.WindowText):
             pal.setColor(QPalette.ColorGroup.Disabled, role,
@@ -245,11 +253,16 @@ class _Theme(QObject):
             else AppConfig.COLORS
 
     def label_style(self, key: str) -> tuple[str, str]:
-        """标签色 → (背景, 文字)，主题切换时深色下文字提亮"""
-        bg, fg = AppConfig.LABEL_COLORS.get(key, ("#E5E7EB", "#374151"))
-        if self._mode == "dark":
-            fg = "#10131A"
-        return bg, fg
+        """标签色 → (背景, 文字)
+
+        深色走独立的 DARK_LABEL_COLORS。此前深色复用浅色那份 pastel 底、
+        只把文字统一压成 #10131A：对比度够，但六种色的选中边框全变成同一个
+        近黑色（选中态只剩填充一个载体），且六枚亮色块成了深色界面上最亮的
+        物体——标签比卡片标题还抢眼，层级是反的。
+        """
+        table = (AppConfig.DARK_LABEL_COLORS if self._mode == "dark"
+                 else AppConfig.LABEL_COLORS)
+        return table.get(key, ("#E5E7EB", "#374151"))
 
     # ── 全局 QSS ──────────────────────────────────────────
 
@@ -269,14 +282,14 @@ class _Theme(QObject):
                 background: {c['bg_card']};
                 color: {c['text_primary']};
                 border: 1px solid {c['border']};
-                border-radius: 6px;
-                padding: 5px 8px;
+                border-radius: {tokens.radius('chip')}px;
+                {tokens.pad(5, 8)};
             }}
             QLineEdit, QPlainTextEdit, QTextEdit {{
                 background: {c['bg_card']};
                 border: 1px solid {c['border']};
-                border-radius: 8px;
-                padding: 6px 10px;
+                border-radius: {tokens.radius('control')}px;
+                {tokens.pad_preset(AppConfig.UI_PAD_INPUT)};
                 selection-background-color: {c['accent']};
             }}
             QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus {{
@@ -286,8 +299,8 @@ class _Theme(QObject):
                 background: {c['bg_card']};
                 color: {c['text_primary']};
                 border: 1px solid {c['border']};
-                border-radius: 8px;
-                padding: 4px 8px;
+                border-radius: {tokens.radius('control')}px;
+                {tokens.pad_preset(AppConfig.UI_PAD_INPUT_DENSE)};
                 selection-background-color: {c['accent']};
             }}
             QDateEdit::drop-down, QDateTimeEdit::drop-down {{
@@ -298,8 +311,8 @@ class _Theme(QObject):
                 background: {c['bg_card']};
                 color: {c['text_primary']};
                 border: 1px solid {c['border']};
-                border-radius: {AppConfig.UI_RADIUS_CONTROL}px;
-                padding: 5px 10px;
+                border-radius: {tokens.radius('control')}px;
+                {tokens.pad(5, 10)};
             }}
             QComboBox:focus {{ border: 1px solid {c['accent']}; }}
             QComboBox::drop-down {{
@@ -310,7 +323,7 @@ class _Theme(QObject):
                 background: {c['bg_card']};
                 color: {c['text_primary']};
                 border: 1px solid {c['border']};
-                border-radius: 6px;
+                border-radius: {tokens.radius('chip')}px;
                 selection-background-color: {c['accent_soft']};
                 selection-color: {c['text_primary']};
                 outline: none;
@@ -323,26 +336,26 @@ class _Theme(QObject):
             QPushButton {{
                 background: {c['bg_card']};
                 border: 1px solid {c['border']};
-                border-radius: 8px;
-                padding: 6px 14px;
+                border-radius: {tokens.radius('control')}px;
+                {tokens.pad_preset(AppConfig.UI_PAD_SECONDARY)};
             }}
             QPushButton:hover {{ background: {c['bg_hover']}; }}
             QPushButton:pressed {{ background: {c['accent_soft']}; }}
             QMenu {{
                 background: {c['bg_card']};
                 border: 1px solid {c['border']};
-                border-radius: 10px;
-                padding: 6px;
+                border-radius: {tokens.radius('card')}px;
+                padding: {tokens.space(6)}px;
             }}
             QMenu::item {{
-                padding: 7px 22px;
-                border-radius: 6px;
+                {tokens.pad(7, 22)};
+                border-radius: {tokens.radius('chip')}px;
             }}
             QMenu::item:selected {{ background: {c['accent_soft']}; }}
             QMenu::separator {{
                 height: 1px;
                 background: {c['border']};
-                margin: 5px 8px;
+                {tokens.pad(5, 8)};
             }}
             QScrollBar:vertical {{
                 background: transparent;
@@ -351,7 +364,7 @@ class _Theme(QObject):
             }}
             QScrollBar::handle:vertical {{
                 background: {c['scroll_handle']};
-                border-radius: 4px;
+                border-radius: {tokens.circle_radius(10)}px;
                 min-height: 30px;
             }}
             QScrollBar::handle:vertical:hover {{
@@ -367,7 +380,7 @@ class _Theme(QObject):
             }}
             QScrollBar::handle:horizontal {{
                 background: {c['scroll_handle']};
-                border-radius: 4px;
+                border-radius: {tokens.circle_radius(10)}px;
                 min-width: 30px;
             }}
             QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{

@@ -27,9 +27,10 @@ from PySide6.QtWidgets import (
 from app.config import AppConfig
 from app.i18n import tr
 from app.models.board import BoardList, Card
-from app.views import motion
+from app.views import motion, tokens
 from app.views.board_view import _CardCheckButton
 from app.views.theme import AppTheme
+from app.views import tokens
 
 _ROW_MIN_H = 42
 # 上限跟着 chrome 一起抬：加了两行输入后若不抬，可视行数会从 6 行掉到 4 行
@@ -195,19 +196,20 @@ class _PopRow(QFrame):
             QFrame#popRow {{
                 background: {c['bg_card']};
                 border: 1px solid {c['border']};
-                border-radius: 8px;
+                border-radius: {tokens.radius('control')}px;
             }}
             QFrame#popRow:hover {{ border: 1px solid {c['accent']}; }}
         """)
         self._title.setStyleSheet(
-            f"color: {c['text_primary']}; font-size: 12px; background: transparent;")
+            f"color: {c['text_primary']}; {tokens.font_css(12)};"
+            " background: transparent;")
         self._badge.setStyleSheet(f"""
             QLabel {{
                 color: {c['text_secondary']};
-                font-size: 11px;
+                {tokens.font_css(11)};
                 background: {c['accent_soft']};
-                border-radius: 6px;
-                padding: 1px 6px;
+                border-radius: {tokens.radius('chip')}px;
+                {tokens.pad(1, 6)};
             }}
         """)
         self._star_btn.setStyleSheet(f"""
@@ -215,7 +217,7 @@ class _PopRow(QFrame):
                 background: transparent;
                 border: none;
                 color: {c['text_secondary']};
-                font-size: 13px;
+                {tokens.font_css(13)};
                 padding: 0;
             }}
             QPushButton:hover {{ color: {c['accent']}; }}
@@ -425,8 +427,8 @@ class TodayPopover(QWidget):
             return
         c = AppTheme.colors()
         self._done_label.setStyleSheet(
-            f"color: {c['text_secondary']}; font-size: 12px;"
-            " background: transparent; padding: 2px 0;")
+            f"color: {c['text_secondary']}; {tokens.font_css(12)};"
+            f" background: transparent; padding: {tokens.space(2)}px 0;")
 
     def _apply_empty_label_style(self) -> None:
         """空态配色随主题重下（此前是 set_items 时的内联快照）"""
@@ -434,7 +436,8 @@ class TodayPopover(QWidget):
             return
         c = AppTheme.colors()
         self._empty_label.setStyleSheet(
-            f"color: {c['text_disabled']}; font-size: 12px; padding: 18px;")
+            f"color: {c['text_disabled']}; {tokens.font_css(12)};"
+            f" {tokens.pad_all(18)};")
 
     # ── 基础 UI ──────────────────────────────────────────
 
@@ -459,7 +462,8 @@ class TodayPopover(QWidget):
         head = QHBoxLayout()
         self._title_label = QLabel(tr("今日待办"))
         self._title_label.setStyleSheet(
-            "font-size: 13px; font-weight: bold; background: transparent;")
+            f"{tokens.font_css(13)}; font-weight: bold;"
+            " background: transparent;")
         head.addWidget(self._title_label)
         head.addStretch(1)
         self._close_btn = QPushButton("✕")
@@ -505,7 +509,7 @@ class TodayPopover(QWidget):
             QFrame#popFrame {{
                 background: {c['bg_card']};
                 border: 1px solid {c['border']};
-                border-radius: 12px;
+                border-radius: {tokens.radius('panel')}px;
             }}
         """)
         self._close_btn.setStyleSheet(f"""
@@ -513,8 +517,8 @@ class TodayPopover(QWidget):
                 background: {c['mask']};
                 color: {c['text_primary']};
                 border: none;
-                border-radius: 11px;
-                font-size: 10px;
+                border-radius: {tokens.circle_radius(22)}px;
+                {tokens.font_css(11)};
             }}
             QPushButton:hover {{ background: {c['danger']}; color: white; }}
         """)
@@ -523,9 +527,9 @@ class TodayPopover(QWidget):
                 background: {c['bg_hover']};
                 color: {c['text_primary']};
                 border: 1px solid {c['border']};
-                border-radius: 8px;
-                padding: 5px 8px;
-                font-size: 12px;
+                border-radius: {tokens.radius('control')}px;
+                {tokens.pad(5, 8)};
+                {tokens.font_css(12)};
             }}
         """)
         self._search_edit.setStyleSheet(f"""
@@ -533,9 +537,9 @@ class TodayPopover(QWidget):
                 background: transparent;
                 color: {c['text_primary']};
                 border: 1px solid {c['border']};
-                border-radius: 8px;
-                padding: 4px 8px;
-                font-size: 11px;
+                border-radius: {tokens.radius('control')}px;
+                {tokens.pad_preset(AppConfig.UI_PAD_INPUT_DENSE)};
+                {tokens.font_css(11)};
             }}
         """)
 

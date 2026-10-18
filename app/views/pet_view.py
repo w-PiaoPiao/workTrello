@@ -42,6 +42,7 @@ from PySide6.QtWidgets import QLabel, QMenu, QSizePolicy, QVBoxLayout, QWidget
 
 from app.config import AppConfig
 from app.i18n import skin_display, tr
+from app.views import tokens
 from app.views.theme import AppTheme
 
 
@@ -907,10 +908,10 @@ class PetView(QWidget):
                 QLabel {{
                     background: {c['accent']};
                     color: white;
-                    border-radius: {AppConfig.PET_BADGE_SIZE // 2}px;
-                    font-size: 12px;
+                    border-radius: {tokens.circle_radius(AppConfig.PET_BADGE_SIZE)}px;
+                    {tokens.font_css(AppConfig.UI_FONT_LABEL)};
                     font-weight: bold;
-                    padding: 0 5px;
+                    padding: 0 {tokens.space(5)}px;
                 }}
             """
             # 内容相同也触发 re-polish：仅在真正变化时下发

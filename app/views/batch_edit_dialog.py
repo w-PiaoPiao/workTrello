@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 
 from app.config import AppConfig
 from app.i18n import priority_name, tr
+from app.views import tokens
 from app.views.controls import ComboBox, DateEdit
 from app.views.quick_add_dialog import _input_dialog_style
 from app.views.theme import AppTheme, primary_button_style
@@ -41,10 +42,7 @@ class BatchEditDialog(QDialog):
         self._count = count
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(AppConfig.UI_DIALOG_MARGIN_H,
-                                AppConfig.UI_DIALOG_MARGIN_V,
-                                AppConfig.UI_DIALOG_MARGIN_H,
-                                AppConfig.UI_DIALOG_MARGIN_V - 2)
+        root.setContentsMargins(*tokens.dialog_margins(bottom_trim=2))
         root.setSpacing(8)
 
         hint = QLabel(tr("已选 {n} 张卡片 · 只应用改动过的项").format(n=count))

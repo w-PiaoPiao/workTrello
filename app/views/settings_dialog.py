@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 from app.config import AppConfig
 from app.i18n import skin_display, tr
 from app.services.global_hotkey import GlobalHotkeyService
+from app.views import tokens
 from app.views.controls import ComboBox, SegmentedControl, ToggleSwitch
 from app.views.theme import AppTheme
 
@@ -125,10 +126,8 @@ class SettingsDialog(QDialog):
         host = QWidget()
         host.setObjectName("settingsHost")
         page = QVBoxLayout(host)
-        page.setContentsMargins(AppConfig.UI_DIALOG_MARGIN_H,
-                                AppConfig.UI_DIALOG_MARGIN_V - 2,
-                                AppConfig.UI_DIALOG_MARGIN_H,
-                                AppConfig.UI_DIALOG_MARGIN_V - 2)
+        page.setContentsMargins(
+            *tokens.dialog_margins(bottom_trim=2, top=16))
         page.setSpacing(12)
 
         # 外观
@@ -416,36 +415,36 @@ class SettingsDialog(QDialog):
             QFrame#settingsCard {{
                 background: {c['bg_card']};
                 border: 1px solid {c['border']};
-                border-radius: {AppConfig.UI_RADIUS_PANEL}px;
+                border-radius: {tokens.radius('panel')}px;
             }}
             QLabel#sectionTitle {{
                 color: {c['text_secondary']};
-                font-size: 12px;
+                {tokens.font_css(12)};
                 font-weight: bold;
                 letter-spacing: 1px;
                 background: transparent;
             }}
             QLabel#rowTitle {{
                 color: {c['text_primary']};
-                font-size: 13px;
+                {tokens.font_css(13)};
                 font-weight: 600;
                 background: transparent;
             }}
             QLabel#rowHint {{
                 color: {c['text_secondary']};
-                font-size: 11px;
+                {tokens.font_css(11)};
                 background: transparent;
             }}
             QLabel#dirPath {{
                 color: {c['text_secondary']};
-                font-size: 11px;
+                {tokens.font_css(11)};
                 background: {c['mask']};
-                border-radius: 6px;
-                padding: 4px 8px;
+                border-radius: {tokens.radius('chip')}px;
+                {tokens.pad_preset(AppConfig.UI_PAD_INPUT_DENSE)};
             }}
             QLabel#aboutLabel {{
                 color: {c['text_secondary']};
-                font-size: 12px;
+                {tokens.font_css(12)};
                 background: transparent;
             }}
             /* 选中态的背景/边框由 SegmentedControl 自绘（会滑动的高亮块），
@@ -454,9 +453,9 @@ class SettingsDialog(QDialog):
                 background: transparent;
                 color: {c['text_secondary']};
                 border: none;
-                border-radius: {AppConfig.UI_RADIUS_PILL}px;
-                padding: {AppConfig.UI_PAD_PILL};
-                font-size: 12px;
+                border-radius: {tokens.radius('pill')}px;
+                {tokens.pad_preset(AppConfig.UI_PAD_PILL)};
+                {tokens.font_css(12)};
             }}
             QPushButton#segmentBtn:hover {{ color: {c['text_primary']}; }}
             QPushButton#segmentBtn:checked {{
@@ -468,9 +467,9 @@ class SettingsDialog(QDialog):
                 background: {c['mask']};
                 color: {c['text_primary']};
                 border: 1.5px solid transparent;
-                border-radius: {AppConfig.UI_RADIUS_PILL}px;
-                padding: {AppConfig.UI_PAD_PILL};
-                font-size: 12px;
+                border-radius: {tokens.radius('pill')}px;
+                {tokens.pad_preset(AppConfig.UI_PAD_PILL)};
+                {tokens.font_css(12)};
             }}
             QPushButton#skinBtn:hover {{ border: 1.5px solid {c['accent']}; }}
             QPushButton#skinBtn:checked {{
@@ -483,9 +482,9 @@ class SettingsDialog(QDialog):
                 background: {c['bg_card']};
                 color: {c['text_primary']};
                 border: 1px solid {c['border']};
-                border-radius: {AppConfig.UI_RADIUS_CONTROL}px;
-                padding: {AppConfig.UI_PAD_SECONDARY};
-                font-size: 12px;
+                border-radius: {tokens.radius('control')}px;
+                {tokens.pad_preset(AppConfig.UI_PAD_SECONDARY)};
+                {tokens.font_css(12)};
             }}
             QPushButton#ghostBtn:hover {{ background: {c['bg_hover']}; }}
             /* QComboBox 样式由 AppTheme.global_qss() 统一下发 */
@@ -493,8 +492,8 @@ class SettingsDialog(QDialog):
                 background: {c['accent']};
                 color: white;
                 border: none;
-                border-radius: {AppConfig.UI_RADIUS_CONTROL}px;
-                padding: {AppConfig.UI_PAD_PRIMARY};
+                border-radius: {tokens.radius('control')}px;
+                {tokens.pad_preset(AppConfig.UI_PAD_PRIMARY)};
                 font-weight: bold;
             }}
             QPushButton#primaryBtn:hover {{ background: {c['accent_hover']}; }}

@@ -47,6 +47,7 @@ from app.models.board import (
     fund_steps_for_kind,
 )
 from app.models.markdown_lite import render_markdown
+from app.views import tokens
 from app.views.controls import ComboBox, DateEdit, SpinBox
 from app.views.theme import AppTheme, primary_button_style
 
@@ -61,9 +62,9 @@ def _selector_button_style(c: dict) -> str:
             background: {c['bg_card']};
             color: {c['text_secondary']};
             border: 1px solid {c['border']};
-            border-radius: {AppConfig.UI_RADIUS_PILL}px;
+            border-radius: {tokens.radius('pill')}px;
             padding: {AppConfig.UI_PAD_PILL};
-            font-size: 12px;
+            {tokens.font_css(12)};
         }}
         QPushButton:checked {{
             background: {c['accent_soft']};
@@ -81,14 +82,14 @@ def _flat_button_style(c: dict) -> str:
     return f"""
         QPushButton {{
             color: {c['accent']};
-            font-size: 11px;
+            {tokens.font_css(11)};
             background: transparent;
             border: none;
-            padding: 2px 6px;
+            {tokens.pad(2, 6)};
         }}
         QPushButton:hover {{
             background: {c['accent_soft']};
-            border-radius: 6px;
+            border-radius: {tokens.radius('chip')}px;
         }}
     """
 
@@ -107,7 +108,7 @@ def _remove_button_style(c: dict) -> str:
             color: {c['text_secondary']};
             background: transparent;
             border: none;
-            font-size: 10px;
+            {tokens.font_css(11)};
             padding: 0;
         }}
         QPushButton:hover {{ color: {c['danger']}; }}
@@ -128,7 +129,7 @@ def _dialog_style(c: dict) -> str:
         }}
         QLabel[cap="true"] {{
             color: {c['text_secondary']};
-            font-size: 12px;
+            {tokens.font_css(12)};
             font-weight: bold;
         }}
         QLineEdit[error="true"] {{
@@ -136,19 +137,19 @@ def _dialog_style(c: dict) -> str:
         }}
         QLabel#fundHintLabel {{
             color: {c['text_secondary']};
-            font-size: 11px;
+            {tokens.font_css(11)};
             background: transparent;
         }}
         QWidget#fundStepRow {{
             background: transparent;
-            border-radius: 6px;
+            border-radius: {tokens.radius('chip')}px;
         }}
         QWidget#fundStepRow[current="true"] {{
             background: {c['accent_soft']};
         }}
         QLabel#fundStepName {{
             color: {c['text_primary']};
-            font-size: 12px;
+            {tokens.font_css(12)};
             background: transparent;
         }}
     """
@@ -198,7 +199,7 @@ class LabelChip(QPushButton):
             QPushButton {{
                 background: {bg};
                 border: 1px solid transparent;
-                border-radius: 6px;
+                border-radius: {tokens.radius('chip')}px;
             }}
             QPushButton:checked {{ border: 2px solid {fg}; }}
             QPushButton:hover {{ border: 2px solid {fg}; }}
@@ -227,10 +228,7 @@ class CardDialog(QDialog):
         self._ok_btn: QPushButton | None = None
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(AppConfig.UI_DIALOG_MARGIN_H,
-                                 AppConfig.UI_DIALOG_MARGIN_V,
-                                 AppConfig.UI_DIALOG_MARGIN_H,
-                                 AppConfig.UI_DIALOG_MARGIN_V - 2)
+        outer.setContentsMargins(*tokens.dialog_margins(bottom_trim=2))
         outer.setSpacing(10)
 
         # 表单主体装进滚动区：清单项/附件/长备注会让内容自然长高，而对话框
@@ -325,7 +323,7 @@ class CardDialog(QDialog):
         cl_btn_row.addWidget(self._add_check_btn)
         self._check_progress_label = QLabel()
         self._check_progress_label.setStyleSheet(
-            f"color: {c['text_secondary']}; font-size: 11px;"
+            f"color: {c['text_secondary']}; {tokens.font_css(11)};"
             " background: transparent;")
         cl_btn_row.addStretch(1)
         cl_btn_row.addWidget(self._check_progress_label)
@@ -371,7 +369,7 @@ class CardDialog(QDialog):
         self._due_none_label.setStyleSheet(f"""
             QLabel {{
                 color: {c['text_disabled']};
-                font-size: 13px;
+                {tokens.font_css(13)};
                 font-style: italic;
                 background: transparent;
             }}
@@ -580,13 +578,13 @@ class CardDialog(QDialog):
         self._due_none_label.setStyleSheet(f"""
             QLabel {{
                 color: {c['text_disabled']};
-                font-size: 13px;
+                {tokens.font_css(13)};
                 font-style: italic;
                 background: transparent;
             }}
         """)
         self._check_progress_label.setStyleSheet(
-            f"color: {c['text_secondary']}; font-size: 11px;"
+            f"color: {c['text_secondary']}; {tokens.font_css(11)};"
             " background: transparent;")
         self._rebuild_attach_rows()
         self._apply_workdir_state()
@@ -738,7 +736,7 @@ class CardDialog(QDialog):
             name = QLabel(f"{icon} {att.get('name', '')}")
             name.setStyleSheet(
                 f"color: {AppTheme.colors()['text_primary']};"
-                " font-size: 12px; background: transparent;")
+                f" {tokens.font_css(12)}; background: transparent;")
             open_btn = QPushButton(tr("打开"))
             open_btn.setFlat(True)
             open_btn.setCursor(Qt.PointingHandCursor)
@@ -1103,7 +1101,7 @@ class CardDialog(QDialog):
             self._workdir_label.setStyleSheet(f"""
                 QLabel {{
                     color: {c['text_secondary']};
-                    font-size: 12px;
+                    {tokens.font_css(12)};
                     background: transparent;
                 }}
             """)
@@ -1113,7 +1111,7 @@ class CardDialog(QDialog):
             self._workdir_label.setStyleSheet(f"""
                 QLabel {{
                     color: {c['text_disabled']};
-                    font-size: 13px;
+                    {tokens.font_css(13)};
                     font-style: italic;
                     background: transparent;
                 }}

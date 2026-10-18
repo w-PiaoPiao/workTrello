@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 from app.config import AppConfig
 from app.i18n import tr
 from app.models.board import BoardList, Card
+from app.views import tokens
 from app.views.controls import ComboBox
 from app.views.theme import AppTheme
 
@@ -115,14 +116,14 @@ class _ArchiveRow(QFrame):
             QFrame#archiveRow {{
                 background: {c['bg_card']};
                 border: 1px solid {c['border']};
-                border-radius: 8px;
+                border-radius: {tokens.radius('control')}px;
             }}
             QFrame#archiveRow:hover {{ border: 1px solid {c['accent']}; }}
         """)
         self._title.setStyleSheet(
             f"color: {c['text_primary']}; background: transparent;")
         self._origin.setStyleSheet(
-            f"color: {c['text_secondary']}; font-size: 11px;"
+            f"color: {c['text_secondary']}; {tokens.font_css(11)};"
             " background: transparent;")
         # 删除键常态收敛为次要文本色，悬停才转危险红：一排红色按钮会让
         # "恢复"这个主操作在视觉上被压过去
@@ -131,8 +132,8 @@ class _ArchiveRow(QFrame):
                 background: transparent;
                 color: {c['text_secondary']};
                 border: 1px solid transparent;
-                border-radius: {AppConfig.UI_RADIUS_CONTROL}px;
-                padding: {AppConfig.UI_PAD_SECONDARY};
+                border-radius: {tokens.radius('control')}px;
+                {tokens.pad_preset(AppConfig.UI_PAD_SECONDARY)};
             }}
             QPushButton#archiveDelete:hover {{
                 color: {c['danger']};
@@ -188,10 +189,7 @@ class ArchiveDialog(QDialog):
 
         self._stats_label = QLabel()
         root = QVBoxLayout(self)
-        root.setContentsMargins(AppConfig.UI_DIALOG_MARGIN_H,
-                                AppConfig.UI_DIALOG_MARGIN_V,
-                                AppConfig.UI_DIALOG_MARGIN_H,
-                                AppConfig.UI_DIALOG_MARGIN_V - 2)
+        root.setContentsMargins(*tokens.dialog_margins(bottom_trim=2))
         root.setSpacing(8)
         root.addWidget(self._stats_label)
 
@@ -349,7 +347,7 @@ class ArchiveDialog(QDialog):
             return
         self._empty_label.setStyleSheet(
             f"color: {AppTheme.colors()['text_disabled']};"
-            " font-size: 12px; padding: 24px;")
+            f" {tokens.font_css(12)}; {tokens.pad_all(24)};")
 
     def reapply_theme(self) -> None:
         c = AppTheme.colors()
@@ -360,8 +358,8 @@ class ArchiveDialog(QDialog):
                 background: {c['bg_card']};
                 color: {c['text_primary']};
                 border: 1px solid {c['border']};
-                border-radius: {AppConfig.UI_RADIUS_CONTROL}px;
-                padding: {AppConfig.UI_PAD_SECONDARY};
+                border-radius: {tokens.radius('control')}px;
+                {tokens.pad_preset(AppConfig.UI_PAD_SECONDARY)};
             }}
             QPushButton:hover {{ background: {c['bg_hover']}; }}
             QPushButton#archiveClear {{
@@ -379,14 +377,14 @@ class ArchiveDialog(QDialog):
             }}
         """)
         self._stats_label.setStyleSheet(
-            f"color: {c['text_secondary']}; font-size: 12px;")
+            f"color: {c['text_secondary']}; {tokens.font_css(12)};")
         self._search_edit.setStyleSheet(f"""
             QLineEdit {{
                 background: {c['bg_card']};
                 color: {c['text_primary']};
                 border: 1px solid {c['border']};
-                border-radius: {AppConfig.UI_RADIUS_CONTROL}px;
-                padding: 6px 10px;
+                border-radius: {tokens.radius('control')}px;
+                {tokens.pad_preset(AppConfig.UI_PAD_INPUT)};
             }}
         """)
         self._apply_empty_style()
