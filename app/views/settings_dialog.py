@@ -123,6 +123,7 @@ class SettingsDialog(QDialog):
     """设置（模态，即时生效；由控制器持久持有）"""
 
     signal_theme_selected = Signal(str)       # light / dark / system
+    signal_ui_scale_selected = Signal(str)    # compact / normal / comfortable
     signal_language_selected = Signal(str)    # zh / en
     signal_skin_selected = Signal(str)        # 皮肤 key
     signal_animation_toggled = Signal(bool)   # 动画启用
@@ -165,6 +166,15 @@ class SettingsDialog(QDialog):
         self._theme_seg.changed.connect(self.signal_theme_selected.emit)
         self._t_theme, self._h_theme = self._sec_appearance.add_row(
             tr("主题"), tr("亮色 / 深色 / 跟随系统外观"), self._theme_seg)
+        # 界面密度：字号 / 间距 / 圆角一起缩放。此前全应用没有任何字号设置，
+        # 文字固定 10–13px——4K 屏 1:1 缩放下已到可读边缘。
+        self._scale_seg = SegmentedControl(
+            [("compact", tr("紧凑")), ("normal", tr("标准")),
+             ("comfortable", tr("宽松"))])
+        self._scale_seg.changed.connect(self.signal_ui_scale_selected.emit)
+        self._t_scale, self._h_scale = self._sec_appearance.add_row(
+            tr("界面密度"), tr("字号 / 间距 / 圆角一起缩放，立即生效"),
+            self._scale_seg)
         page.addWidget(self._sec_appearance)
 
         # 语言 / Language
@@ -319,7 +329,8 @@ class SettingsDialog(QDialog):
                         autostart: bool = False,
                         default_view: str = "pet",
                         pet_enabled: bool = True,
-                        global_hotkey: bool = False) -> None:
+                        global_hotkey: bool = False,
+                        ui_scale: str = "normal") -> None:
         """打开时把当前偏好刷进控件（偏好可能被桌宠菜单等其他入口改过）
 
         全程静音：这是"把真实状态刷进界面"，不是用户按了什么。此前
@@ -334,6 +345,7 @@ class SettingsDialog(QDialog):
         prev = [w.blockSignals(True) for w in silent]
         try:
             self._theme_seg.set_value(theme_mode)
+            self._scale_seg.set_value(ui_scale)
             self._lang_seg.set_value(lang)
             # 分段控件只在用户点击时发 changed，set_value 天然静音
             self._view_seg.set_value(default_view)
@@ -384,6 +396,11 @@ class SettingsDialog(QDialog):
         self._theme_seg.retexts(
             [("system", tr("跟随系统")), ("light", tr("浅色")),
              ("dark", tr("深色"))])
+        self._t_scale.setText(tr("界面密度"))
+        self._h_scale.setText(tr("字号 / 间距 / 圆角一起缩放，立即生效"))
+        self._scale_seg.retexts(
+            [("compact", tr("紧凑")), ("normal", tr("标准")),
+             ("comfortable", tr("宽松"))])
         self._sec_language.retexts(tr("语言 / Language"))
         self._t_lang.setText(tr("界面语言"))
         self._h_lang.setText(tr("切换后立即生效"))

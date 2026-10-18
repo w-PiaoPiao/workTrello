@@ -266,6 +266,18 @@ _zh_en: dict[str, str] = {
     "有备注": "Notes",
     "标签：{name}": "Label: {name}",
     "排序": "Sort",
+    # ── 界面密度（阶段 7）──
+    "界面密度": "Interface density",
+    # ── 空看板引导（阶段 6 改为可点击面板）──
+    "看板还是空的": "The board is empty",
+    "创建第一列开始整理，或从模板 / Trello 导入":
+        "Create your first list, or import from a template / Trello",
+    "创建第一列": "Create first list",
+    "字号 / 间距 / 圆角一起缩放，立即生效":
+        "Scales text, spacing and corner radius together — applies immediately",
+    "紧凑": "Compact",
+    "标准": "Standard",
+    "宽松": "Roomy",
     "番茄 ×{n}": "{n} pomodoros",
     "折叠 / 展开列表": "Collapse / expand list",
     "列表操作": "List actions",
@@ -406,9 +418,17 @@ _zh_en: dict[str, str] = {
         "{n} archived · {m} done this week",
     "暂无归档卡片：右键卡片即可归档":
         "Nothing archived yet — right-click a card to archive it",
+    # 空态第二行（阶段 6）：说明"接下来能做什么"，与上一行的结论分开
+    "归档后可以随时「恢复」回看板，或彻底删除":
+        "Archived cards can be restored to the board anytime, or deleted "
+        "for good",
+    "换个关键词，或清空搜索框":
+        "Try another keyword, or clear the search box",
     # ── 今日浮窗 ──
     "今日待办 · {n}": "Today · {n}",
     "今天没有待办": "Nothing due today",
+    "在卡片上点星标即可加入今日": "Star a card to add it to Today",
+    "换个关键词，或清空筛选框": "Try another keyword, or clear the filter",
     "今日已完成 {n} 张": "{n} done today",
     "移出今日": "Remove from Today",
     "加入今日": "Add to Today",
@@ -576,6 +596,36 @@ _zh_en: dict[str, str] = {
     "快捷键": "Keyboard Shortcuts",
     "快捷键…": "Keyboard Shortcuts…",
     "快捷键速查": "Shortcuts cheat sheet",
+    # ── 快捷键面板：分区与鼠标手势（阶段 6）──
+    "键盘": "Keyboard",
+    "全局": "Global",
+    "卡片上（先点一下卡片）": "On a card (click one first)",
+    "卡片对话框": "Card dialog",
+    "鼠标与手势": "Mouse & gestures",
+    "按 ? 随时呼出本面板": "Press ? to open this panel anytime",
+    "按该标签过滤全板": "Filter the whole board by that label",
+    "横向滚动看板（列内仍纵向滚卡片）":
+        "Scroll the board sideways (columns still scroll vertically)",
+    "直接归档 / 加入今日": "Archive / add to Today directly",
+    "每个文件建一张卡并挂为附件": "One card per file, attached to it",
+    "重命名列表": "Rename the list",
+    "搬走整列": "Move a whole list",
+    "搬动整个窗口": "Move the whole window",
+    "落到折叠的列并自动展开": "Drop onto a collapsed list — it expands",
+    "删除卡片（✕ 在右上角）": "Delete a card (✕ appears top-right)",
+    "预览备注；点徽章固定不关": "Preview notes; click the badge to pin",
+    "多选卡片；拖其中一张 = 整组搬":
+        "Multi-select cards; drag one to move the group",
+    "点卡片左缘色条": "Click the color bar on a card's left edge",
+    "空白处 / 工具栏滚滚轮": "Wheel over empty space / the toolbar",
+    "拖卡片到工具栏按钮": "Drag a card onto a toolbar button",
+    "从系统拖文件进列表": "Drag files in from the system",
+    "双击列标题": "Double-click a list title",
+    "拖列头 / 列内空白": "Drag the list header / empty area",
+    "拖看板空白处": "Drag empty board space",
+    "拖卡片到折叠列上": "Drag a card onto a collapsed list",
+    "悬停卡片": "Hover a card",
+    "悬停「有备注」徽章": "Hover the notes badge",
     "重做": "Redo",
     "没有可重做的操作": "Nothing to redo",
     "已重做": "Redone",

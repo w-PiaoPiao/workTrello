@@ -76,6 +76,29 @@ class AppConfig:
     KEY_AUTOSTART = "app/autostart"
     KEY_DEFAULT_VIEW = "window/default_view"
     KEY_PET_ENABLED = "window/pet_enabled"
+    KEY_UI_SCALE = "ui/scale"
+
+    # ── 界面密度（字号 / 间距 / 圆角统一缩放）──────────────────
+    # 此前全应用没有任何字号或密度设置，界面文字固定 10–13px 硬编码在 65 处。
+    # 4K/5K 屏 1:1 缩放下 10–11px 已到可读边缘，低视力用户除了改系统缩放
+    # （而固定像素布局对系统缩放容忍度差）别无他法。
+    UI_SCALES = ("compact", "normal", "comfortable")
+
+    @classmethod
+    def get_ui_scale(cls) -> str:
+        """界面密度档位；非法值回退 normal
+
+        与 get_theme_mode / get_language 同一白名单范式：偏好被改坏时回退到
+        中间档，而不是让界面以一个界面上选不出来的状态呈现。
+        """
+        val = str(_settings().value(cls.KEY_UI_SCALE, "normal") or "")
+        return val if val in cls.UI_SCALES else "normal"
+
+    @classmethod
+    def save_ui_scale(cls, scale: str) -> None:
+        if scale not in cls.UI_SCALES:
+            return
+        _settings().setValue(cls.KEY_UI_SCALE, scale)
 
     @classmethod
     def get_expanded_size(cls):
@@ -353,7 +376,7 @@ class AppConfig:
     BOARD_MIN_HEIGHT = 480
     BOARD_MAX_WIDTH = 1920
     BOARD_MAX_HEIGHT = 1200
-    LIST_WIDTH = 272            # 单个看板列表宽度
+    LIST_WIDTH = 272            # 单个看板列表宽度（基准值，用时经 tokens.size 缩放）
     ANIMATION_MS = 240          # 折叠/展开动画时长
     SCREEN_MARGIN = 20
     RESIZE_MARGIN = 6           # Windows 边缘拖拽缩放的命中宽度（像素）
@@ -623,6 +646,10 @@ class AppConfig:
     }
 
     # ── 列表（Trello 列）配色点缀 ───────────────────────────
+    # 已停用：列头原本按 `crc32(list_id) % len(LIST_ACCENTS)` 取一个色点，
+    # 跨进程稳定但**没有任何含义**——用户会把它读成状态，而删掉一列再新建
+    # 同名列就会换色。一个稳定的假信号比没有信号更糟。列表相关的视觉区分
+    # 改由标题与计数徽章承担。保留常量仅为兼容旧数据/外部引用。
     LIST_ACCENTS = ["#2F6BFF", "#1FA971", "#F5A623", "#E5484D",
                     "#8B5CF6", "#0EA5A5", "#EC4899"]
 

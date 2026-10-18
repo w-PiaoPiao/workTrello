@@ -115,16 +115,6 @@ def _clear_layout_recursive(layout) -> None:
             w.deleteLater()
 
 
-def _list_accent(list_id: str) -> str:
-    """按列 id 取点缀色
-
-    不能用内置 hash()：Python 字符串 hash 每进程随机化（同一 id 三次运行
-    可得到不同结果），取模后列表色点每次重启都会换色。crc32 跨进程稳定。
-    """
-    accents = AppConfig.LIST_ACCENTS
-    return accents[zlib.crc32(list_id.encode("utf-8")) % len(accents)]
-
-
 def _set_prop(widget: QWidget, name: str, value) -> None:
     """设置动态属性并在值变化时重刷该控件样式
 
@@ -162,14 +152,16 @@ WORKDIR_BADGE_TEXT = "工作目录"
 ATTACH_BADGE_TEXT = "附件"
 
 
-@lru_cache(maxsize=4)
-def _board_qss(mode: str) -> str:
-    """看板整块样式表（按主题模式缓存）
+@lru_cache(maxsize=8)
+def _board_qss(mode: str, scale: str = "normal") -> str:
+    """看板整块样式表（按主题模式 + 界面密度缓存）
 
     整块只设在 BoardView 一个控件上。此前逐列/逐卡各自 setStyleSheet，
     嵌套设置会让同一批子控件被反复 re-polish：三层级联实测 300 张卡片
     主题切换 285ms，合并为单次设置后只剩一遍 polish。
     配色随主题变，故按 mode 缓存字符串，避免每次切换重新拼接。
+    密度档位（scale）也必须进缓存键：QSS 里的字号/间距/圆角都是生成时
+    焊死的数值，只按 mode 缓存会让切档后仍拿到旧样式表。
     """
     c = AppConfig.DARK_COLORS if mode == "dark" else AppConfig.COLORS
     # 兜底规则先给"药丸"外形：meta_items 里若出现映射表之外的 tone
@@ -232,7 +224,7 @@ def _board_qss(mode: str) -> str:
         QPushButton#boardThemeBtn {{
             background: {c['glass']};
             border: none;
-            border-radius: {tokens.circle_radius(34)}px;
+            border-radius: {tokens.circle_radius(tokens.size(34))}px;
             color: {c['text_primary']};
         }}
         QPushButton#boardThemeBtn:hover {{
@@ -247,7 +239,7 @@ def _board_qss(mode: str) -> str:
         QPushButton#boardCollapseBtn {{
             background: {c['glass']};
             border: none;
-            border-radius: {tokens.circle_radius(34)}px;
+            border-radius: {tokens.circle_radius(tokens.size(34))}px;
             font-weight: bold;
             color: {c['text_primary']};
         }}
@@ -337,7 +329,39 @@ def _board_qss(mode: str) -> str:
             color: {c['accent']};
             border: none;
         }}
-        /* 空看板引导叠在蓝紫渐变上：中性灰在渐变里几乎看不见 */
+        /* 空看板引导面板：说明 + 可直接点的创建入口。
+           此前是一句不可点击的文字，且要按工具栏收纳状态改写文案。 */
+        QFrame#emptyBoardPanel {{
+            background: {c['glass_hover']};
+            border: 1px solid {c['border']};
+            {tokens.radius_css('panel')};
+        }}
+        QLabel#emptyBoardTitle {{
+            {tokens.font_css(AppConfig.UI_FONT_TITLE)};
+            font-weight: bold;
+            color: {c['text_primary']};
+            background: transparent;
+        }}
+        QLabel#emptyBoardSub {{
+            {tokens.font_css(AppConfig.UI_FONT_BODY)};
+            color: {c['text_secondary']};
+            background: transparent;
+        }}
+        QPushButton#emptyCtaBtn {{
+            background: {c['accent']};
+            color: {c['accent_on']};
+            border: 1.5px solid transparent;
+            {tokens.radius_css('control')};
+            {tokens.pad(7, 22)};
+            {tokens.font_css(AppConfig.UI_FONT_LABEL)};
+            font-weight: bold;
+        }}
+        QPushButton#emptyCtaBtn:hover {{ background: {c['accent_hover']}; }}
+        QPushButton#emptyCtaBtn:pressed {{ background: {c['accent_hover']}; }}
+        QPushButton#emptyCtaBtn:focus {{
+            border: 1.5px solid {c['focus_ring']};
+        }}
+        /* 旧的单行提示样式保留：外部仍有引用时不会变成裸文字 */
         QLabel#emptyBoardHint {{
             color: {c['hint_on_board']};
             {tokens.font_css(AppConfig.UI_FONT_TITLE)};
@@ -1701,13 +1725,10 @@ class ListHeader(QWidget):
         layout.setContentsMargins(12, 8, 10, 6)
         layout.setSpacing(6)
 
-        accent = _list_accent(board_list.id)
-
-        dot = QLabel()
-        dot.setFixedSize(8, 8)
-        dot.setStyleSheet(
-            f"background: {accent}; border-radius: {tokens.circle_radius(8)}px;")
-        layout.addWidget(dot)
+        # 列头色点已移除：它取的是 `crc32(list_id) % 7`——跨进程稳定，
+        # 但**没有任何含义**。用户会合理地把它读成状态（蓝=待办/橙=进行中/
+        # 绿=完成），而实际上删掉一列再新建同名列就会换色。一个稳定的假
+        # 信号比没有信号更糟：它会被当真。列头的信息量由标题与计数徽章承担。
 
         # 资金分配监视泳道徽记（启用监视的列才显示）
         self._fund_mark = QLabel("💰")
@@ -2153,7 +2174,12 @@ class _ElidedButton(QPushButton):
         self._max_width = max_width
         self.setSizePolicy(QSizePolicy.Policy.Maximum,
                            QSizePolicy.Policy.Fixed)
-        self.setMinimumWidth(88)
+        # 最小宽 88 → 140。看板名是"我在哪块板"的唯一信号，而它是工具栏里
+        # 唯一的弹性项（sizePolicy Maximum），空间一紧就先被压成「我的…」。
+        # 88px 只够 2 个汉字 + 省略号，等于把这块信息让给了统计数字。
+        # 抬到 140px（约 6 个汉字）后，空间不足时改由收纳逻辑先隐藏统计 /
+        # 日历 / 导出等冗余入口——那些在别处还有出口。
+        self.setMinimumWidth(140)
 
     def sizeHint(self) -> QSize:
         fm = self.fontMetrics()
@@ -2576,7 +2602,7 @@ class ListColumn(QFrame):
 
     def minimumSizeHint(self):
         """下界统一为折叠高度：展开态若钉死 200，短列就会留出空白"""
-        return QSize(AppConfig.LIST_WIDTH, self.COLLAPSED_HEIGHT)
+        return QSize(tokens.size(AppConfig.LIST_WIDTH), self.COLLAPSED_HEIGHT)
 
     def sizeHint(self):
         """展开态返回内容自然高度，折叠态仅剩标题栏
@@ -2589,7 +2615,7 @@ class ListColumn(QFrame):
         父级高度，父布局在窗口展开动画中会缓存旧值，长列会停在动画期的
         矮高度上再也不长（实测停在 408px 而非 568px）。
         """
-        return QSize(AppConfig.LIST_WIDTH,
+        return QSize(tokens.size(AppConfig.LIST_WIDTH),
                      self.COLLAPSED_HEIGHT if self._collapsed
                      else self._content_height())
 
@@ -3300,7 +3326,8 @@ class BoardView(QWidget):
 
         # ── 工具栏 ────────────────────────────────────────
         self._toolbar = QWidget()
-        self._toolbar.setFixedHeight(56)
+        # 高度随密度缩放：写死 56px 时放大字号会把内容裁掉
+        self._toolbar.setFixedHeight(tokens.size(56))
         # 右 margin：Windows 分支会让窗口控制键贴右缘，此处改为 0 由控件区补
         right_margin = 0 if AppConfig.IS_WINDOWS else 14
         self._toolbar_layout = QHBoxLayout(self._toolbar)
@@ -3375,13 +3402,15 @@ class BoardView(QWidget):
 
         self._add_list_btn = AddCardButton(tr("+ 添加列表"),
                                            variant="toolbar")
-        self._add_list_btn.setFixedWidth(96)
+        # 不再 setFixedWidth：固定宽在中英文下侥幸够用，放大字号必裁。
+        # 改由内容 + 最小宽决定，工具栏收纳逻辑会按实宽判定。
+        self._add_list_btn.setMinimumWidth(tokens.size(96))
         self._add_list_btn.clicked.connect(self.signal_list_add.emit)
         self._toolbar_layout.addWidget(self._add_list_btn)
 
         # 批量添加（每行一张，支持速记）：此前仅 macOS 菜单栏可达
         self._bulk_add_btn = AddCardButton(tr("+ 批量"), variant="toolbar")
-        self._bulk_add_btn.setFixedWidth(72)
+        self._bulk_add_btn.setMinimumWidth(tokens.size(72))
         self._bulk_add_btn.setCursor(Qt.PointingHandCursor)
         self._bulk_add_btn.setToolTip(
             tr("批量添加卡片：每行一张，支持速记语法"))
@@ -3399,7 +3428,7 @@ class BoardView(QWidget):
 
         self._calendar_btn = _CalendarIconButton()
         self._calendar_btn.setObjectName("boardThemeBtn")   # 同款圆形玻璃底
-        self._calendar_btn.setFixedSize(34, 34)
+        self._calendar_btn.setFixedSize(*tokens.control_size(34))
         self._calendar_btn.setCursor(Qt.PointingHandCursor)
         self._calendar_btn.setToolTip(tr("按截止日期在月历中查看与拖动卡片"))
         # 自绘图标按钮没有文字，读屏只会报 "button"——accessibleName 是
@@ -3419,7 +3448,7 @@ class BoardView(QWidget):
         self._settings_btn.setObjectName("boardThemeBtn")   # 同款圆形玻璃底
         # 与日历/主题键同尺寸：不设的话 `border-radius: 17px` 画出来是圆角
         # 矩形而不是圆，且比左右邻居宽——工具栏上最扎眼的一处不一致
-        self._settings_btn.setFixedSize(34, 34)
+        self._settings_btn.setFixedSize(*tokens.control_size(34))
         self._settings_btn.setCursor(Qt.PointingHandCursor)
         self._settings_btn.setToolTip(tr("设置"))
         self._settings_btn.setAccessibleName(tr("设置"))
@@ -3429,7 +3458,7 @@ class BoardView(QWidget):
         self._theme_btn = _ThemeToggleButton()
         self._theme_btn.setObjectName("boardThemeBtn")
         self._theme_btn.setCursor(Qt.PointingHandCursor)
-        self._theme_btn.setFixedSize(34, 34)
+        self._theme_btn.setFixedSize(*tokens.control_size(34))
         self._theme_btn.setToolTip(tr("切换浅色 / 深色主题"))
         self._theme_btn.setAccessibleName(tr("切换浅色 / 深色主题"))
         self._theme_btn.clicked.connect(self._on_theme_clicked)
@@ -3438,7 +3467,7 @@ class BoardView(QWidget):
         self._collapse_btn = QPushButton("－")
         self._collapse_btn.setObjectName("boardCollapseBtn")
         self._collapse_btn.setCursor(Qt.PointingHandCursor)
-        self._collapse_btn.setFixedSize(34, 34)
+        self._collapse_btn.setFixedSize(*tokens.control_size(34))
         self._collapse_btn.setToolTip(tr("折叠为桌宠"))
         self._collapse_btn.setAccessibleName(tr("折叠为桌宠"))
         self._collapse_btn.clicked.connect(self.signal_collapse_clicked.emit)
@@ -3491,8 +3520,8 @@ class BoardView(QWidget):
                                 "archive", "add_list", "today", "title")
         # 搜索框的弹性范围：原始最小宽 → 硬下限。窄到下限仍放不下时，
         # 「今日」开关已被收进「»」菜单，工具栏不可能再重叠。
-        self._search_min_w = self._search_edit.minimumWidth()
-        self._search_min_floor = 72
+        self._search_min_w = tokens.size(120)
+        self._search_min_floor = tokens.size(72)
         self._toolbar_items: list[tuple[str, QWidget]] = [
             ("title", self._title_btn),
             ("stats", self._stats_label),
@@ -3538,13 +3567,38 @@ class BoardView(QWidget):
         self._list_drop_indicator.setObjectName("dropIndicator")
         self._list_drop_indicator.hide()
 
-        # 空看板引导：无任何列表时覆盖在列表区上方居中，可穿透鼠标
-        self._empty_hint = QLabel(
-            tr("看板还是空的\n点击右上角「+ 添加列表」创建第一列"), self)
-        self._empty_hint.setObjectName("emptyBoardHint")
-        self._empty_hint.setAlignment(Qt.AlignCenter)
-        self._empty_hint.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self._empty_hint.hide()
+        # 空看板引导：无任何列表时浮在列表区上方居中
+        #
+        # 此前是一句**不可点击**的居中文字（`WA_TransparentForMouseEvents`），
+        # 而且文案要按工具栏收纳状态改写——「+ 添加列表」被折进「»」菜单时
+        # 得改说"点右上角「»」→「+ 添加列表」"。让新手去角落里找按钮，
+        # 还要跟着布局状态变措辞，是把设计的难题转嫁给用户。
+        # 现在给一块真正的面板：说明 + 可直接点的创建入口。
+        self._empty_panel = QFrame(self)
+        self._empty_panel.setObjectName("emptyBoardPanel")
+        panel_lay = QVBoxLayout(self._empty_panel)
+        panel_lay.setContentsMargins(*tokens.dialog_margins(bottom_trim=2))
+        panel_lay.setSpacing(tokens.space(8))
+        self._empty_title = QLabel(tr("看板还是空的"))
+        self._empty_title.setObjectName("emptyBoardTitle")
+        self._empty_title.setAlignment(Qt.AlignCenter)
+        self._empty_sub = QLabel(
+            tr("创建第一列开始整理，或从模板 / Trello 导入"))
+        self._empty_sub.setObjectName("emptyBoardSub")
+        self._empty_sub.setAlignment(Qt.AlignCenter)
+        self._empty_sub.setWordWrap(True)
+        # 给面板一个下限宽，否则说明文字会折成"…Trello / 导入"这种孤字换行
+        self._empty_sub.setMinimumWidth(tokens.size(300))
+        self._empty_cta = QPushButton(tr("创建第一列"))
+        self._empty_cta.setObjectName("emptyCtaBtn")
+        self._empty_cta.setCursor(Qt.PointingHandCursor)
+        self._empty_cta.clicked.connect(self.signal_list_add.emit)
+        panel_lay.addWidget(self._empty_title)
+        panel_lay.addWidget(self._empty_sub)
+        panel_lay.addWidget(self._empty_cta, 0, Qt.AlignHCenter)
+        self._empty_panel.hide()
+        # 兼容旧引用：仍有若干处按名字取这个控件做几何/显隐
+        self._empty_hint = self._empty_panel
 
         # 看板内轻提示（删除/撤销等操作反馈，见 toast.py）
         self._toast = Toast(self)
@@ -3694,7 +3748,7 @@ class BoardView(QWidget):
         配色改为看板级统一下发后，整棵子树只 polish 一遍。
         """
         # 1) 整块配色一次设完（字符串按主题模式缓存）
-        qss = _board_qss(AppTheme.mode())
+        qss = _board_qss(AppTheme.mode(), tokens.scale())
         if self.styleSheet() != qss:
             self.setStyleSheet(qss)
 
@@ -3744,8 +3798,9 @@ class BoardView(QWidget):
         lights = getattr(self, "_traffic_lights", None)
         if lights is not None:
             lights.reapply_texts()
-        self._empty_hint.setText(
-            tr("看板还是空的\n点击右上角「+ 添加列表」创建第一列"))
+        self._empty_title.setText(tr("看板还是空的"))
+        self._empty_sub.setText(tr("创建第一列开始整理，或从模板 / Trello 导入"))
+        self._empty_cta.setText(tr("创建第一列"))
         self._sync_overflow_menu()      # 「»」菜单项文案随语言刷新
         for col in self._columns:
             col.retexts()
@@ -4490,30 +4545,30 @@ class BoardView(QWidget):
             tr("{total} 张卡片 · 完成 {done}").format(total=total, done=done))
 
     def _update_empty_hint(self, lists: list[BoardList]) -> None:
-        """无任何列表时显示空看板引导（覆盖列表区，可穿透鼠标）
+        """无任何列表时显示空看板引导面板（居中，可交互）
 
-        窄窗下「+ 添加列表」可能已被收进「»」菜单——引导指向一个
-        看不见的按钮等于指错路，按收纳态切换文案。
+        面板自带「创建第一列」按钮，因此**不再需要**按工具栏收纳状态改写
+        文案——那套 hack（"+ 添加列表"被折进「»」菜单时改说"点右上角「»」"）
+        已随面板一起删掉：引导指向一个可能被收起来的按钮，本来就是设计在
+        跟布局约束打架的症状。
         """
         if lists:
-            self._empty_hint.hide()
-        else:
-            if "add_list" in self._overflow_hidden:
-                self._empty_hint.setText(
-                    tr("看板还是空的\n点击右上角「»」→「+ 添加列表」创建第一列"))
-            else:
-                self._empty_hint.setText(
-                    tr("看板还是空的\n点击右上角「+ 添加列表」创建第一列"))
-            self._empty_hint.setGeometry(self.rect())
-            self._empty_hint.show()
-            self._empty_hint.raise_()
+            self._empty_panel.hide()
+            return
+        self._empty_panel.adjustSize()
+        size = self._empty_panel.size()
+        self._empty_panel.move(
+            max(0, (self.width() - size.width()) // 2),
+            max(0, (self.height() - size.height()) // 2))
+        self._empty_panel.show()
+        self._empty_panel.raise_()
 
     def resizeEvent(self, event) -> None:
         """空状态引导与 toast 跟随窗口尺寸重定位；工具栏按宽度收纳"""
         super().resizeEvent(event)
         self._apply_toolbar_overflow()
-        if self._empty_hint.isVisible():
-            self._empty_hint.setGeometry(self.rect())
+        if self._empty_panel.isVisible():
+            self._update_empty_hint([])
         if self._toast.isVisible():
             # 复用 show_toast 的避让偏移：多选栏可见时 toast 停在栏上方，
             # 窗口尺寸变化不该把它甩回底部盖住按钮
@@ -4616,8 +4671,8 @@ class BoardView(QWidget):
             if key in self._overflow_order:
                 widget.setVisible(key not in hidden)
         self._sync_overflow_menu()
-        # 「+ 添加列表」收进菜单后，空看板引导要同步改指「»」入口
-        if self._empty_hint.isVisible():
+        # 面板自带创建入口，收纳状态不影响它；只在可见时重新居中
+        if self._empty_panel.isVisible():
             self._update_empty_hint([])
 
     def _sync_overflow_menu(self) -> None:

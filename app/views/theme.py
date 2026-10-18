@@ -13,7 +13,7 @@ import logging
 import re
 import weakref
 
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtGui import QColor, QFont, QPalette
 from PySide6.QtCore import QObject, Qt, Signal
 
 from app.config import AppConfig
@@ -162,7 +162,11 @@ class _Theme(QObject):
         self.apply()
 
     def apply(self) -> None:
-        """应用主题到 QApplication 并通知所有监听者"""
+        """应用主题（与界面密度）到 QApplication 并通知所有监听者
+
+        密度档位改变时也必须走这里：QSS 里的字号/间距/圆角都是生成时焊死的
+        数值，改档位等于要重拼整份样式表，没有别的通道。
+        """
         from PySide6.QtWidgets import QApplication
         app = QApplication.instance()
         if app is not None:
@@ -170,6 +174,18 @@ class _Theme(QObject):
             # 由系统调色板驱动，不设置会跟随系统深色、与浅色主题错乱
             app.setPalette(self._build_palette())
             app.setStyleSheet(self.global_qss())
+            # 基准字号：QSS 只指定字体族、不指定字号，于是没被逐条写死字号的
+            # 控件（菜单、tooltip、原生对话框内的控件）跟随应用默认字体——
+            # 不设的话密度档位对它们无效，界面会一半缩放一半不缩放。
+            #
+            # **只在真的变了时才 setFont**：改应用字体会让全进程的字体度量
+            # 缓存失效、所有控件重算布局。apply() 在主题切换 / 密度切换 /
+            # 语言切换 / 打开设置页时都会被调到，无条件 setFont 等于每次都在
+            # 触发一次全局重排——实测把全量测试从 37s 拖到 128s。
+            base = QFont(app.font())
+            base.setPixelSize(tokens.font(AppConfig.UI_FONT_BODY))
+            if app.font().pixelSize() != base.pixelSize():
+                app.setFont(base)
         self._sync_native_appearance()
         self._applied = True
         for cb in self._live_listeners():

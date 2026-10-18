@@ -253,6 +253,7 @@ class ArchiveDialog(QDialog):
         root.addLayout(foot)
 
         self._empty_label: QLabel | None = None
+        self._empty_hint: QLabel | None = None
         self._last_items: list | None = None
         self._last_weekly = 0
         AppTheme.register(self.reapply_theme)
@@ -321,15 +322,26 @@ class ArchiveDialog(QDialog):
                 w.setParent(None)
                 w.deleteLater()
         self._empty_label = None
+        self._empty_hint = None
 
         if not items:
+            # 空态两行：结论 + 下一步。此前只有一行结论，"怎么把卡片归档"
+            # 与"归档后还能不能拿回来"都得用户自己猜
             empty = QLabel(tr("没有匹配的归档卡片")
                            if total else
                            tr("暂无归档卡片：右键卡片即可归档"))
             empty.setAlignment(Qt.AlignCenter)
+            empty.setWordWrap(True)
+            hint = QLabel(tr("换个关键词，或清空搜索框")
+                          if total else
+                          tr("归档后可以随时「恢复」回看板，或彻底删除"))
+            hint.setAlignment(Qt.AlignCenter)
+            hint.setWordWrap(True)
             self._empty_label = empty
+            self._empty_hint = hint
             self._apply_empty_style()
             self._rows_layout.addWidget(empty)
+            self._rows_layout.addWidget(hint)
             self._clear_btn.setEnabled(bool(total))
             return
 
@@ -361,9 +373,14 @@ class ArchiveDialog(QDialog):
     def _apply_empty_style(self) -> None:
         if self._empty_label is None:
             return
+        c = AppTheme.colors()
         self._empty_label.setStyleSheet(
-            f"color: {AppTheme.colors()['text_disabled']};"
+            f"color: {c['text_disabled']};"
             f" {tokens.font_css(12)}; {tokens.pad_all(24)};")
+        if self._empty_hint is not None:
+            self._empty_hint.setStyleSheet(
+                f"color: {c['text_disabled']}; {tokens.font_css(11)};"
+                " background: transparent;")
 
     def reapply_theme(self) -> None:
         c = AppTheme.colors()

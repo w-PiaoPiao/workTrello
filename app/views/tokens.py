@@ -84,6 +84,21 @@ def space(px: int) -> int:
     return _scaled(px, 1)
 
 
+def size(px: int) -> int:
+    """控件尺寸（px）→ 当前密度下的尺寸
+
+    与 `space()` 分开是因为下限不同：间距可以细到 1px，控件尺寸不能——
+    一个 12px 的圆形按钮在任何档位下都点不中。下限 8px。
+    """
+    return _scaled(px, 8)
+
+
+def control_size(px: int) -> tuple[int, int]:
+    """正方形控件尺寸 → (w, h)，供 setFixedSize 用"""
+    s = size(px)
+    return s, s
+
+
 def pad(vertical: int, horizontal: int) -> str:
     """内边距 → QSS 片段，形如 `padding: 6px 10px`"""
     return f"padding: {space(vertical)}px {space(horizontal)}px"

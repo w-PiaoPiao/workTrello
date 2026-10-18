@@ -37,7 +37,10 @@ _MAX_POP_H = 392
 # 定高是按"内容行数"算出来的，chrome 高度必须一起算进去：少算过一次
 # （加了两行输入框却没调基数），浮窗底部把最后一条待办整个裁掉了
 _CHROME_H = 122
-_EMPTY_CHROME_H = 170
+# 空态总高 = 标题行 + 两行输入 + 空态两行（结论 + "接下来能做什么"）
+# + 内边距。空态提示从一行变两行时这里必须一起抬：定高是按内容算的，
+# 少算一笔就会把提示行裁掉（同 _CHROME_H 注释里踩过的坑）
+_EMPTY_CHROME_H = 210
 
 
 class _StarButton(QPushButton):
@@ -232,6 +235,7 @@ class TodayPopover(QWidget):
         self._items: list[tuple[BoardList, Card]] = []    # 缓存供主题切换后重建
         self._done_label: QLabel | None = None            # "今日已完成 N 张"回顾行
         self._empty_label: QLabel | None = None           # 空态行（主题切换需重刷）
+        self._empty_hint: QLabel | None = None            # 空态引导行（同上）
         self._done_count: int | None = None               # 回顾行数字（过滤后仍要显示）
         self._query = ""                                  # 标题/备注过滤词
         self._built = False
@@ -292,13 +296,21 @@ class TodayPopover(QWidget):
             self._apply_done_label_style()
 
         if not items:
-            empty = QLabel(tr("没有匹配的待办")
-                           if self._query else
-                           tr("今天没有待办"))
+            # 空态两行：结论 + 下一步能做什么。此前只有一行结论，用户看到
+            # "今天没有待办"却不知道**怎么**把卡片加进来（星标只出现在
+            # 卡片悬停/看板卡片上，不看提示很难自己发现）
+            filtering = bool(self._query)
+            empty = QLabel(tr("没有匹配的待办") if filtering
+                           else tr("今天没有待办"))
             empty.setAlignment(Qt.AlignCenter)
             self._empty_label = empty
+            hint = QLabel(tr("换个关键词，或清空筛选框") if filtering
+                          else tr("在卡片上点星标即可加入今日"))
+            hint.setAlignment(Qt.AlignCenter)
+            self._empty_hint = hint
             self._apply_empty_label_style()
             layout.addWidget(empty)
+            layout.addWidget(hint)
             if show_done:
                 layout.addWidget(done_label)
                 done_label.show()
@@ -311,6 +323,7 @@ class TodayPopover(QWidget):
 
         # 有数据路径：旧空态标签已随 current 一起销毁，引用清掉避免野指针
         self._empty_label = None
+        self._empty_hint = None
         for lst, card in items:
             row = reusable.pop(card.id, None)
             if row is None:
@@ -429,6 +442,10 @@ class TodayPopover(QWidget):
         self._empty_label.setStyleSheet(
             f"color: {c['text_disabled']}; {tokens.font_css(12)};"
             f" {tokens.pad_all(18)};")
+        if self._empty_hint is not None:
+            self._empty_hint.setStyleSheet(
+                f"color: {c['text_disabled']}; {tokens.font_css(11)};"
+                " background: transparent;")
 
     # ── 基础 UI ──────────────────────────────────────────
 

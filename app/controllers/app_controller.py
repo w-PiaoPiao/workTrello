@@ -14,7 +14,7 @@ import uuid
 from datetime import date, timedelta
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThreadPool, QTimer, QUrl, Signal
+from PySide6.QtCore import QObject, Qt, QThreadPool, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QAction,
     QDesktopServices,
@@ -1833,6 +1833,7 @@ class AppController(QObject):
         if self._settings_dialog is None:
             dlg = SettingsDialog(self._window)
             dlg.signal_theme_selected.connect(self._on_theme_pref_selected)
+            dlg.signal_ui_scale_selected.connect(self._on_ui_scale_selected)
             dlg.signal_language_selected.connect(self._on_language_changed)
             dlg.signal_skin_selected.connect(self._on_settings_skin)
             dlg.signal_animation_toggled.connect(
@@ -1856,6 +1857,37 @@ class AppController(QObject):
         self._settings_dialog.raise_()
         self._settings_dialog.activateWindow()
 
+    def _on_ui_scale_selected(self, scale: str) -> None:
+        """界面密度切换：落盘 + 重下样式表
+
+        QSS 里的字号/间距/圆角都是生成时焊死的数值，改档位等于重拼整份
+        样式表——没有别的通道，所以必须走 AppTheme.apply()。
+
+        **代价是实测出来的**：300 张卡（2242 个控件）下，`apply()` 里
+        `QApplication.setStyleSheet()` 一次要 665ms（board 自己那份 155ms；
+        基准字体 0.1ms、调色板 0ms，都不是瓶颈）。这是 Qt 重 polish 整棵树
+        的固有成本，没有更便宜的通道。
+
+        所以这里不假装它瞬时：先落盘（下次启动立刻是新档位），再把重下推到
+        下一轮事件循环，中间挂等待光标——用户看到的是"在切换"而不是一次
+        莫名其妙的卡顿。设置页的分段控件已经先把选中态画出来了，视觉上
+        不会觉得点击没生效。
+        """
+        AppConfig.save_ui_scale(scale)
+        app = QApplication.instance()
+        if app is None:
+            AppTheme.apply()
+            return
+        app.setOverrideCursor(Qt.WaitCursor)
+
+        def _reapply() -> None:
+            try:
+                AppTheme.apply()
+            finally:
+                app.restoreOverrideCursor()
+
+        QTimer.singleShot(0, _reapply)
+
     def sync_settings_dialog(self) -> None:
         """把当前偏好刷进设置对话框的控件
 
@@ -1876,7 +1908,8 @@ class AppController(QObject):
             autostart=self._autostart_state(),
             default_view=AppConfig.get_default_view(),
             pet_enabled=self._window.is_pet_enabled(),
-            global_hotkey=self._hotkeys.is_registered())
+            global_hotkey=self._hotkeys.is_registered(),
+            ui_scale=AppConfig.get_ui_scale())
 
     def _autostart_state(self) -> bool:
         """开机自启动的实际状态（以系统启动项为准，反向收编用户的外部改动）
