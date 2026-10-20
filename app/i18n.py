@@ -278,6 +278,11 @@ _zh_en: dict[str, str] = {
     "紧凑": "Compact",
     "标准": "Standard",
     "宽松": "Roomy",
+    # ── 视觉皮肤 ──
+    "视觉皮肤": "Visual skin",
+    "整套配色与造型（圆角 / 字重 / 徽章形态），深浅色在其之上生效":
+        "A whole palette plus shape (corners, weights, badge form); "
+        "light/dark applies on top",
     "番茄 ×{n}": "{n} pomodoros",
     "折叠 / 展开列表": "Collapse / expand list",
     "列表操作": "List actions",

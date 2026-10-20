@@ -961,7 +961,10 @@ class PetView(QWidget):
             qss = f"""
                 QLabel {{
                     background: {c['accent']};
-                    color: white;
+                    /* accent_on 而非写死白：深色系皮肤的 accent 是亮色，
+                       白字压上去不到 3:1（与 theme.primary_button_style
+                       同一条理由） */
+                    color: {c['accent_on']};
                     border-radius: {tokens.circle_radius(AppConfig.PET_BADGE_SIZE)}px;
                     {tokens.font_css(AppConfig.UI_FONT_LABEL)};
                     font-weight: bold;

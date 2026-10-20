@@ -557,6 +557,55 @@ class ControllerFeatureTest(unittest.TestCase):
         self.c._settings_dialog = None
         AppConfig.save_pet_skin("milk")
 
+    def test_settings_ui_skin_switch_persists_and_applies(self):
+        """设置里换「视觉皮肤」：落盘 + 即时生效 + 重开设置仍是同一处
+
+        视觉皮肤是本次新增的偏好（与桌宠皮肤分开）。三个失败面：
+        ① 只改界面不落盘 → 下次启动回到默认，用户以为设置没保存；
+        ② 只落盘不重下样式表 → 界面不变，看起来"点了没反应"；
+        ③ 重开设置不同步 → 单选组停在旧皮肤上（和偏好不一致）。
+        """
+        self._reset()
+        prev = AppConfig.get_ui_skin()
+        try:
+            self.c._on_settings_open()
+            dlg = self.c._settings_dialog
+            dlg._ui_skin_buttons["warm"].click()
+            _qapp.processEvents()          # 控制器把 apply 推到下一轮事件循环
+            self.assertEqual(AppConfig.get_ui_skin(), "warm")
+            self.assertEqual(AppTheme.skin(), "warm")
+            # 重开设置：单选态跟着偏好走
+            self.c._settings_dialog = None
+            self.c._on_settings_open()
+            dlg = self.c._settings_dialog
+            checked = {k for k, b in dlg._ui_skin_buttons.items()
+                       if b.isChecked()}
+            self.assertEqual(checked, {"warm"})
+            dlg.close()
+        finally:
+            AppConfig.save_ui_skin(prev)
+            AppTheme.set_skin(prev, touch_pref=False)
+            self.c._settings_dialog = None
+
+    def test_startup_restores_saved_skin(self):
+        """启动按偏好恢复皮肤：AppTheme 在控制器构造完成后就已就位"""
+        prev = AppConfig.get_ui_skin()
+        try:
+            AppConfig.save_ui_skin("frosted")
+            self.c._on_settings_open()      # 触发一次同步（不改偏好）
+            self.c._settings_dialog._ui_skin_buttons["terminal"].click()
+            _qapp.processEvents()
+            self.assertEqual(AppTheme.skin(), "terminal")
+            # 模拟重启读偏好：新控制器构造后主题应等于偏好
+            AppConfig.save_ui_skin("terminal")
+            AppTheme.set_skin(AppConfig.get_ui_skin(), touch_pref=False)
+            self.assertEqual(AppTheme.skin(), "terminal")
+            self.c._settings_dialog.close()
+        finally:
+            AppConfig.save_ui_skin(prev)
+            AppTheme.set_skin(prev, touch_pref=False)
+            self.c._settings_dialog = None
+
     def test_settings_reopen_after_skin_switch(self):
         """换肤 + 切置顶后关掉再开：设置页仍打得开且状态自洽
 

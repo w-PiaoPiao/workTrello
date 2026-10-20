@@ -533,7 +533,7 @@ class TodayPopover(QWidget):
                 border-radius: {tokens.circle_radius(22)}px;
                 {tokens.font_css(11)};
             }}
-            QPushButton:hover {{ background: {c['danger']}; color: white; }}
+            QPushButton:hover {{ background: {c['danger']}; color: {c['danger_on']}; }}
         """)
         self._add_edit.setStyleSheet(f"""
             QLineEdit {{

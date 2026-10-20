@@ -50,6 +50,35 @@ def to_qcolor(spec) -> QColor:
     return color
 
 
+# ── 皮肤：字体族与造型 ──────────────────────────────────────
+#
+# 中英混排时**等宽只上西文**：Menlo 没有中文字形，Qt 会回退到系统默认
+# 中文字体（PingFang），于是卡片标题仍是可读的中文、数字与英文是等宽。
+# 反过来给中文换成宋体只在"列头"一处做——整屏宋体长文本阅读会累。
+
+# 无衬线兜底按平台分开：macOS 上写 Microsoft YaHei 会让 Qt 做一轮
+# 不存在的字体族别名探测（启动慢且无意义），Windows 上反过来。
+if AppConfig.IS_MACOS:
+    _SANS = '"PingFang SC", "Hiragino Sans GB", sans-serif'
+else:
+    _SANS = '"Microsoft YaHei UI", "PingFang SC", sans-serif'
+_CJK_SERIF = '"Songti SC", "STSong", "SimSun", "Noto Serif CJK SC"'
+_MONO = '"Menlo", "SF Mono", "Consolas", "DejaVu Sans Mono", monospace'
+
+
+def font_family_str(mono: bool = False, serif: bool = False) -> str:
+    """字体族串（QSS 用）：等宽在前做西文、无衬线兜中文；serif 反之
+
+    用 font-family 列表而不是 QFont.setFamily：QSS 的多族列表由 Qt 自己
+    做 per-glyph 回退，混排时才不会出现"数字是等宽、中文掉到某种衬线体"。
+    """
+    if mono:
+        return f"{_MONO}, {_SANS}"
+    if serif:
+        return f"{_CJK_SERIF}, {_SANS}"
+    return _SANS
+
+
 def primary_button_style(c: dict) -> str:
     """主操作按钮（accent 实心）统一样式：卡片 / 快速添加 / 设置 / 快捷键
     对话框共用同一份 token 化规则，改圆角/内边距只动 config 一处
@@ -57,12 +86,13 @@ def primary_button_style(c: dict) -> str:
     文字色取 `accent_on` 而不是写死白色：深色主题的 accent 是亮蓝，
     白字压上去只有 3.23:1——每个对话框的主按钮都不达标。浅色仍是白色。
     """
+    sh = tokens.shape()
     return f"""
         QPushButton {{
             background: {c['accent']};
             color: {c['accent_on']};
             border: 1.5px solid transparent;
-            border-radius: {tokens.radius('control')}px;
+            border-radius: {sh['radii']['control']}px;
             {tokens.pad_preset(AppConfig.UI_PAD_PRIMARY)};
             font-weight: bold;
         }}
@@ -137,6 +167,11 @@ class _Theme(QObject):
         except Exception:
             pass
         self._listeners: list = []
+        # 视觉皮肤：管配色与造型（圆角/字重/徽章形态/骨架），与深浅色正交。
+        # 启动时由 AppController 用偏好恢复；tests 里常直接 set_mode，
+        # 所以这里也要给一个和偏好一致的初值，避免"读取时是偏好、渲染时是默认"。
+        self._skin = AppConfig.get_ui_skin()
+        self._skin_listeners: list = []
         # 是否已把调色板/QSS 下发到 QApplication。没有它时 set_mode 会被
         # "模式未变"短路掉，而首次启动恰好是"未变"（浅色→浅色），全局
         # 样式就永远不下发——此前靠 MainWindow 复制一份窗口级 QSS 兜底，
@@ -243,6 +278,17 @@ class _Theme(QObject):
             weakref.WeakMethod(callback) if inspect.ismethod(callback)
             else _StrongRef(callback))
 
+    def register_skin_listener(self, callback) -> None:
+        """注册皮肤切换回调（与主题回调同策略：绑定方法按弱引用持有）
+
+        单独一个回调列表而不是复用主题列表：皮肤切换要重做的比"重画"
+        多得多（列头字体、徽章重建、骨架重绘），而主题回调里不少只做
+        配色，两者混在一起会让每次深浅切换都跑一遍昂贵的重建。
+        """
+        self._skin_listeners.append(
+            weakref.WeakMethod(callback) if inspect.ismethod(callback)
+            else _StrongRef(callback))
+
     def unregister(self, callback) -> None:
         """摘除主题回调（按注册时的可调用对象比对；弱引用已覆盖常见场景）"""
         for ref in list(self._listeners):
@@ -254,9 +300,12 @@ class _Theme(QObject):
                 self._listeners.remove(ref)
 
     def _live_listeners(self) -> list:
+        return self._live(self._listeners)
+
+    def _live(self, refs: list) -> list:
         """仍然有效的回调；顺带剔除已失效项（宿主对象或 C++ 侧已销毁）"""
         alive, live = [], []
-        for ref in self._listeners:
+        for ref in refs:
             cb = ref()
             if cb is None:
                 continue
@@ -265,14 +314,51 @@ class _Theme(QObject):
                 continue    # 对话框已销毁：静默剔除，不再每次切换报错
             alive.append(ref)
             live.append(cb)
-        self._listeners = alive
+        refs[:] = alive
         return live
 
     # ── 取色 ──────────────────────────────────────────────
 
     def colors(self) -> dict:
+        """当前皮肤 + 当前深浅色的色表
+
+        皮肤表里每个 key 都有 light/dark 两份（键集合与 COLORS 一致，由
+        tests/test_ui_skins.py 守住）。`UI_SKINS` 缺键时退回主表，
+        避免偏好被改坏后整个界面起不来。
+        """
+        spec = AppConfig.UI_SKINS.get(self._skin) or {}
+        table = spec.get(self._mode)
+        if isinstance(table, dict) and table:
+            return table
         return AppConfig.DARK_COLORS if self._mode == "dark" \
             else AppConfig.COLORS
+
+    def skin(self) -> str:
+        return self._skin
+
+    def shape(self) -> dict:
+        """当前皮肤的造型参数（缺省补全，见 tokens.shape）"""
+        return tokens.shape(self._skin)
+
+    def set_skin(self, key: str, touch_pref: bool = True) -> None:
+        """切换视觉皮肤：落盘 → 重下样式表 → 通知皮肤监听者
+
+        `touch_pref=False` 供测试/预览临时切帧用（不污染真实偏好）。
+
+        深色/浅色**不变**，只是换一份色表与造型：所以这里走 apply() 而不是
+        set_mode()（后者遇到"模式未变"会短路，新色表就不起作用了）。
+        """
+        if key not in AppConfig.UI_SKINS:
+            return
+        self._skin = key
+        if touch_pref:
+            AppConfig.save_ui_skin(key)
+        self.apply()
+        for cb in self._live(self._skin_listeners):
+            try:
+                cb()
+            except Exception:
+                logger.exception("皮肤监听回调执行失败: %r", cb)
 
     def label_style(self, key: str) -> tuple[str, str]:
         """标签色 → (背景, 文字)
@@ -282,19 +368,24 @@ class _Theme(QObject):
         近黑色（选中态只剩填充一个载体），且六枚亮色块成了深色界面上最亮的
         物体——标签比卡片标题还抢眼，层级是反的。
         """
-        table = (AppConfig.DARK_LABEL_COLORS if self._mode == "dark"
-                 else AppConfig.LABEL_COLORS)
+        skin_table = AppConfig.SKIN_LABEL_COLORS.get(self._skin, {})
+        table = skin_table.get(self._mode)
+        if not table:
+            table = (AppConfig.DARK_LABEL_COLORS if self._mode == "dark"
+                     else AppConfig.LABEL_COLORS)
         return table.get(key, ("#E5E7EB", "#374151"))
 
     # ── 全局 QSS ──────────────────────────────────────────
 
     def global_qss(self) -> str:
         c = self.colors()
-        # macOS 只用系统中文字体，避免 Qt 为不存在的字体族做别名探测
-        if AppConfig.IS_MACOS:
-            font_family = '"PingFang SC"'
+        sh = self.shape()
+        # macOS 只用系统中文字体，避免 Qt 为不存在的字体族做别名探测；
+        # 等宽皮肤把等宽族放最前（西文走等宽，中文由 Qt 逐字回退）
+        if sh["font_mono"]:
+            font_family = font_family_str(mono=True)
         else:
-            font_family = '"Microsoft YaHei UI", "PingFang SC", sans-serif'
+            font_family = font_family_str()
         return f"""
             QWidget {{
                 font-family: {font_family};
@@ -304,13 +395,13 @@ class _Theme(QObject):
                 background: {c['bg_card']};
                 color: {c['text_primary']};
                 border: 1px solid {c['border']};
-                border-radius: {tokens.radius('chip')}px;
+                border-radius: {sh['radii']['chip']}px;
                 {tokens.pad(5, 8)};
             }}
             QLineEdit, QPlainTextEdit, QTextEdit {{
                 background: {c['bg_card']};
                 border: 1px solid {c['border']};
-                border-radius: {tokens.radius('control')}px;
+                border-radius: {sh['radii']['control']}px;
                 {tokens.pad_preset(AppConfig.UI_PAD_INPUT)};
                 selection-background-color: {c['accent']};
             }}
@@ -321,7 +412,7 @@ class _Theme(QObject):
                 background: {c['bg_card']};
                 color: {c['text_primary']};
                 border: 1px solid {c['border']};
-                border-radius: {tokens.radius('control')}px;
+                border-radius: {sh['radii']['control']}px;
                 {tokens.pad_preset(AppConfig.UI_PAD_INPUT_DENSE)};
                 selection-background-color: {c['accent']};
             }}
@@ -341,7 +432,7 @@ class _Theme(QObject):
                 background: {c['bg_card']};
                 color: {c['text_primary']};
                 border: 1px solid {c['border']};
-                border-radius: {tokens.radius('control')}px;
+                border-radius: {sh['radii']['control']}px;
                 {tokens.pad(5, 10)};
             }}
             QComboBox:focus {{ border: 1.5px solid {c['focus_ring']}; }}
@@ -353,7 +444,7 @@ class _Theme(QObject):
                 background: {c['bg_card']};
                 color: {c['text_primary']};
                 border: 1px solid {c['border']};
-                border-radius: {tokens.radius('chip')}px;
+                border-radius: {sh['radii']['chip']}px;
                 selection-background-color: {c['accent_soft']};
                 selection-color: {c['text_primary']};
                 outline: none;
@@ -366,7 +457,7 @@ class _Theme(QObject):
             QPushButton {{
                 background: {c['bg_card']};
                 border: 1px solid {c['border']};
-                border-radius: {tokens.radius('control')}px;
+                border-radius: {sh['radii']['control']}px;
                 {tokens.pad_preset(AppConfig.UI_PAD_SECONDARY)};
             }}
             QPushButton:hover {{ background: {c['bg_hover']}; }}
@@ -387,12 +478,12 @@ class _Theme(QObject):
             QMenu {{
                 background: {c['bg_card']};
                 border: 1px solid {c['border']};
-                border-radius: {tokens.radius('card')}px;
+                border-radius: {sh['radii']['card']}px;
                 padding: {tokens.space(6)}px;
             }}
             QMenu::item {{
                 {tokens.pad(7, 22)};
-                border-radius: {tokens.radius('chip')}px;
+                border-radius: {sh['radii']['chip']}px;
             }}
             QMenu::item:selected {{ background: {c['accent_soft']}; }}
             QMenu::separator {{

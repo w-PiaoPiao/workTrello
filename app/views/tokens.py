@@ -139,19 +139,68 @@ _RADIUS_NAMES = {
     "pill": AppConfig.UI_RADIUS_PILL,
 }
 
+# 皮肤造型缺省值：皮肤表里的 shape 只写"和基线不同"的键，其余走这里。
+# 单独抽出来是因为造型读取散布在 QSS 生成与自绘两处，缺省散落就会
+# 出现"看板方角、设置页圆角"的半套皮肤。
+_SKIN_SHAPE_DEFAULTS = {
+    "border_width": 1,
+    "card_weight": 500,
+    "list_weight": 700,
+    "title_weight": 700,
+    "title_letter_spacing": 0,
+    "badge_style": "pill",
+    "board_chrome": "plain",
+    "toolbar_button": "glass",
+    "add_button_dashed": True,
+    "hard_shadow": 0,
+    "check_style": "rounded",
+    "font_mono": False,
+    "font_list_serif": False,
+    "radii": {},
+}
 
-def radius(name: str) -> int:
-    """圆角 token 名 → 当前密度下的圆角（px）
+
+def _current_skin() -> str:
+    """当前皮肤（`AppConfig.get_ui_skin` 不存在时回退默认，同 scale() 范式）"""
+    getter = getattr(AppConfig, "get_ui_skin", None)
+    return getter() if callable(getter) else AppConfig.UI_SKIN_DEFAULT
+
+
+def shape(skin: str | None = None) -> dict:
+    """皮肤造型参数（缺省补全）
+
+    `skin=None` 取当前皮肤；未知 key 回落默认皮肤。传空串 `""` 时返回
+    **全部缺省值**（皮肤引入之前的造型：圆角全走 AppConfig、徽章药丸、
+    玻璃工具栏）——只有需要"基线渲染"的测试会这样调用。
+    """
+    key = _current_skin() if skin is None else skin
+    spec = AppConfig.UI_SKINS.get(key) if key else None
+    out = dict(_SKIN_SHAPE_DEFAULTS)
+    if spec:
+        out.update(spec.get("shape") or {})
+    radii = dict(_RADIUS_NAMES)
+    radii.update(out.get("radii") or {})
+    out["radii"] = radii
+    return out
+
+
+def radius(name: str, skin: str | None = None) -> int:
+    """圆角 token 名 → 当前密度与皮肤下的圆角（px）
 
     名称写错时回退 `control` 而不是抛异常：QSS 生成路径在构造期，
     一个拼写错误不该让整个界面起不来。
+
+    `skin` 缺省时用当前皮肤（`AppConfig.get_ui_skin()`）：绝大多数 QSS
+    生成点都在运行期，读偏好即可；只有需要"渲染非当前皮肤"的预览脚本
+    才显式传参，测试要基线时传 `""`。
     """
-    return _scaled(_RADIUS_NAMES.get(name, AppConfig.UI_RADIUS_CONTROL), 2)
+    table = shape(skin)["radii"]
+    return _scaled(table.get(name, table["control"]), 0)
 
 
-def radius_css(name: str) -> str:
+def radius_css(name: str, skin: str | None = None) -> str:
     """圆角 token 名 → QSS 片段，形如 `border-radius: 8px`"""
-    return f"border-radius: {radius(name)}px"
+    return f"border-radius: {radius(name, skin)}px"
 
 
 def circle_radius(size: int) -> int:

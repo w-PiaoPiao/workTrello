@@ -73,7 +73,7 @@ from app.views.notes_popover import (
     notes_popover_anchored_to,
     notes_popover_hovering,
 )
-from app.views.theme import AppTheme, to_qcolor
+from app.views.theme import AppTheme, font_family_str, to_qcolor
 from app.views.toast import Toast
 
 logger = logging.getLogger(__name__)
@@ -152,37 +152,116 @@ WORKDIR_BADGE_TEXT = "工作目录"
 ATTACH_BADGE_TEXT = "附件"
 
 
-@lru_cache(maxsize=8)
-def _board_qss(mode: str, scale: str = "normal") -> str:
-    """看板整块样式表（按主题模式 + 界面密度缓存）
+# ── 皮肤辅助：配色 / 造型 / 徽章形态 ────────────────────────────
+#
+# 皮肤（AppConfig.UI_SKINS）与深浅色正交：同一皮肤有 light/dark 两份色表，
+# 造型（圆角 / 描边宽 / 字重 / 徽章形态 / 骨架）每皮肤一份。下面几个函数
+# 是 board_view 里**唯一**的取值入口，QSS 与自绘都从这里拿，否则会出现
+# "样式表是方角、色条裁剪还是圆角"这类半套皮肤。
+
+def _skin_colors(mode: str, skin: str | None = None) -> dict:
+    """当前皮肤 + 深浅色的色表（缺皮肤/缺键时退回主表）"""
+    key = AppTheme.skin() if skin is None else skin
+    table = (AppConfig.UI_SKINS.get(key) or {}).get(mode)
+    if isinstance(table, dict) and table:
+        return table
+    return AppConfig.DARK_COLORS if mode == "dark" else AppConfig.COLORS
+
+
+def _shape(skin: str | None = None) -> dict:
+    return AppTheme.shape() if skin is None else tokens.shape(skin)
+
+
+def _list_font_family(sh: dict) -> str:
+    """列头字体族：衬线皮肤用宋体栈（只上列头，正文仍无衬线）"""
+    return font_family_str(mono=bool(sh.get("font_mono")),
+                           serif=bool(sh.get("font_list_serif")))
+
+
+# 徽章「行内文本」形态（等宽终端皮肤）的前缀符号：颜色已经承载语义，
+# 前缀只是让一排徽章在等宽字体下仍有视觉锚点（`!` 告警 / `~` 注意 /
+# `#` 归属 / `.` 中性）。取 ASCII 而不是 emoji：等宽与 emoji 混排会把
+# 行高撑乱，且部分平台缺字形。
+_BADGE_TEXT_PREFIX = {
+    "danger": "!", "warning": "~", "success": "+", "accent": "#",
+    "neutral": ".", "text_secondary": ".",
+}
+
+
+def badge_content(text: str, tone: str, sh: dict) -> str:
+    """徽章最终显示文本（按皮肤形态决定是否加行内前缀）
+
+    QSS 的 `::text` 伪元素在 Qt 里不生效，所以前缀只能落到标签文本上。
+    卡片内容指纹走 rebuild，切皮肤时由 BoardView 清指纹触发重建，
+    不会残留"切完皮肤前缀还在/不见"的半截状态。
+    """
+    if sh.get("badge_style") == "text":
+        return f"{_BADGE_TEXT_PREFIX.get(tone, '.')}{text}"
+    return text
+
+
+@lru_cache(maxsize=16)
+def _board_qss(mode: str, scale: str = "normal",
+               skin: str | None = None) -> str:
+    """看板整块样式表（按主题模式 + 界面密度 + 皮肤缓存）
 
     整块只设在 BoardView 一个控件上。此前逐列/逐卡各自 setStyleSheet，
     嵌套设置会让同一批子控件被反复 re-polish：三层级联实测 300 张卡片
     主题切换 285ms，合并为单次设置后只剩一遍 polish。
     配色随主题变，故按 mode 缓存字符串，避免每次切换重新拼接。
     密度档位（scale）也必须进缓存键：QSS 里的字号/间距/圆角都是生成时
-    焊死的数值，只按 mode 缓存会让切档后仍拿到旧样式表。
+    焊死的数值，只按 mode 缓存会让切档后仍拿到旧样式表。皮肤（skin）
+    同理——它决定色表、圆角阶梯与描边宽度，缓存键漏了它就会切皮肤不生效。
     """
-    c = AppConfig.DARK_COLORS if mode == "dark" else AppConfig.COLORS
-    # 兜底规则先给"药丸"外形：meta_items 里若出现映射表之外的 tone
-    # （此前 success 就是漏网的那个，徽章退化成一行裸文字、连内边距都没了），
-    # 至少形状还在，不会让信息行错位。
+    c = _skin_colors(mode, skin)
+    sh = _shape(skin)
+    R = sh["radii"]
+    bw = sh["border_width"]
+    # 徽章形态（皮肤决定）：pill 药丸 / outline 描边药丸 / bar 与 text 无底。
+    #
+    # 无底形态是**故意**不做成"色底药丸"的：现在的平感有一半来自"每张卡
+    # 一排等重的淡色药丸"。bar 用一根 2×10 的竖线当色标（自绘，见
+    # CardWidget.paintEvent），text 则完全靠等宽字形与前缀符号。
+    badge_style = sh.get("badge_style", "pill")
+    badge_radius = f'border-radius: {R["chip"]}px;'
+    if badge_style in ("bar", "text"):
+        # 无底：透明 + 不描边；竖线由 CardWidget.paintEvent 画
+        badge_radius = "border-radius: 0;"
+        badge_base = "QLabel#cardBadge { background: transparent; border: none; padding: 0; }"
+    elif badge_style == "outline":
+        badge_base = ('QLabel#cardBadge {\n'
+                      f'    background: {c["neutral_soft"]};\n'
+                      f'    color: {c["neutral_text"]};\n'
+                      f'    border: 1.6px solid {c["text_primary"]};\n'
+                      f'    {badge_radius}\n'
+                      f'    {tokens.pad(1, 5)};\n'
+                      f'    {tokens.font_css(AppConfig.UI_FONT_CAPTION)};\n'
+                      '}')
+    else:
+        # 兜底规则先给"药丸"外形：meta_items 里若出现映射表之外的 tone
+        # （此前 success 就是漏网的那个，徽章退化成一行裸文字、连内边距都没了），
+        # 至少形状还在，不会让信息行错位。
+        badge_base = ('QLabel#cardBadge {\n'
+                      f'    background: {c["neutral_soft"]};\n'
+                      f'    color: {c["neutral_text"]};\n'
+                      f'    {badge_radius}\n'
+                      f'    {tokens.pad(2, 6)};\n'
+                      f'    {tokens.font_css(AppConfig.UI_FONT_CAPTION)};\n'
+                      '}')
     badge_rules = "\n".join([
-        'QLabel#cardBadge {\n'
-        f'    background: {c["neutral_soft"]};\n'
-        f'    color: {c["neutral_text"]};\n'
-        f'    {tokens.radius_css("chip")};\n'
-        f'    {tokens.pad(2, 6)};\n'
-        f'    {tokens.font_css(AppConfig.UI_FONT_CAPTION)};\n'
-        '}',
+        badge_base,
         *(
             f'QLabel#cardBadge[tone="{tone}"] {{\n'
-            f'    background: {c[soft]};\n'
             f'    color: {c[text]};\n'
-            f'}}'
+            + ("" if badge_style in ("bar", "text") else
+               f'    background: {c[soft]};\n')
+            + '}'
             for tone, (soft, text) in _BADGE_TONE_COLORS.items()
         ),
     ])
+    # 列头字体（衬线皮肤）/ 添加按钮描边形态（虚线占位 vs 无框加号）
+    list_family = _list_font_family(sh)
+    dash = "dashed" if sh["add_button_dashed"] else "none"
     return f"""
         /* ── 工具条 ── */
         QLabel#boardTitle {{
@@ -197,7 +276,7 @@ def _board_qss(mode: str, scale: str = "normal") -> str:
             color: {c['text_primary']};
             background: transparent;
             border: none;
-            {tokens.radius_css('control')};
+            border-radius: {R['control']}px;
             {tokens.pad(3, 8)};
         }}
         QPushButton#boardTitleBtn:hover {{
@@ -206,7 +285,7 @@ def _board_qss(mode: str, scale: str = "normal") -> str:
         QFrame#selectionBar {{
             background: {c['glass']};
             border: 1px solid {c['border']};
-            {tokens.radius_css('panel')};
+            border-radius: {R['panel']}px;
         }}
         QLabel#selCount {{
             color: {c['text_primary']};
@@ -218,7 +297,7 @@ def _board_qss(mode: str, scale: str = "normal") -> str:
             {tokens.font_css(AppConfig.UI_FONT_LABEL)};
             color: {c['text_primary']};
             background: {c['glass']};
-            {tokens.radius_css('control')};
+            border-radius: {R['control']}px;
             {tokens.pad(3, 10)};
         }}
         QPushButton#boardThemeBtn {{
@@ -253,17 +332,21 @@ def _board_qss(mode: str, scale: str = "normal") -> str:
             border: 1.5px solid {c['focus_ring']};
         }}
         QPushButton#boardToolBtn {{
-            background: {c['glass']};
+            /* 皮肤决定工具栏按钮是"玻璃面"还是"描边按钮"：editorial /
+               terminal / brutal 用描边，warm / frosted 保留玻璃。玻璃底在
+               纸色板上会糊成一片，描边则在同一张纸上就能立住层级。 */
+            background: {c['glass'] if sh['toolbar_button'] == 'glass' else 'transparent'};
             /* transparent 而非 none：给 :focus 留出边框位，否则加焦点环时
                按钮会因多出 1.5px 边框而抖一下 */
-            border: 1.5px solid transparent;
-            border-radius: {AppConfig.UI_RADIUS_CONTROL}px;
+            border: 1.5px solid {c['border'] if sh['toolbar_button'] == 'outline' else 'transparent'};
+            border-radius: {R['control']}px;
             {tokens.pad(5, 10)};
             {tokens.font_css(AppConfig.UI_FONT_LABEL)};
+            font-weight: {700 if sh['toolbar_button'] == 'outline' else 400};
             color: {c['text_primary']};
         }}
         QPushButton#boardToolBtn:hover {{
-            background: {c['glass_hover']};
+            background: {c['glass_hover'] if sh['toolbar_button'] == 'glass' else c['mask_hover']};
         }}
         /* 按下态：此前只有 :hover，点归档/导出/今日/主题都没有按压反馈，
            按钮要等面板弹出来才"证明"点到了 */
@@ -291,7 +374,7 @@ def _board_qss(mode: str, scale: str = "normal") -> str:
         QLineEdit#boardSearch {{
             background: {c['glass']};
             border: 1px solid transparent;
-            border-radius: {AppConfig.UI_RADIUS_CONTROL}px;
+            border-radius: {R['control']}px;
             {tokens.pad_preset(AppConfig.UI_PAD_INPUT)};
             color: {c['text_primary']};
         }}
@@ -305,15 +388,15 @@ def _board_qss(mode: str, scale: str = "normal") -> str:
         QPushButton#addBoardBtn {{
             background: transparent;
             color: {c['text_secondary']};
-            border: 1.5px dashed {c['border']};
-            border-radius: {AppConfig.UI_RADIUS_CONTROL}px;
+            border: 1.5px {dash} {c['border']};
+            border-radius: {R['control']}px;
             {tokens.pad_all(7)};
             {tokens.font_css(AppConfig.UI_FONT_LABEL)};
         }}
         QPushButton#addBoardBtn:hover {{
             background: {c['accent_soft']};
             color: {c['accent']};
-            border: 1.5px dashed {c['accent']};
+            border: 1.5px {dash} {c['accent']};
         }}
         /* 工具栏「+ 添加列表」：同排全是实心玻璃按钮，虚线版在渐变背景上
            会被读成"禁用"（它正下方的空看板引导又指着它） */
@@ -321,7 +404,7 @@ def _board_qss(mode: str, scale: str = "normal") -> str:
             background: {c['glass']};
             color: {c['text_primary']};
             border: none;
-            border-radius: {AppConfig.UI_RADIUS_CONTROL}px;
+            border-radius: {R['control']}px;
             {tokens.pad(5, 10)};
         }}
         QPushButton#addBoardBtn[variant="toolbar"]:hover {{
@@ -334,7 +417,7 @@ def _board_qss(mode: str, scale: str = "normal") -> str:
         QFrame#emptyBoardPanel {{
             background: {c['glass_hover']};
             border: 1px solid {c['border']};
-            {tokens.radius_css('panel')};
+            border-radius: {R['panel']}px;
         }}
         QLabel#emptyBoardTitle {{
             {tokens.font_css(AppConfig.UI_FONT_TITLE)};
@@ -351,7 +434,7 @@ def _board_qss(mode: str, scale: str = "normal") -> str:
             background: {c['accent']};
             color: {c['accent_on']};
             border: 1.5px solid transparent;
-            {tokens.radius_css('control')};
+            border-radius: {R['control']}px;
             {tokens.pad(7, 22)};
             {tokens.font_css(AppConfig.UI_FONT_LABEL)};
             font-weight: bold;
@@ -380,7 +463,7 @@ def _board_qss(mode: str, scale: str = "normal") -> str:
         QFrame#listColumn {{
             background: {c['bg_panel']};
             border: 1px solid {c['border']};
-            {tokens.radius_css('shell')};
+            border-radius: {R['shell']}px;
         }}
         QFrame#listColumn[drop="true"] {{
             border: 2px solid {c['accent']};
@@ -389,11 +472,15 @@ def _board_qss(mode: str, scale: str = "normal") -> str:
            （1.5px），所以写 2px 还是 6px 渲染完全一致，取最近的 chip 档 */
         QFrame#dropIndicator {{
             background: {c['accent']};
-            {tokens.radius_css('chip')};
+            border-radius: {R['chip']}px;
         }}
         QLabel#listTitle {{
+            font-family: {list_family};
             {tokens.font_css(AppConfig.UI_FONT_TITLE)};
-            font-weight: bold;
+            /* 皮肤字重：瑞士排版靠"列头极重 + 标题中等"的排版反差立层级，
+               宋体列头则不能上 800（笔画会糊成一块），所以走皮肤配置 */
+            font-weight: {sh['list_weight']};
+            {chr(10) + "            letter-spacing: " + str(sh['title_letter_spacing']) + "px;" if sh['title_letter_spacing'] else ""}
             color: {c['text_primary']};
             background: transparent;
         }}
@@ -401,7 +488,7 @@ def _board_qss(mode: str, scale: str = "normal") -> str:
             color: {c['text_secondary']};
             {tokens.font_css(AppConfig.UI_FONT_CAPTION)};
             background: {c['mask']};
-            border-radius: {AppConfig.UI_RADIUS_CHIP}px;
+            border-radius: {R['chip']}px;
             {tokens.pad(1, 7)};
         }}
         QLabel#columnHint {{
@@ -416,7 +503,7 @@ def _board_qss(mode: str, scale: str = "normal") -> str:
             background: transparent;
             color: {c['text_secondary']};
             border: none;
-            {tokens.radius_css('panel')};
+            border-radius: {R['panel']}px;
             {tokens.font_css(AppConfig.UI_FONT_BODY)};
             padding: 0;
         }}
@@ -437,14 +524,14 @@ def _board_qss(mode: str, scale: str = "normal") -> str:
             font-weight: bold;
             color: {c['text_primary']};
             padding: 0 {tokens.space(4)}px;
-            {tokens.radius_css('chip')};
+            border-radius: {R['chip']}px;
         }}
 
         /* ── 卡片 ── */
         QFrame#cardFrame {{
             background: {c['bg_card']};
             border: 1px solid {c['border']};
-            {tokens.radius_css('card')};
+            border-radius: {R['card']}px;
         }}
         QFrame#cardFrame:hover {{
             border: 1px solid {c['accent']};
@@ -455,7 +542,7 @@ def _board_qss(mode: str, scale: str = "normal") -> str:
         }}
         QLabel#cardTitle {{
             {tokens.font_css(AppConfig.UI_FONT_BODY)};
-            font-weight: 500;
+            font-weight: {sh['card_weight']};
             color: {c['text_primary']};
             background: transparent;
             border: none;
@@ -475,7 +562,7 @@ def _board_qss(mode: str, scale: str = "normal") -> str:
         }}
         QPushButton#cardDeleteBtn:hover {{
             background: {c['danger']};
-            color: white;
+            color: {c['danger_on']};
         }}
         {badge_rules}
     """
@@ -644,7 +731,9 @@ class _CardCheckButton(QPushButton):
         painter.setRenderHint(QPainter.Antialiasing)
         c = AppTheme.colors()
         box = QRect((self.width() - 16) // 2, (self.height() - 16) // 2, 16, 16)
-        radius = 4.5
+        # 勾选框外形随皮肤：rounded 圆角方框（默认）/ square 直角方框
+        # （终端、粗野：这两个皮肤里任何圆角都会显得"没换干净"）。
+        radius = 4.5 if AppTheme.shape()["check_style"] != "square" else 0.0
         if self._done:
             # 完成：主题色填充 + 对勾（按描画进度截取路径）
             painter.setPen(Qt.NoPen)
@@ -756,8 +845,8 @@ class CardWidget(QFrame):
         self._fit_state: tuple = ()                # 徽章显示组合缓存（避免重复重排）
         self._fit_width: int | None = None         # 上次徽章取舍时的卡片宽度
         self._fingerprint: tuple = ()
-        self._clip_path: QPainterPath | None = None   # 色条裁剪路径（按尺寸缓存）
-        self._clip_size: tuple[int, int] = ()
+        self._clip_path: QPainterPath | None = None   # 色条裁剪路径（按尺寸+圆角缓存）
+        self._clip_size: tuple[int, int, int] = ()
         self._focusing_id: str | None = None    # 当前正在专注的卡片 id
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_card_menu)
@@ -941,7 +1030,10 @@ class CardWidget(QFrame):
         不会连带重建全板。
         """
         c = self._card
-        return (c.title, c.done, c.due_date,
+        # 首项是皮肤 key：徽章文本随皮肤形态变化（text 形态带前缀符号），
+        # 指纹漏了它，切皮肤后 refresh 会认为"内容没变"而不重建徽章。
+        return (AppTheme.skin(),
+                c.title, c.done, c.due_date,
                 date.today().toordinal() if (c.due_date or c.fund) else 0,
                 c.notes or "", bool(c.workdir),
                 tuple(c.labels), c.priority, c.repeat, c.pomodoros,
@@ -955,11 +1047,16 @@ class CardWidget(QFrame):
                 if c.fund else None)
 
     def reapply_style(self) -> None:
-        """主题切换后同步卡片内部状态，不重建子控件（保留悬停状态）
+        """主题/皮肤切换后同步卡片内部状态，不重建子控件（保留悬停状态）
 
         配色由看板级样式表统一下发（见 _board_qss），这里只处理与配色无关
         的状态：删除按钮显隐、勾选框与标题完成态。
+
+        色条裁剪路径按 (尺寸, 圆角) 缓存——皮肤会改卡片圆角，这里一并清掉，
+        否则方角皮肤下色条端头仍是圆的。
         """
+        self._clip_path = None
+        self._clip_size = ()
         self._revalidate_hover()   # 按光标实际位置复核，顺带清掉残留悬停态
         self._style_check()
         self._style_title()
@@ -1125,11 +1222,19 @@ class CardWidget(QFrame):
             meta_row = QHBoxLayout()
             meta_row.setSpacing(6)
 
+            # 皮肤决定徽章形态：text 形态把前缀符号写进文本（QSS 的 ::text
+            # 在 Qt 里不生效，只能落到 label 上）；bar 形态左侧留 6px 给
+            # paintEvent 画的 2×10 色标——不留的话色标会压住字。
+            badge_sh = AppTheme.shape()
+            badge_pad_left = 6 if badge_sh.get("badge_style") == "bar" else 0
+
             def make_badge(text: str, tone: str) -> QLabel:
                 # tone 动态属性 → QSS 属性选择器（配色随主题，见 _board_qss）
-                badge = QLabel(text)
+                badge = QLabel(badge_content(text, tone, badge_sh))
                 badge.setObjectName("cardBadge")
                 badge.setProperty("tone", tone)
+                if badge_pad_left:
+                    badge.setContentsMargins(badge_pad_left, 0, 0, 0)
                 self._meta_badges.append((badge, tone))
                 return badge
 
@@ -1190,20 +1295,30 @@ class CardWidget(QFrame):
             self._clear_hover()   # 一并解除看板跟踪，保持"✕ 可见 ⟹ 被跟踪"
 
     def paintEvent(self, event) -> None:
-        """左缘标签色条：贴卡片左边缘的竖向色条，明显且不占布局行"""
+        """自绘层：左缘标签色条（贴卡片左缘、不占布局行）
+
+        硬投影不在这里画：卡片是 QFrame，**任何** QSS 背景都会让
+        QFrame::paintEvent 重画整个矩形，先画的投影一定被盖掉；而给卡片
+        单独 setStyleSheet 又会和看板级样式表打架（实测卡片整块变黑）。
+        投影统一由 BoardView 按卡片几何补画（见 BoardView._paint_hard_shadows）。
+        """
         super().paintEvent(event)
         labels = self._card.labels[:4]
-        if not labels:
-            return
+        if labels:
+            self._paint_label_stripe(labels)
+
+    def _paint_label_stripe(self, labels: list) -> None:
+        """左缘标签色条（皮肤决定是否用圆角裁剪与条宽）"""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        # 裁剪到圆角轮廓内，色条端头跟随卡片圆角（与 #cardFrame 的 10px 对齐）；
-        # 路径按尺寸缓存：hover 边框变色触发整卡重绘时免逐次重建
-        size = (self.width(), self.height())
+        # 裁剪到圆角轮廓内，色条端头跟随卡片圆角；
+        # 路径按 (尺寸, 圆角) 缓存：hover 边框变色触发整卡重绘时免逐次重建
+        size = (self.width(), self.height(), tokens.radius("card"))
         clip = self._clip_path
         if clip is None or self._clip_size != size:
             clip = QPainterPath()
-            clip.addRoundedRect(1, 1, size[0] - 2, size[1] - 2, 10, 10)
+            clip.addRoundedRect(1, 1, size[0] - 2, size[1] - 2,
+                                size[2], size[2])
             self._clip_path = clip
             self._clip_size = size
         painter.setClipPath(clip)
@@ -1211,7 +1326,7 @@ class CardWidget(QFrame):
         for key in labels:
             # 用标签的饱和前景色（fg）而非浅底色，保证色条醒目；
             # 深浅主题下同一饱和色都清晰
-            _, fg = AppConfig.LABEL_COLORS.get(key, ("#E5E7EB", "#374151"))
+            _, fg = AppTheme.label_style(key)
             color = self._label_fg_cache.get(fg)
             if color is None:
                 color = QColor(fg)
@@ -1841,7 +1956,13 @@ class ListHeader(QWidget):
         self._act_fund_export.setVisible(board_list.fund_watch)
 
     def reapply_theme(self) -> None:
-        """主题切换后同步头部状态（配色由看板级样式表统一下发）"""
+        """主题切换后同步头部状态（配色由看板级样式表统一下发）
+
+        列头要**显式重绘**：`#listTitle` 的颜色只写在父级（BoardView）的
+        样式表里，Qt 只保证父级重绘，子标签不一定会被重画——皮肤切到
+        深底（终端）时列头标题会留着上一个皮肤的近黑字。
+        """
+        self.update()
         col = self.parent()
         self.set_collapsed_mark(
             col.is_collapsed() if isinstance(col, ListColumn) else False)
@@ -2597,8 +2718,15 @@ class ListColumn(QFrame):
                 else tr("还没有卡片，点击下方添加"))
 
     def reapply_frame_style(self) -> None:
-        """配色由看板级样式表下发；此处只同步拖放高亮属性"""
+        """配色由看板级样式表下发；此处同步拖放高亮属性并整列重绘
+
+        整列 update() 是必要的：皮肤会改底色（浅纸→近黑终端），空态提示
+        `#columnHint`、添加按钮这些子标签的颜色只写在父级样式表里，Qt
+        不保证父级重绘时子控件跟着重画，会残留上一个皮肤的字色。
+        """
         self._set_drop_highlight(self.property("drop") is True)
+        self._header.update()
+        self.update()
 
     def minimumSizeHint(self):
         """下界统一为折叠高度：展开态若钉死 200，短列就会留出空白"""
@@ -3747,8 +3875,8 @@ class BoardView(QWidget):
         实测 300 张卡片下 reapply_theme() 285ms，其中列/卡片各占一半；
         配色改为看板级统一下发后，整棵子树只 polish 一遍。
         """
-        # 1) 整块配色一次设完（字符串按主题模式缓存）
-        qss = _board_qss(AppTheme.mode(), tokens.scale())
+        # 1) 整块配色一次设完（字符串按主题模式 + 密度 + 皮肤缓存）
+        qss = _board_qss(AppTheme.mode(), tokens.scale(), AppTheme.skin())
         if self.styleSheet() != qss:
             self.setStyleSheet(qss)
 
@@ -3762,6 +3890,26 @@ class BoardView(QWidget):
             col._header.reapply_theme()
             for cw in col._card_widgets:
                 cw.reapply_style()
+
+    def reapply_skin(self) -> None:
+        """皮肤切换：整块样式表 + 自绘骨架 + 卡片重建
+
+        不能只走 reapply_theme()：皮肤改的不只是颜色，还有**外形**——
+        徽章要不要前缀符号、列头换不换宋体、板底画不画网格/柔光、卡片
+        有没有硬投影。这些都在生成期就焊进了控件（标签文本、QFont、
+        缓存的自绘路径），必须让卡片 rebuild 一次、看板重绘一次。
+
+        脏指纹是唯一能触发 rebuild 的开关（refresh 走幂等 diff），所以
+        逐卡清空 `_fingerprint`，随后的 refresh 会整批重建。
+        """
+        self.reapply_theme()
+        for col in self._columns:
+            col.reapply_frame_style()
+            for cw in col._card_widgets:
+                cw._fingerprint = ()
+        self.update_stats(self._lists)
+        self._sync_overflow_menu()
+        self.update()
 
     def reapply_texts(self) -> None:
         """语言切换：刷新静态文案；卡片指纹清空，待 refresh 重建徽章/tooltip"""
@@ -3905,12 +4053,15 @@ class BoardView(QWidget):
     # 渐变对象按 (宽, 高, 主题模式) 缓存：展开/缩放动画逐帧触发本方法，
     # 每帧重建 QLinearGradient + 3×QColor 纯浪费；键空间随用户任意缩放
     # 有界性不可保证，超上限整体清空兜底
-    _bg_gradient_cache: dict[tuple[int, int, str], QLinearGradient] = {}
+    _bg_gradient_cache: dict[tuple[int, int, str, str], QLinearGradient] = {}
+
+    # 板底纹理路径缓存（网格 / 撒点 / 柔光），键与背景渐变一致
+    _chrome_path_cache: dict[tuple[int, int, str, str], QPainterPath] = {}
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         # 纯 fillRect 无需抗锯齿（此前挂着无用的 Antialiasing 开销）
-        key = (self.width(), self.height(), AppTheme.mode())
+        key = (self.width(), self.height(), AppTheme.mode(), AppTheme.skin())
         gradient = self._bg_gradient_cache.get(key)
         if gradient is None:
             c = AppTheme.colors()
@@ -3922,7 +4073,107 @@ class BoardView(QWidget):
                 self._bg_gradient_cache.clear()
             self._bg_gradient_cache[key] = gradient
         painter.fillRect(self.rect(), gradient)
+        # 皮肤骨架：在纯渐变之上叠一层极轻的纹理（网格 / 撒点 / 柔光）。
+        # 全部按 (尺寸, 主题, 皮肤) 缓存 QPainterPath，逐帧只做一次 drawPath
+        # ——展开/缩放动画会逐帧触发本方法，现算路径会直接掉帧。
+        chrome = AppTheme.shape()["board_chrome"]
+        if chrome != "plain":
+            path = self._chrome_path_cache.get(key)
+            if path is None:
+                path = self._build_board_chrome(chrome, key[0], key[1])
+                if len(self._chrome_path_cache) > 16:
+                    self._chrome_path_cache.clear()
+                self._chrome_path_cache[key] = path
+            if path is not None and not path.isEmpty():
+                c = AppTheme.colors()
+                color = QColor(c["border"])
+                color.setAlpha(70 if chrome == "grid" else 34)
+                painter.setRenderHint(QPainter.Antialiasing)
+                painter.setPen(QPen(color, 1))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawPath(path)
+        # 新粗野主义的硬投影必须画在这里：BoardView(_lists_host ← 视口 ← 列)
+        # 的祖先链上，本方法天然先于所有子控件执行，产物正好压在列与卡片
+        # **之下**。QSS 给了背景的 QFrame 会重画整个矩形，控件自己 paintEvent
+        # 里画的投影一定被盖掉；换成自定义视口又会让双击/滚轮这些事件被
+        # QScrollArea 的容器接管不到（实测段错误），所以回到"祖先一次画完"。
+        painter.setRenderHint(QPainter.Antialiasing)
+        self._paint_hard_shadows(painter)
         painter.end()
+
+    def _paint_hard_shadows(self, painter: QPainter) -> None:
+        """硬投影皮肤：按卡片几何补画右下硬投影（实色偏移，无模糊）
+
+        坐标直接从列/卡片控件换算到看板本地坐标系，不依赖卡片是否重绘。
+        列内滚出视口的卡片此刻在界面上根本不存在，跳过画（否则投影会
+        飘在列的空白处）。投影用半透明黑而非常规灰：压在卡片黑描边之上
+        时描边仍透出来，落在板底/列底上都读得通。
+        """
+        offset = AppTheme.shape().get("hard_shadow") or 0
+        if not offset:
+            return
+        painter.save()
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 90))
+        brush = painter.brush()
+        shift = QPoint(offset, offset)
+        for col in self._columns:
+            if not col.isVisible():
+                continue
+            base = col.mapTo(self, QPoint(0, 0))
+            # 列内滚动视口的可视范围（看板坐标系）
+            vp = QRect(base.x() + col._scroll.x(), base.y() + col._scroll.y(),
+                       col._scroll.viewport().width(),
+                       col._scroll.viewport().height())
+            for cw in col._card_widgets:
+                if not cw.isVisible():
+                    continue
+                pos = cw.mapTo(self, QPoint(0, 0))
+                face = QRect(pos, cw.size())
+                if not vp.intersects(face):
+                    continue
+                # 投影只画视口内那部分：滚出去的一半不该凭空出现
+                shadow = face.translated(shift.x(), shift.y()).intersected(vp)
+                if shadow.isEmpty():
+                    continue
+                path = QPainterPath()
+                path.addRect(QRectF(shadow))
+                hole = QPainterPath()
+                hole.addRect(QRectF(face))
+                painter.fillPath(path.subtracted(hole), brush)
+        painter.restore()
+
+    @staticmethod
+    def _build_board_chrome(kind: str, w: int, h: int) -> QPainterPath:
+        """板底纹理路径（一次性构建并缓存）
+
+        必须是 staticmethod：漏掉修饰符时实例会被当成 kind、w/h 整体错位，
+        下一行 `for x in range(16, w, step)` 直接段错误。
+
+        - grid：64px 等距网格（等宽终端皮肤，对齐列表列宽的一半）
+        - dots：28px 间距的 2px 圆点（新粗野主义的"纸"）
+        - glow：三团同心圆（玻璃拟态的柔光，用描边叠出径向渐变的观感）
+        """
+        path = QPainterPath()
+        if kind == "grid":
+            step = 64
+            for x in range(16, w, step):
+                path.moveTo(x, 0)
+                path.lineTo(x, h)
+            for y in range(0, h, step):
+                path.moveTo(0, y)
+                path.lineTo(w, y)
+        elif kind == "dots":
+            for gx in range(20, w, 28):
+                for gy in range(72, h, 28):
+                    path.addEllipse(QPointF(gx, gy), 1.5, 1.5)
+        elif kind == "glow":
+            for cx, cy, r in ((w * 0.16, h * 0.12, w * 0.34),
+                              (w * 0.78, h * 0.05, w * 0.30),
+                              (w * 0.52, h * 0.86, w * 0.38)):
+                for i in range(6, 0, -1):
+                    path.addEllipse(QPointF(cx, cy), r * i / 6, r * i / 6)
+        return path
 
     # ── 数据刷新 ──────────────────────────────────────────
 

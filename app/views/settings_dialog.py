@@ -56,6 +56,35 @@ def _skin_swatch(key: str) -> QIcon:
     return QIcon(pm)
 
 
+def _skin_swatch_icon(key: str) -> QIcon:
+    """视觉皮肤色板：迷你卡片缩影（底色 + 卡片 + 强调色点）
+
+    与桌宠皮肤的圆点色板刻意不同形：圆点看起来像"选颜色"，而这个
+    选项换的是整套配色与圆角，画成"一张卡片的缩影"更接近实际效果。
+    """
+    spec = AppConfig.UI_SKINS.get(key) or {}
+    c = spec.get("light") or AppConfig.COLORS
+    pm = QPixmap(34, 24)
+    pm.fill(Qt.transparent)
+    painter = QPainter(pm)
+    painter.setRenderHint(QPainter.Antialiasing)
+    # 板底
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor(c["bg_primary"]))
+    painter.drawRoundedRect(QRectF(0, 0, 34, 24), 4, 4)
+    # 列 / 卡片
+    painter.setBrush(QColor(c["bg_panel"]))
+    painter.drawRoundedRect(QRectF(3, 2.5, 28, 19), 3, 3)
+    painter.setBrush(QColor(c["bg_card"]))
+    painter.drawRoundedRect(QRectF(6, 5, 22, 6.5), 2, 2)
+    painter.drawRoundedRect(QRectF(6, 13.5, 22, 5), 2, 2)
+    # 强调色（当前项的"主色"）
+    painter.setBrush(QColor(c["accent"]))
+    painter.drawRoundedRect(QRectF(6, 13.5, 7, 5), 1.5, 1.5)
+    painter.end()
+    return QIcon(pm)
+
+
 class _Section(QFrame):
     """白色圆角分区卡片：节标题 + 若干设置行"""
 
@@ -124,6 +153,7 @@ class SettingsDialog(QDialog):
 
     signal_theme_selected = Signal(str)       # light / dark / system
     signal_ui_scale_selected = Signal(str)    # compact / normal / comfortable
+    signal_ui_skin_selected = Signal(str)     # editorial / warm / terminal / ...
     signal_language_selected = Signal(str)    # zh / en
     signal_skin_selected = Signal(str)        # 皮肤 key
     signal_animation_toggled = Signal(bool)   # 动画启用
@@ -175,6 +205,38 @@ class SettingsDialog(QDialog):
         self._t_scale, self._h_scale = self._sec_appearance.add_row(
             tr("界面密度"), tr("字号 / 间距 / 圆角一起缩放，立即生效"),
             self._scale_seg)
+        # 视觉皮肤：换的是一整套配色 + 造型（圆角/字重/徽章形态/板底纹理），
+        # 与上面的深浅色正交——所以是单选的一排色板，不是嵌套菜单。
+        self._skin_row_title = QLabel(tr("视觉皮肤"))
+        self._skin_row_title.setObjectName("rowTitle")
+        self._skin_row_hint = QLabel(
+            tr("整套配色与造型（圆角 / 字重 / 徽章形态），深浅色在其之上生效"))
+        self._skin_row_hint.setObjectName("rowHint")
+        self._skin_row_hint.setWordWrap(True)
+        self._sec_appearance._lay.addWidget(self._skin_row_title)
+        self._sec_appearance._lay.addWidget(self._skin_row_hint)
+        skin_row = QWidget()
+        skin_row_lay = QHBoxLayout(skin_row)
+        skin_row_lay.setContentsMargins(0, 0, 0, 0)
+        skin_row_lay.setSpacing(8)
+        # 与桌宠皮肤同一套单选范式：互斥组挡住"两个都选中"与"再点取消"
+        self._ui_skin_group = QButtonGroup(self)
+        self._ui_skin_group.setExclusive(True)
+        self._ui_skin_buttons: dict[str, QPushButton] = {}
+        for key, spec in AppConfig.UI_SKINS.items():
+            btn = QPushButton(spec.get("name", key))
+            btn.setObjectName("skinBtn")
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setIcon(_skin_swatch_icon(key))
+            btn.setToolTip(spec.get("name", key))
+            btn.clicked.connect(
+                lambda _=False, k=key: self.signal_ui_skin_selected.emit(k))
+            self._ui_skin_group.addButton(btn)
+            self._ui_skin_buttons[key] = btn
+            skin_row_lay.addWidget(btn)
+        skin_row_lay.addStretch(1)
+        self._sec_appearance._lay.addWidget(skin_row)
         page.addWidget(self._sec_appearance)
 
         # 语言 / Language
@@ -330,7 +392,8 @@ class SettingsDialog(QDialog):
                         default_view: str = "pet",
                         pet_enabled: bool = True,
                         global_hotkey: bool = False,
-                        ui_scale: str = "normal") -> None:
+                        ui_scale: str = "normal",
+                        ui_skin: str = "") -> None:
         """打开时把当前偏好刷进控件（偏好可能被桌宠菜单等其他入口改过）
 
         全程静音：这是"把真实状态刷进界面"，不是用户按了什么。此前
@@ -346,6 +409,7 @@ class SettingsDialog(QDialog):
         try:
             self._theme_seg.set_value(theme_mode)
             self._scale_seg.set_value(ui_scale)
+            self.set_ui_skin(ui_skin or AppConfig.get_ui_skin())
             self._lang_seg.set_value(lang)
             # 分段控件只在用户点击时发 changed，set_value 天然静音
             self._view_seg.set_value(default_view)
@@ -365,6 +429,12 @@ class SettingsDialog(QDialog):
     def set_skin(self, key: str) -> None:
         """皮肤选中态对齐真实偏好（重开设置时消除残留的多个选中）"""
         btn = self._skin_buttons.get(key)
+        if btn is not None and not btn.isChecked():
+            btn.setChecked(True)
+
+    def set_ui_skin(self, key: str) -> None:
+        """视觉皮肤选中态对齐真实偏好（重开设置时消除残留的多个选中）"""
+        btn = self._ui_skin_buttons.get(key)
         if btn is not None and not btn.isChecked():
             btn.setChecked(True)
 
@@ -401,6 +471,14 @@ class SettingsDialog(QDialog):
         self._scale_seg.retexts(
             [("compact", tr("紧凑")), ("normal", tr("标准")),
              ("comfortable", tr("宽松"))])
+        self._skin_row_title.setText(tr("视觉皮肤"))
+        self._skin_row_hint.setText(
+            tr("整套配色与造型（圆角 / 字重 / 徽章形态），深浅色在其之上生效"))
+        for key, btn in self._ui_skin_buttons.items():
+            # 皮肤名是产品名词，不翻译：翻译后用户在两台机器上会看到
+            # 同一套皮肤的不同名字，反而更难确认"是不是同一个"
+            spec = AppConfig.UI_SKINS.get(key) or {}
+            btn.setText(spec.get("name", key))
         self._sec_language.retexts(tr("语言 / Language"))
         self._t_lang.setText(tr("界面语言"))
         self._h_lang.setText(tr("切换后立即生效"))
@@ -539,7 +617,9 @@ class SettingsDialog(QDialog):
             /* QComboBox 样式由 AppTheme.global_qss() 统一下发 */
             QPushButton#primaryBtn {{
                 background: {c['accent']};
-                color: white;
+                /* 深/浅都取 accent_on：皮肤里 accent 有可能是亮色（终端
+                   荧光绿、深色暖纸的陶土亮调），白字会直接不可读 */
+                color: {c['accent_on']};
                 border: none;
                 border-radius: {tokens.radius('control')}px;
                 {tokens.pad_preset(AppConfig.UI_PAD_PRIMARY)};

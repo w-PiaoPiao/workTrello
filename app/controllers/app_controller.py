@@ -180,8 +180,18 @@ class AppController(QObject):
         # ── 连接信号 ──────────────────────────────────────
         self._connect_signals()
 
-        # ── 主题 / 动画偏好恢复 ───────────────────────────
+        # ── 主题 / 皮肤 / 动画偏好恢复 ────────────────────
+        # 顺序有讲究：皮肤必须先于 set_mode 落到 AppTheme 上，否则首次
+        # apply() 用的是默认皮肤、之后还要再重下一次样式表（多花一次
+        # 全树 polish，实测 300 卡约 665ms）。
+        AppTheme.set_skin(AppConfig.get_ui_skin(), touch_pref=False)
         AppTheme.set_mode(AppConfig.get_theme_mode())
+        # 视图在 AppTheme 就位前就构造好了（它们读的是构造期的默认皮肤），
+        # 这里按恢复后的皮肤重建一次：桌面查看板时第一帧就是正确造型。
+        try:
+            self._refresh_for_skin()
+        except Exception:   # noqa: BLE001 — 启动期造型刷新失败不该拦启动
+            logger.exception("启动时按皮肤刷新视图失败")
         if not AppConfig.get_animation_enabled():
             self._on_pet_animation_toggled(False)
 
@@ -1834,6 +1844,7 @@ class AppController(QObject):
             dlg = SettingsDialog(self._window)
             dlg.signal_theme_selected.connect(self._on_theme_pref_selected)
             dlg.signal_ui_scale_selected.connect(self._on_ui_scale_selected)
+            dlg.signal_ui_skin_selected.connect(self._on_ui_skin_selected)
             dlg.signal_language_selected.connect(self._on_language_changed)
             dlg.signal_skin_selected.connect(self._on_settings_skin)
             dlg.signal_animation_toggled.connect(
@@ -1888,6 +1899,51 @@ class AppController(QObject):
 
         QTimer.singleShot(0, _reapply)
 
+    def _on_ui_skin_selected(self, skin: str) -> None:
+        """视觉皮肤切换：落盘 + 重下样式表 + 各视图按皮肤重建
+
+        与密度同一套"先落盘、再让界面跟上"的顺序：下次启动直接是新皮肤，
+        即使本轮重下样式表被打断也不会丢掉用户的选择。
+
+        与 `_on_ui_scale_selected` 的区别：换皮肤不缩放字号/间距，**布局
+        不变**，所以不需要等待光标；但它要重建的东西比换深浅色多
+        （徽章文本、列头字体、板底骨架、卡片自绘），见各视图的
+        reapply_skin()。
+        """
+        if skin not in AppConfig.UI_SKINS:
+            return
+        AppConfig.save_ui_skin(skin)
+        if AppTheme.skin() == skin:
+            # 已经是这套皮肤（打开设置时回写同一值）：不必再付一次全树
+            # 重 polish 的代价
+            return
+        app = QApplication.instance()
+        if app is None:
+            AppTheme.set_skin(skin)
+            return
+
+        def _reapply() -> None:
+            try:
+                AppTheme.set_skin(skin)     # 内部会 apply() 并广播皮肤回调
+            finally:
+                self._refresh_for_skin()
+
+        QTimer.singleShot(0, _reapply)
+
+    def _refresh_for_skin(self) -> None:
+        """皮肤切换后让每个视图按新造型重建（不落盘、不再触发 apply）
+
+        AppTheme 已经广播过 global_qss；这里补的是"按皮肤重建控件"：
+        - 看板：整块样式表 + 徽章前缀 + 列头字体 + 骨架 + 卡片重建
+        - 桌宠：徽章/右键菜单的配色
+        - 已打开的常驻浮窗/对话框各自挂过 AppTheme.register，会对
+          apply() 有响应；看板与桌宠是常驻视图，需要显式调用
+        """
+        if self._board_view is not None:
+            self._board_view.reapply_skin()
+        if self._pet_view is not None:
+            self._pet_view.reapply_theme()
+
     def sync_settings_dialog(self) -> None:
         """把当前偏好刷进设置对话框的控件
 
@@ -1909,7 +1965,8 @@ class AppController(QObject):
             default_view=AppConfig.get_default_view(),
             pet_enabled=self._window.is_pet_enabled(),
             global_hotkey=self._hotkeys.is_registered(),
-            ui_scale=AppConfig.get_ui_scale())
+            ui_scale=AppConfig.get_ui_scale(),
+            ui_skin=AppTheme.skin())
 
     def _autostart_state(self) -> bool:
         """开机自启动的实际状态（以系统启动项为准，反向收编用户的外部改动）
