@@ -412,6 +412,79 @@ class BoardViewRefreshTest(unittest.TestCase):
             self.view.refresh(lists)
         self.assertTrue(any("已逾期" in t for t in self._badges(cw)))
 
+    def test_done_column_shows_plain_due_without_overdue(self):
+        """已完成列：时限只显示日期、不报逾期；拖出该列恢复逾期
+
+        完成列里已经收尾的卡片再用红色「已逾期」催一遍是噪音；拖回
+        未完成列时必须恢复原来的逾期文案与告警色。
+        """
+        overdue_day = date.today() - timedelta(days=3)
+        overdue = overdue_day.isoformat()
+        plain = f"{overdue_day.month}/{overdue_day.day}"
+        lists = make_lists([("待办", []), ("已完成", [])])
+        card = Card(title="决算公开", due_date=overdue)
+        lists[0].cards.append(card)
+        self.view.refresh(lists)
+
+        # 未完成列：逾期文案 + danger 色
+        cw_todo = self.view._columns[0]._card_widgets[0]
+        self.assertTrue(any("已逾期" in t for t in self._badges(cw_todo)))
+        self.assertIn("danger", [tone for _b, tone in cw_todo._meta_badges])
+
+        # 拖进「已完成」列：只剩纯日期，中性色（不显示逾期）
+        lists[0].cards.remove(card)
+        lists[1].cards.append(card)
+        self.view.refresh(lists)
+        cw_done = self.view._columns[1]._card_widgets[0]
+        self.assertEqual(self._badges(cw_done), [plain])
+        self.assertEqual([tone for _b, tone in cw_done._meta_badges],
+                         ["text_secondary"])
+
+        # 拖回「待办」列：恢复正常逾期展示
+        lists[1].cards.remove(card)
+        lists[0].cards.append(card)
+        self.view.refresh(lists)
+        cw_back = self.view._columns[0]._card_widgets[0]
+        self.assertTrue(any("已逾期" in t for t in self._badges(cw_back)))
+        self.assertIn("danger", [tone for _b, tone in cw_back._meta_badges])
+
+    def test_done_column_detected_by_title_rename(self):
+        """列改名成/离开「已完成」时，复用中的卡片徽标随之切换
+
+        卡片控件按 id 在列内复用，列改名不会重建控件——完成列状态
+        必须由列显式下发，否则徽标停在旧文案。
+        """
+        overdue_day = date.today() - timedelta(days=1)
+        plain = f"{overdue_day.month}/{overdue_day.day}"
+        lists = make_lists([("待办", [])])
+        lists[0].cards.append(
+            Card(title="年度归档", due_date=overdue_day.isoformat()))
+        self.view.refresh(lists)
+        cw = self.view._columns[0]._card_widgets[0]
+        self.assertTrue(any("已逾期" in t for t in self._badges(cw)))
+
+        lists[0].title = "Done"          # 英文默认完成列名同样识别
+        self.view.refresh(lists)
+        self.assertIs(self.view._columns[0]._card_widgets[0], cw,
+                      "列改名不应重建卡片控件")
+        self.assertEqual(self._badges(cw), [plain])
+
+        lists[0].title = "待办"          # 改回去 → 恢复逾期
+        self.view.refresh(lists)
+        self.assertTrue(any("已逾期" in t for t in self._badges(cw)))
+
+    def test_done_column_shows_plain_due_for_future_date(self):
+        """已完成列同样不出现「明天截止」这类催促文案，只报日期"""
+        tomorrow = date.today() + timedelta(days=1)
+        plain = f"{tomorrow.month}/{tomorrow.day}"
+        lists = make_lists([("已完成", [])])
+        lists[0].cards.append(
+            Card(title="明天收尾", due_date=tomorrow.isoformat()))
+        self.view.refresh(lists)
+        cw = self.view._columns[0]._card_widgets[0]
+        self.assertEqual(self._badges(cw), [plain])
+        self.assertNotIn("明天截止", self._badges(cw))
+
     def test_no_due_date_card_keeps_fingerprint_across_days(self):
         """无截止日期卡片跨天不重建：日期只参与「有日期」卡片的指纹"""
         lists = make_lists([("待办", ["A"])])
@@ -470,6 +543,29 @@ class BoardViewRefreshTest(unittest.TestCase):
         tones = [tone for _b, tone in cw._meta_badges]
         self.assertEqual(tones[0], "danger")        # P1 → 红
         self.assertEqual(tones[1], "danger")        # 逾期 → 红
+
+    def test_low_priority_tone_never_matches_high_priority(self):
+        """P3 徽标色不能和 P1 相同
+
+        回归：P3 曾取 accent（皮肤强调色），warm / brutal 这类皮肤的
+        accent 本身就是红粉色，和 P1 的 danger 撞成同一种颜色。改中性灰后
+        红→橙→灰 三档在任何皮肤下都不会重复。
+        """
+        lists = make_lists([("待办", [])])
+        for priority in (1, 2, 3):
+            lists[0].cards.append(
+                Card(title=f"P{priority}", priority=priority))
+        self.view.refresh(lists)
+        tones = {}
+        for cw in self.view._columns[0]._card_widgets:
+            mark = cw.card().title
+            tones[int(mark[1])] = next(
+                tone for badge, tone in cw._meta_badges
+                if badge.text() == mark)
+        self.assertEqual(tones, {1: "danger", 2: "warning",
+                                 3: "text_secondary"})
+        self.assertEqual(len(set(tones.values())), 3,
+                         f"优先级徽标色有重复: {tones}")
 
     # ── 模型对象重指向（备份恢复场景） ────────────────────
 

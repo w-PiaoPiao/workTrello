@@ -37,7 +37,12 @@ _qapp = QApplication.instance() or QApplication([])
 
 from app.config import AppConfig                              # noqa: E402
 from app.views import tokens                                  # noqa: E402
-from app.views.board_view import _board_qss, badge_content     # noqa: E402
+from app.views.board_view import (                             # noqa: E402
+    _BADGE_TONE_COLORS,
+    _PRIORITY_TONES,
+    _board_qss,
+    badge_content,
+)
 from app.views.theme import AppTheme                          # noqa: E402
 from tests.test_contrast import (                             # noqa: E402
     AA_NON_TEXT,
@@ -182,6 +187,22 @@ class SkinContrastTest(unittest.TestCase):
                 ratio, AA_NON_TEXT,
                 f"{skin}/{mode}: 焦点环 {c['focus_ring']} on {base} = "
                 f"{ratio:.2f}:1（需 {AA_NON_TEXT}）")
+
+    def test_priority_badge_tone_colors_distinct(self):
+        """P1 / P2 / P3 徽标色在每套皮肤下必须两两不同
+
+        回归：P3 曾取 accent（皮肤强调色），warm / brutal 等皮肤的 accent
+        本身就是红粉色，渲染出来和 P1 的 danger 几乎同色（截图里分不出
+        高低优先级）。P3 改中性灰后这里逐对守住。
+        """
+        for skin, mode, c in _skin_themes():
+            colors = {}
+            for priority, tone in _PRIORITY_TONES.items():
+                _soft, fg_key = _BADGE_TONE_COLORS[tone]
+                colors[priority] = str(c[fg_key]).casefold()
+            self.assertEqual(
+                len(set(colors.values())), len(colors),
+                f"{skin}/{mode} 优先级徽标色重复: {colors}")
 
     def test_skin_label_palettes_meet_aa(self):
         for skin, table in AppConfig.SKIN_LABEL_COLORS.items():

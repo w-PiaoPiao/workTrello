@@ -146,6 +146,13 @@ _BADGE_TONE_COLORS = {
 }
 _BADGE_TONES = tuple(_BADGE_TONE_COLORS)
 
+# 优先级徽标语义色：P1 红 / P2 橙 / P3 中性灰。
+# P3 此前取 accent（皮肤强调色），但 accent 在 warm / brutal 等皮肤里
+# 本身就是红粉色，和 P1 的 danger 撞成同一种颜色（截图里两个徽标分不出
+# 高低）。低优先级本来也该弱化：红→橙→灰 严重度递减，且中性色不随皮肤
+# 强调色漂移，10 份色表里都不会再和 P1 同色。
+_PRIORITY_TONES = {1: "danger", 2: "warning", 3: "text_secondary"}
+
 # 工作目录徽章的显示文本（真实路径放徽章 tooltip；收集/构建/事件过滤
 # 三处靠它识别是目录徽章）
 WORKDIR_BADGE_TEXT = "工作目录"
@@ -585,6 +592,35 @@ def _fmt_due(due: str) -> tuple[str, bool]:
     return f"{d.month}/{d.day}", False
 
 
+def _fmt_due_plain(due: str) -> str:
+    """截止日期 → 纯日期文本（已完成列专用：只报时限，不报逾期）
+
+    已完成列里的卡片已经收尾，再用红色「已逾期 N/M」催一遍是噪音；
+    这里只把日期本身显示出来。拖出该列后由列重建恢复 _fmt_due 的
+    逾期/今天/明天文案与配色。
+    """
+    try:
+        d = date.fromisoformat(due)
+    except ValueError:
+        return due
+    return f"{d.month}/{d.day}"
+
+
+# 视为「已完成」列的列表标题（大小写与首尾空白不敏感）。
+# 看板列是可自由改名的，没有"完成列"这个持久化字段；产品口径是
+# **按列名判定**：卡片在「已完成」/「Done」列里就不再展示逾期，
+# 拖出该列立即恢复。列改名后这张"完成列"的判定随之失效。
+_DONE_LIST_TITLES = frozenset({"已完成", "done", "completed"})
+
+
+def _is_done_list(title: str) -> bool:
+    """列表标题是否视为「已完成」列"""
+    text = str(title or "").strip().casefold()
+    if not text:
+        return False
+    return text in _DONE_LIST_TITLES or text == tr("已完成").strip().casefold()
+
+
 def _fund_deadline_name(limit: int) -> str:
     """期限天数 → 徽标短名（14 天 = 2周期限，30 天 = 30日期限）"""
     return tr("2周期限") if limit == 14 else tr("30日期限")
@@ -825,9 +861,14 @@ class CardWidget(QFrame):
     # 纯重复，key 数量有限（LABEL_COLORS 的 fg 值域）；主题切换换 key 自动生效
     _label_fg_cache: dict[str, QColor] = {}
 
-    def __init__(self, card: Card, parent=None):
+    def __init__(self, card: Card, parent=None,
+                 in_done_column: bool = False):
         super().__init__(parent)
         self._card = card
+        # 是否位于「已完成」列：决定截止徽标是报逾期还是只报日期。
+        # 由 ListColumn 在建卡/刷新时下发（列标题判定见 _is_done_list）；
+        # 卡片在列间拖动时目标列会新建控件，天然带上新列的取值。
+        self._in_done_column = bool(in_done_column)
         self._drag_start = QPoint()
         self._pressing = False
         self._hovered = False
@@ -857,6 +898,19 @@ class CardWidget(QFrame):
 
     def set_focusing(self, card_id: str | None) -> None:
         self._focusing_id = card_id
+
+    def set_in_done_column(self, in_done_column: bool) -> None:
+        """所在列是否变成「已完成」列；变化时重建截止徽标
+
+        卡片控件按 id 在列内复用，列改名（如「待办」→「已完成」）不会
+        重建控件，必须由列显式下发这个状态，否则徽标会停在旧的逾期文案。
+        同列内没有改名时是 O(1) 短路，不影响勾选/编辑这类高频刷新。
+        """
+        in_done_column = bool(in_done_column)
+        if in_done_column == self._in_done_column:
+            return
+        self._in_done_column = in_done_column
+        self.rebuild()
 
     def set_selected(self, selected: bool) -> None:
         """批量多选高亮（动态属性驱动 QSS 边框，不重建子树）"""
@@ -1178,8 +1232,9 @@ class CardWidget(QFrame):
             mark = AppConfig.PRIORITY_MARKS.get(card.priority, "")
             if mark:
                 meta_items.append(
-                    (mark, {1: "danger", 2: "warning",
-                            3: "accent"}.get(card.priority, "accent"), False))
+                    (mark,
+                     _PRIORITY_TONES.get(card.priority, "text_secondary"),
+                     False))
         # 资金分配监视徽标（期限最关键，放在普通截止之前防 4 枚上限截断）
         if card.fund:
             fund_dl = _fmt_fund_deadline(card)
@@ -1194,8 +1249,16 @@ class CardWidget(QFrame):
                         (f"{f_done}/{f_total}",
                          "success" if f_done == f_total else "accent", False))
         if card.due_date:
-            text, overdue = _fmt_due(card.due_date)
-            meta_items.append((text, "danger" if overdue else "accent", False))
+            if self._in_done_column:
+                # 已完成列：时限直接显示日期，不再标红、不再写「已逾期」。
+                # 拖出该列（目标列新建控件，_in_done_column=False）即恢复
+                # _fmt_due 的逾期文案与告警色。
+                meta_items.append((_fmt_due_plain(card.due_date),
+                                   "text_secondary", False))
+            else:
+                text, overdue = _fmt_due(card.due_date)
+                meta_items.append(
+                    (text, "danger" if overdue else "accent", False))
         if card.repeat != "never":
             meta_items.append((repeat_display(card.repeat),
                                "text_secondary", False))
@@ -2577,8 +2640,13 @@ class ListColumn(QFrame):
         self.setAcceptDrops(visible_cards is None)
         self.refresh_cards()
 
-    def _make_card_widget(self, card: Card) -> CardWidget:
-        cw = CardWidget(card)
+    def _is_done_column(self) -> bool:
+        """本列是否「已完成」列（列标题判定，见 _is_done_list）"""
+        return _is_done_list(self._lst.title)
+
+    def _make_card_widget(self, card: Card,
+                          in_done_column: bool = False) -> CardWidget:
+        cw = CardWidget(card, in_done_column=in_done_column)
         cw.signal_edit_requested.connect(self.signal_card_edit)
         cw.signal_done_toggled.connect(self.signal_card_done)
         cw.signal_delete_requested.connect(self.signal_card_delete)
@@ -2626,13 +2694,17 @@ class ListColumn(QFrame):
             cw.card().id: cw for cw in self._card_widgets}
         ordered: list[CardWidget] = []
         appeared: list[CardWidget] = []
+        done_column = self._is_done_column()
         for card in cards:
             cw = reusable.pop(card.id, None)
             if cw is None:
-                cw = self._make_card_widget(card)
+                cw = self._make_card_widget(card, done_column)
                 appeared.append(cw)
             else:
                 cw.update_from_model(card)
+                # 列改名可能把本列变成/移出「已完成」列：复用中的卡片
+                # 控件不会重建，必须显式同步（未变化时 O(1) 短路）
+                cw.set_in_done_column(done_column)
             ordered.append(cw)
         self._dispose_card_widgets(list(reusable.values()))
         # 顺序未变（勾选完成/编辑保存等单卡变更）→ 布局无需重插；
