@@ -597,6 +597,14 @@ class CalendarDialog(QDialog):
 
     # ── 导航 ──────────────────────────────────────────────
 
+    def current_year(self) -> int:
+        """当前显示的年（公开访问器：控制器刷新数据用，勿直读 _year）"""
+        return self._year
+
+    def current_month(self) -> int:
+        """当前显示的月（同上）"""
+        return self._month
+
     def _shift_month(self, delta: int) -> None:
         m = self._month + delta
         y = self._year

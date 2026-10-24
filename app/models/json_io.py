@@ -47,6 +47,12 @@ def load_json_doc(
     """
     if not path.exists():
         return {}
+    # 0 字节空文件更像占位（touch 创建/写前窗口），不当"损坏"复制隔离
+    try:
+        if path.stat().st_size == 0:
+            return {}
+    except OSError:
+        pass   # stat 失败（并发删除等）交给下方读取路径统一处理
 
     raw: str | None = None
     read_error: Exception | None = None

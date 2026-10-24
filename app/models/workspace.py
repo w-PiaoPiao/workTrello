@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.models.board import Board
-from app.models.json_io import (atomic_write_json, backup_ext,
+from app.models.json_io import (StoreError, atomic_write_json, backup_ext,
                                 load_json_doc, rotate_backups)
 
 logger = logging.getLogger(__name__)
@@ -151,7 +151,13 @@ class Workspace:
                 meta = BoardMeta(id=_new_board_id(),
                                  name=str(board.name or ""),
                                  created_at=_now_iso())
-                self._write_board_file(meta, board)
+                try:
+                    self._write_board_file(meta, board)
+                except StoreError as e:
+                    # 启动期写盘失败（磁盘满/权限）：保留内存态继续会话，
+                    # 原件不受影响，下次启动重试迁移——不能让迁移路径
+                    # 的 StoreError 一路炸到 AppController.__init__ 直接崩
+                    logger.error("迁移旧看板写盘失败（下次启动重试）: %s", e)
                 self.boards = [meta]
                 self.current_id = meta.id
                 self._save()
@@ -159,7 +165,11 @@ class Workspace:
                 return
 
         meta = BoardMeta(id=_new_board_id(), name="", created_at=_now_iso())
-        self._write_board_file(meta, Board.from_dict({}))
+        try:
+            self._write_board_file(meta, Board.from_dict({}))
+        except StoreError as e:
+            # 同上：默认板写盘失败以内存态启动（首次落盘会重写该文件）
+            logger.error("创建默认看板写盘失败（以内存态启动）: %s", e)
         self.boards = [meta]
         self.current_id = meta.id
         self._save()

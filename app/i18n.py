@@ -815,6 +815,17 @@ _zh_en: dict[str, str] = {
         'Set card priority high/mid/low (0 clears)',
     '卡片移动到其他列表':
         'Move card to another list',
+    # ── 2026-10 全量审查修复补缺 ──
+    '看板数据文件异常（{detail}），本次以默认看板打开。':
+        'Board data file error ({detail}). Opening with the default board.',
+    '超出上限，仅保留前 {n} 行':
+        'over the limit, only the first {n} kept',
+    '超出上限，仅保留前 {n} 个':
+        'over the limit, only the first {n} kept',
+    '备份文件不是有效的数据结构':
+        'The backup file is not a valid data structure',
+    '当前卡片':
+        'the current card',
 
 }
 

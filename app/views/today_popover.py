@@ -240,6 +240,22 @@ class TodayPopover(QWidget):
         self._query = ""                                  # 标题/备注过滤词
         self._built = False
         AppTheme.register(self._on_theme_changed)
+        # 浮窗由控制器持久持有（惰性创建后复用），构建期定格的文案需要
+        # 跟随语言切换刷新（行内文案随 set_items 重绑自然刷新）
+        from app import i18n
+        i18n.register(self.retexts)
+
+    def retexts(self) -> None:
+        """语言切换：刷新构建期定格的文案（未构建时跳过，构建时自取新语言）"""
+        if not self._built:
+            return
+        self._title_label.setText(tr("今日待办"))
+        self._add_edit.setPlaceholderText(tr("添加今日待办（支持速记）…"))
+        self._add_edit.setAccessibleName(tr("添加今日待办（支持速记）…"))
+        self._search_edit.setPlaceholderText(tr("筛选今日待办…"))
+        self._search_edit.setAccessibleName(tr("筛选今日待办…"))
+        self._close_btn.setToolTip(tr("关闭"))
+        self._close_btn.setAccessibleName(tr("关闭"))
 
     # ── 主题 ──────────────────────────────────────────────
 

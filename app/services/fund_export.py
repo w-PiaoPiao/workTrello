@@ -48,16 +48,20 @@ def build_rows(board_list: BoardList) -> list[list[str]]:
     return rows
 
 
-def export_xlsx(board_list: BoardList, path: str | Path) -> int:
+def export_xlsx(board_list: BoardList, path: str | Path,
+                rows: list[list[str]] | None = None) -> int:
     """写入 Excel 工作簿，返回导出的卡片数。
 
     表头加粗、冻结首行与首列（滚动环节列时卡片标题恒可见）、列宽适配。
+    rows 传入调用方已用 build_rows 算好的结果（判空与导出共用一份，
+    不再全列重扫一遍）。
     """
     from openpyxl import Workbook
     from openpyxl.styles import Font
     from openpyxl.utils import get_column_letter
 
-    rows = build_rows(board_list)
+    if rows is None:
+        rows = build_rows(board_list)
     wb = Workbook()
     ws = wb.active
     ws.title = "资金分配监视"

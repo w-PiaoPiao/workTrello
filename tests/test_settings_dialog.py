@@ -205,6 +205,12 @@ class SettingsDialogTest(unittest.TestCase):
         self.assertEqual(self.dlg._t_autostart.text(), "Launch at login")
         self.assertEqual(self.dlg._t_view.text(), "Default view on open")
         self.assertEqual(self.dlg._t_pet.text(), "Show desktop pet")
+        # 外观区「视觉皮肤」与桌宠区「皮肤」是两个不同标签：
+        # 同名属性互相覆盖会让前者永远刷不到（停留旧语言）
+        self.assertEqual(self.dlg._ui_skin_row_title.text(), "Visual skin")
+        self.assertIn("palette plus shape",
+                      self.dlg._ui_skin_row_hint.text())
+        self.assertEqual(self.dlg._skin_row_title.text(), "Skin")
 
     # ── 默认打开形态 ──────────────────────────────────────
 

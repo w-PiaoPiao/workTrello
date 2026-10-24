@@ -32,14 +32,25 @@ _RE_URL = re.compile(
 
 
 def _inline(text: str) -> str:
-    """行内元素替换（输入已 HTML 转义）"""
-    text = _RE_CODE.sub(r"<code>\1</code>", text)
-    text = _RE_BOLD.sub(r"<b>\1</b>", text)
-    text = _RE_ITALIC.sub(r"<i>\1</i>", text)
-    text = _RE_STRIKE.sub(r"<s>\1</s>", text)
-    text = _RE_LINK.sub(r'<a href="\2">\1</a>', text)
-    text = _RE_URL.sub(r'<a href="\1">\1</a>', text)
-    return text
+    """行内元素替换（输入已 HTML 转义）
+
+    先按行内代码段切分：bold/italic 等标记只在 code 外的文本段上匹配，
+    `**` 才不会跨 <code> 标签与外部标记误配对（曾产出
+    ``<code>a<b>b</code> 和 </b>粗体**`` 的断裂嵌套）。
+    """
+    parts = _RE_CODE.split(text)   # 偶数位=code 外文本，奇数位=code 内容
+    out: list[str] = []
+    for i, part in enumerate(parts):
+        if i % 2:
+            out.append(f"<code>{part}</code>")
+            continue
+        part = _RE_BOLD.sub(r"<b>\1</b>", part)
+        part = _RE_ITALIC.sub(r"<i>\1</i>", part)
+        part = _RE_STRIKE.sub(r"<s>\1</s>", part)
+        part = _RE_LINK.sub(r'<a href="\2">\1</a>', part)
+        part = _RE_URL.sub(r'<a href="\1">\1</a>', part)
+        out.append(part)
+    return "".join(out)
 
 
 def render_markdown(text: str, secondary_color: str = "") -> str:

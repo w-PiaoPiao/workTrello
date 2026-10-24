@@ -241,8 +241,11 @@ class _Theme(QObject):
         pal.setColor(QPalette.ColorRole.Text, QColor(c["text_primary"]))
         pal.setColor(QPalette.ColorRole.Button, QColor(c["bg_card"]))
         pal.setColor(QPalette.ColorRole.ButtonText, QColor(c["text_primary"]))
-        pal.setColor(QPalette.ColorRole.Highlight, QColor(c["accent"]))
-        pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#FFFFFF"))
+        pal.setColor(QPalette.ColorRole.Highlight, to_qcolor(c["accent"]))
+        # accent_on 而非写死白色：终端等皮肤的 accent 是荧光绿，白字压
+        # 上去对比不足（与 primary_button_style 同一条理由）
+        pal.setColor(QPalette.ColorRole.HighlightedText,
+                     to_qcolor(c["accent_on"]))
         pal.setColor(QPalette.ColorRole.ToolTipBase, QColor(c["bg_card"]))
         pal.setColor(QPalette.ColorRole.ToolTipText, QColor(c["text_primary"]))
         # 占位文字走 text_muted 而不是 text_disabled：占位符是**说明性文字**

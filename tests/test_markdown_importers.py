@@ -55,6 +55,14 @@ class MarkdownLiteTest(unittest.TestCase):
         self.assertIn('color:#888888', html)
         self.assertIn("<i>", html)
 
+    def test_inline_code_shields_bold_markers(self):
+        """行内代码内的 ** 不与外部的 ** 跨界配对（断裂嵌套的回归）"""
+        html = render_markdown("看 `a**b` 和 **粗体** 的混排")
+        self.assertIn("<code>a**b</code>", html)
+        self.assertIn("<b>粗体</b>", html)
+        # 不允许出现跨标签的断裂嵌套（修复前的产物）
+        self.assertNotIn("<code>a<b>", html)
+
 
 class TrelloImportTest(unittest.TestCase):
     def _doc(self) -> dict:
@@ -121,6 +129,31 @@ class TrelloImportTest(unittest.TestCase):
             board_from_trello({"foo": 1})
         with self.assertRaises(ValueError):
             board_from_trello("not a dict")   # type: ignore[arg-type]
+
+    def test_cards_without_id_get_generated_ids(self):
+        """无 id 卡/列必须生成新 id：id=None 会让 find_card 按 None 键
+        互相覆盖（删错卡、索引错乱）"""
+        doc = self._doc()
+        for entry in doc["cards"]:
+            entry["id"] = ""
+        for lst in doc["lists"]:
+            lst["id"] = ""
+        board, _ = board_from_trello(doc)
+        ids = [c.id for l in board.lists for c in l.cards]
+        self.assertTrue(all(i for i in ids), "卡片 id 不得为 None/空")
+        self.assertEqual(len(ids), len(set(ids)), "卡片 id 必须互不相同")
+        # find_card 精确命中第一张卡（此前 None 键会返回最后一张）
+        first = board.lists[0].cards[0]
+        _lst, found = board.find_card(first.id)
+        self.assertIs(found, first)
+        self.assertTrue(all(l.id for l in board.lists), "列表 id 不得为空")
+
+    def test_malformed_due_not_stored(self):
+        """畸形时间戳（2024-13-01T…）不得截成非法日期落库"""
+        doc = self._doc()
+        doc["cards"][0]["due"] = "2024-13-01T00:00:00.000Z"
+        board, _ = board_from_trello(doc)
+        self.assertIsNone(board.lists[0].cards[0].due_date)
 
 
 class MarkdownImportTest(unittest.TestCase):

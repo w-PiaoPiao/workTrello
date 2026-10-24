@@ -99,12 +99,16 @@ class GroupDragPayloadTest(unittest.TestCase):
         self.view._selected_ids = {ids[1], ids[2]}
         self.assertEqual(self._card_widget("A")._group_drag_ids(), [])
 
-    def test_group_payload_contains_only_own_column(self):
-        """跨列选择时只带走同列成员（跨列成组没有单一落点语义）"""
+    def test_group_payload_spans_columns(self):
+        """跨列选择时带走全部选中卡（全板列序），与「已选 N 张」计数一致
+
+        此前只收集源列成员：跨列选中 3 张拖走 1 张，其余原地不动且无提示。
+        """
         ids_a = [c.id for c in self.lists[0].cards]
         ids_b = [c.id for c in self.lists[1].cards]
-        self.view._selected_ids = {ids_a[0], ids_b[0]}
-        self.assertEqual(self._card_widget("A")._group_drag_ids(), [ids_a[0]])
+        self.view._selected_ids = {ids_a[2], ids_a[0], ids_b[0]}
+        self.assertEqual(self._card_widget("A")._group_drag_ids(),
+                         [ids_a[0], ids_a[2], ids_b[0]])
 
 
 class GroupDropTest(unittest.TestCase):

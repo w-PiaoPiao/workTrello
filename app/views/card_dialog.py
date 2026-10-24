@@ -686,8 +686,9 @@ class CardDialog(QDialog):
         check.toggled.connect(self._update_check_progress)
         edit = _CheckItemEdit(text)
         edit.setPlaceholderText(tr("清单项内容"))
+        # 空行上按 Enter 不再追加新空行（此前会无限叠加空行，收集时才被过滤）
         edit.returnPressed.connect(
-            lambda: self._add_check_row("", False, focus=True))
+            lambda e=edit: self._on_check_enter(e))
         remove = icons.IconButton("close", 16, "text_secondary", "danger")
         remove.setFixedSize(24, 24)          # 命中区 ≥24（原 22×22）
         remove.setFlat(True)
@@ -705,6 +706,11 @@ class CardDialog(QDialog):
         self._update_check_progress()
         if focus:
             edit.setFocus()
+
+    def _on_check_enter(self, edit: QLineEdit) -> None:
+        """清单行 Enter：内容非空才追加下一行（空行上视为结束输入）"""
+        if edit.text().strip():
+            self._add_check_row("", False, focus=True)
 
     def _remove_check_row(self, row: QWidget) -> None:
         pair = getattr(row, "_pair_index", None)

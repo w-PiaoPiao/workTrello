@@ -43,7 +43,8 @@ def _parse_trello_due(raw) -> str | None:
     """Trello due 是完整 ISO 时间戳（可能带毫秒与 Z），转本地时区后取日期
 
     直接截 UTC 时间戳的日期段会把东八区晚间（23:30Z = 本地次日）的截止
-    日提前一天，卡片凭空"提前逾期"。
+    日提前一天，卡片凭空"提前逾期"。截取兜底前校验日期合法性：
+    "2024-13-01T…" 这类畸形时间戳不落库（脏 due 会写进数据文件）。
     """
     if not isinstance(raw, str) or len(raw) < 10:
         return None
@@ -51,7 +52,12 @@ def _parse_trello_due(raw) -> str | None:
         return datetime.fromisoformat(raw.replace("Z", "+00:00")) \
             .astimezone().date().isoformat()
     except ValueError:
-        return raw[:10]
+        head = raw[:10]
+        try:
+            datetime.fromisoformat(head)
+        except ValueError:
+            return None
+        return head
 
 
 def board_from_trello(doc: dict) -> tuple[Board, str]:
@@ -89,7 +95,10 @@ def board_from_trello(doc: dict) -> tuple[Board, str]:
                 continue   # 病态导出（重复/空 list id）：同一列只登记一次，
                            # 否则 order 里的重复 id 会让同一列在结果中出现两次
             title = str(lst.get("name", "") or "").strip() or tr("未命名列表")
-            bl = BoardList(title=title, id=lid)
+            # 空 id 省略 id 参数走 default_factory 生成：显式传 None/空串
+            # 会绕过它，多张无 id 卡/列会共用 None 键互相覆盖（find_card
+            # 删错卡）
+            bl = BoardList(title=title, **({"id": lid} if lid else {}))
             lists_by_id[lid] = bl
             order.append(lid)
 
@@ -130,7 +139,7 @@ def board_from_trello(doc: dict) -> tuple[Board, str]:
                     })
             card = Card(
                 title=title,
-                id=cid or None,
+                **({"id": cid} if cid else {}),
                 notes=str(entry.get("desc", "") or ""),
                 labels=labels,
                 due_date=_parse_trello_due(entry.get("due")),

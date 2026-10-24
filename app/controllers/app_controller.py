@@ -455,8 +455,17 @@ class AppController(QObject):
     def _on_about_to_quit(self) -> None:
         """退出兜底：等在途后台写完成，再把剩余脏数据同步落盘（含 fsync）"""
         self._save_pool.waitForDone(3000)
-        self._store.flush()
-        self._gc_orphan_attachments()   # 撤销窗口随会话结束，回收孤儿附件
+        try:
+            self._store.flush()
+        except json_io.StoreError as e:
+            # 这是生命周期最后一次落盘机会：异常逃出 aboutToQuit 槽只会
+            # 被 Qt 吞进 stderr（打包版不可见），且其后的附件 GC 会被
+            # 整段跳过——失败必须留日志并尽力通知用户
+            logger.error("退出时落盘失败: %s", e)
+            self._tray.show_notification(
+                tr("看板数据保存失败，请检查磁盘空间或文件权限"))
+        finally:
+            self._gc_orphan_attachments()   # 撤销窗口随会话结束，回收孤儿附件
 
     def _on_save_recovered(self) -> None:
         """落盘恢复成功（worker 线程经信号 queued 回主线程）：重置退避"""
@@ -517,12 +526,25 @@ class AppController(QObject):
             self._board_view.clear_view_filters()
         board = self._store.load()
         if self._store.problems:
-            # 切到的板文件损坏（已隔离）：与启动路径同一套恢复询问，
-            # 否则用户对着空板录入，原数据被下一次保存覆盖
+            # 切到的板文件损坏（已隔离）：与启动路径同一套恢复询问；拒绝
+            # 恢复时同样走三件套（固化 .prev 好副本 + 说明 + 空板落盘），
+            # 否则用户对着空板录入，损坏主文件会被轮转进 .prev 污染好副本
             kinds = [k for k, _ in self._store.problems]
             self._store.problems.clear()
-            self._offer_restore(kinds)
-            board = self._store.load()
+            if self._offer_restore(kinds):
+                # 恢复流程已落盘并刷新视图；取回恢复后的内容继续本路径
+                board = self._store.load()
+            else:
+                self._preserve_good_copy()
+                detail_txt = tr("；").join(
+                    tr("已损坏并隔离") if k == "corrupted"
+                    else tr("暂时无法读取") for k in kinds)
+                self._show_error(
+                    tr("看板数据文件异常（{detail}），本次以默认看板打开。").format(
+                        detail=detail_txt))
+                board = self._store.load()
+                self._store.mark_dirty()
+                self._schedule_save()
         # 每次激活为上一份数据留档（与启动时同一保护）
         json_io.snapshot_board(
             self._store.path,
@@ -613,12 +635,16 @@ class AppController(QObject):
                 err=tr("文件可能被其他程序占用，请稍后重试")))
             if was_current:
                 # discard_pending 已把旧 store 永久作废，而删除失败意味着
-                # 文件还在：重建存储（重新读盘），否则后续编辑全部静默丢写
+                # 文件还在：重建存储并**回填内存态**——直接读盘会丢掉
+                # 最后一次落盘之后（防抖 500ms + 后台写间隙）的编辑
+                mem_board = self._store.load()
                 self._store = BoardStore(self._workspace.board_path(board_id))
+                self._store.replace_board(mem_board)
                 self._store_board_id = board_id
                 self._undo_stack.clear()
                 self._redo_stack.clear()
                 self._board_view.clear_selection()
+                self._schedule_save()
             return
         if was_current:
             # 在途写若在 discard 置位前已越过检查点，replace 会把已删文件
@@ -652,7 +678,7 @@ class AppController(QObject):
             doc = json.loads(Path(path).read_text(encoding="utf-8"))
             board, report = board_from_trello(doc)
         except (OSError, json.JSONDecodeError, ValueError,
-                AttributeError, TypeError) as e:
+                AttributeError, TypeError, RecursionError) as e:
             self._show_error(tr("导入失败：{err}").format(err=e))
             return
         self._activate_imported_board(board, Path(path).stem, report)
@@ -909,7 +935,8 @@ class AppController(QObject):
             return
         clipboard = QApplication.clipboard()
         text = clipboard.text() if clipboard is not None else ""
-        lines = [ln.strip() for ln in text.splitlines() if ln.strip()][:100]
+        raw_lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        lines = raw_lines[:100]
         if not lines:
             self._notify(tr("剪贴板没有文本内容"))
             return
@@ -928,13 +955,15 @@ class AppController(QObject):
                     card.ensure_fund()
         board.invalidate_index()
         if len(new_cards) == 1:
-            self._after_data_change(
-                tr("已添加「{title}」到 {list}").format(
-                    title=new_cards[0].title, list=target.title))
+            msg = tr("已添加「{title}」到 {list}").format(
+                title=new_cards[0].title, list=target.title)
         else:
-            self._after_data_change(
-                tr("已粘贴添加 {n} 张卡片到 {list}").format(
-                    n=len(new_cards), list=target.title))
+            msg = tr("已粘贴添加 {n} 张卡片到 {list}").format(
+                n=len(new_cards), list=target.title)
+        if len(raw_lines) > len(lines):
+            # 静默截断 100 行上限会让用户以为整段都进去了
+            msg += " · " + tr("超出上限，仅保留前 {n} 行").format(n=len(lines))
+        self._after_data_change(msg)
 
     def _on_files_dropped(self, list_id: str, paths: list) -> None:
         """外部文件拖到列：一个文件一张卡（标题=文件名主干）并挂为该卡附件
@@ -952,6 +981,7 @@ class AppController(QObject):
         attach_root = (AppConfig.DATA_DIR / "attachments").resolve()
         created: list[Card] = []
         failed = 0
+        truncated = max(0, len(paths) - 50)
         for raw in paths[:50]:
             src = Path(str(raw))
             try:
@@ -991,6 +1021,9 @@ class AppController(QObject):
         msg = (tr("已添加「{title}」").format(title=created[0].title)
                if len(created) == 1
                else tr("已添加 {n} 个文件为卡片").format(n=len(created)))
+        if truncated:
+            msg += " · " + tr("超出上限，仅保留前 {n} 个").format(
+                n=len(paths[:50]))
         if failed:
             msg += " · " + tr("{n} 个未能添加").format(n=failed)
         self._after_data_change(msg)
@@ -1519,8 +1552,8 @@ class AppController(QObject):
         dlg = self._calendar_dialog
         if dlg is None:
             return
-        y = year if year is not None else dlg._year
-        m = month if month is not None else dlg._month
+        y = year if year is not None else dlg.current_year()
+        m = month if month is not None else dlg.current_month()
         board = self._store.load()
         due_map: dict[str, list[Card]] = {}
         for lst in board.lists:
@@ -1741,7 +1774,8 @@ class AppController(QObject):
         lst = self._store.load().find_list(list_id)
         if lst is None:
             return
-        if not build_rows(lst):
+        rows = build_rows(lst)
+        if not rows:
             self._notify(tr("泳道内暂无资金卡片，未导出"))
             return
         from PySide6.QtCore import QStandardPaths
@@ -1755,7 +1789,7 @@ class AppController(QObject):
         if not path:
             return
         try:
-            n = export_xlsx(lst, path)
+            n = export_xlsx(lst, path, rows=rows)
         except Exception as e:   # noqa: BLE001 — 磁盘/权限/占用等写盘失败统一提示
             logger.warning("导出资金记录失败: %s", e)
             self._show_error(tr("导出失败：{err}").format(err=e))
@@ -2512,11 +2546,18 @@ class AppController(QObject):
         board = self._store.load()
         today = date.today()
         advance = AppConfig.get_remind_advance()
-        pending = any(
-            (lambda d: d is not None and (d <= 0 or d <= advance))(
-                c.due_delta(today))
-            for lst in board.lists for c in lst.cards
-            if not c.done and not c.archived)
+
+        def _pending(c: Card) -> bool:
+            d = c.due_delta(today)
+            if d is not None and (d <= 0 or d <= advance):
+                return True
+            # 资金监视的两道期限同样参与提醒：漏判会让"只有 fund 期限
+            # 待提醒"时点「稍后提醒」得到"当前没有待提醒"，而提醒照常弹
+            nd = c.fund_next_deadline(today)
+            return nd is not None and nd[1] <= advance
+
+        pending = any(_pending(c) for lst in board.lists for c in lst.cards
+                      if not c.done and not c.archived)
         if not pending:
             self._notify(tr("当前没有待提醒的截止卡片"))
             return
@@ -2546,7 +2587,7 @@ class AppController(QObject):
         if self._pomo_card_id is not None:
             # 专注中误点其他卡的"开始专注"会无声清零当前进度：先确认
             cur = board.find_card(self._pomo_card_id)[1]
-            cur_title = cur.title[:20] if cur is not None else "当前卡片"
+            cur_title = cur.title[:20] if cur is not None else tr("当前卡片")
             reply = QMessageBox.question(
                 self._window, tr("切换专注"),
                 tr("正在专注「{title}」，切换将放弃当前进度。\n继续？").format(
@@ -2578,7 +2619,10 @@ class AppController(QObject):
         self._board_view.set_focusing_card(None)
         self._pet_view.set_focus_mode(False)
         self._pet_view.set_badge_override(None)
-        self._tray.set_tooltip(AppConfig.APP_NAME)
+        # app_display_name 而非常量：英文界面下 APP_NAME（中文）会让托盘
+        # tooltip 语言回退
+        from app.i18n import app_display_name
+        self._tray.set_tooltip(app_display_name())
         self._refresh_pet_state()
         if finished:
             board = self._store.load()
@@ -2930,9 +2974,10 @@ class AppController(QObject):
         try:
             doc = json.loads(Path(path).read_text(encoding="utf-8"))
             if not isinstance(doc, dict):
-                raise ValueError("备份文件不是有效的数据结构")
+                raise ValueError(tr("备份文件不是有效的数据结构"))
             new_board = Board.from_dict(doc)
-        except (OSError, ValueError, AttributeError, TypeError) as e:
+        except (OSError, ValueError, AttributeError, TypeError,
+                RecursionError) as e:   # RecursionError：深嵌套恶意 JSON
             self._show_error(tr("备份文件无法读取：{err}").format(err=e))
             return
         name = new_board.name or Path(path).stem

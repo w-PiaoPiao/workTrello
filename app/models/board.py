@@ -298,7 +298,12 @@ class Card:
         """用表单结果 dict 就地更新字段（CardDialog.result_card 的输出）"""
         self.title = str(data.get("title", self.title)).strip()
         self.notes = str(data.get("notes", self.notes)).strip()
-        self.labels = list(data.get("labels", self.labels))
+        # 与 from_dict 同强度防御：labels 为 None/含非 str 时不炸
+        # （list(None) 抛 TypeError）也不落脏值
+        labels_raw = data.get("labels", self.labels)
+        if isinstance(labels_raw, list):
+            self.labels = [str(x) for x in labels_raw
+                           if isinstance(x, str)]
         self.due_date = data.get("due_date", self.due_date)
         self.workdir = str(data.get("workdir", self.workdir) or "").strip()
         self.starred = bool(data.get("starred", self.starred))
@@ -845,11 +850,17 @@ class BoardStore:
             return
         self._dirty = False
         self._flush_seq += 1
+        seq = self._flush_seq
         path = self._path
 
         def _work() -> None:
             if self._discarded:
                 return   # 看板已删除：放弃写回，防孤儿文件
+            if seq != self._flush_seq:
+                # 提交后又有更新的写入（主线程 flush / 新一轮提交）：
+                # 本任务的 doc 是旧快照，照写会用旧数据覆盖新落盘
+                # （waitForDone(3000) 超时窗口下曾经发生）
+                return
             try:
                 atomic_write_json(path, doc)
             except Exception as e:

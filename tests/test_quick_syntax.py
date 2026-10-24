@@ -222,5 +222,33 @@ class WordBoundaryTest(unittest.TestCase):
         self.assertEqual(title, "Todays standup notes")
 
 
+class ExplicitYearAndLeapTest(unittest.TestCase):
+    """回归：显式年份 / 平年 2 月 29 日"""
+
+    def test_explicit_year_is_respected(self):
+        """「2027年3月5日」按 2027 年解析，不滚动也不残留年份"""
+        title, f = parse_quick_input("2027年3月5日交材料", today=MONDAY)
+        self.assertEqual(f["due_date"], "2027-03-05")
+        self.assertEqual(title, "交材料")
+
+    def test_explicit_year_kept_when_equals_next_year(self):
+        # 今年已过的日期写了显式明年：按写出的年份，不重复滚动
+        title, f = parse_quick_input("2027年1月5日交材料", today=MONDAY)
+        self.assertEqual(f["due_date"], "2027-01-05")
+        self.assertEqual(title, "交材料")
+
+    def test_feb29_in_plain_year_rolls_to_next_leap_year(self):
+        """平年（2027 无 2/29）写「2月29日」滚到下一个闰年而非放弃解析"""
+        title, f = parse_quick_input("2月29日交材料", today=date(2027, 6, 1))
+        self.assertEqual(f["due_date"], "2028-02-29")
+        self.assertEqual(title, "交材料")
+
+    def test_impossible_date_stays_text(self):
+        # 2月30日哪年都不存在：不解析、原文保留
+        title, f = parse_quick_input("2月30日交材料", today=MONDAY)
+        self.assertNotIn("due_date", f)
+        self.assertEqual(title, "2月30日交材料")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -69,7 +69,9 @@ def save_template(name: str, card: Card) -> bool:
     try:
         json_io.atomic_write_json(templates_path(),
                                   {"templates": entries}, durable=True)
-    except OSError as e:
+    # StoreError 不是 OSError 子类：只捕 OSError 会让写失败（磁盘满/权限）
+    # 冒泡进 Qt 槽，"返回 False + 调用方提示"的契约失效
+    except (OSError, json_io.StoreError) as e:
         logger.warning("模板写入失败: %s", e)
         return False
     return True
@@ -83,7 +85,7 @@ def delete_template(name: str) -> bool:
     try:
         json_io.atomic_write_json(templates_path(),
                                   {"templates": kept}, durable=True)
-    except OSError as e:
+    except (OSError, json_io.StoreError) as e:
         logger.warning("模板写入失败: %s", e)
         return False
     return True

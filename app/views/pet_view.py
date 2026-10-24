@@ -912,7 +912,10 @@ class PetView(QWidget):
             event.accept()
             return
         if key == Qt.Key_Menu:      # 键盘上的"右键"键
-            self._show_context_menu(self.rect().center())
+            # exec 期望屏幕坐标：rect().center() 是本地坐标，会把菜单
+            # 弹到主屏左上角（(44,44) 一带）而不是桌宠旁边
+            self._show_context_menu(
+                self.mapToGlobal(self.rect().center()))
             event.accept()
             return
         super().keyPressEvent(event)

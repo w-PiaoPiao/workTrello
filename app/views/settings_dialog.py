@@ -207,14 +207,16 @@ class SettingsDialog(QDialog):
             self._scale_seg)
         # 视觉皮肤：换的是一整套配色 + 造型（圆角/字重/徽章形态/板底纹理），
         # 与上面的深浅色正交——所以是单选的一排色板，不是嵌套菜单。
-        self._skin_row_title = QLabel(tr("视觉皮肤"))
-        self._skin_row_title.setObjectName("rowTitle")
-        self._skin_row_hint = QLabel(
+        # 属性名与桌宠区的 _skin_row_* 区分：同名会互相覆盖，retexts 就
+        # 再也刷不到外观区这一行（语言切换后文案停留旧语言）
+        self._ui_skin_row_title = QLabel(tr("视觉皮肤"))
+        self._ui_skin_row_title.setObjectName("rowTitle")
+        self._ui_skin_row_hint = QLabel(
             tr("整套配色与造型（圆角 / 字重 / 徽章形态），深浅色在其之上生效"))
-        self._skin_row_hint.setObjectName("rowHint")
-        self._skin_row_hint.setWordWrap(True)
-        self._sec_appearance._lay.addWidget(self._skin_row_title)
-        self._sec_appearance._lay.addWidget(self._skin_row_hint)
+        self._ui_skin_row_hint.setObjectName("rowHint")
+        self._ui_skin_row_hint.setWordWrap(True)
+        self._sec_appearance._lay.addWidget(self._ui_skin_row_title)
+        self._sec_appearance._lay.addWidget(self._ui_skin_row_hint)
         skin_row = QWidget()
         skin_row_lay = QHBoxLayout(skin_row)
         skin_row_lay.setContentsMargins(0, 0, 0, 0)
@@ -471,8 +473,8 @@ class SettingsDialog(QDialog):
         self._scale_seg.retexts(
             [("compact", tr("紧凑")), ("normal", tr("标准")),
              ("comfortable", tr("宽松"))])
-        self._skin_row_title.setText(tr("视觉皮肤"))
-        self._skin_row_hint.setText(
+        self._ui_skin_row_title.setText(tr("视觉皮肤"))
+        self._ui_skin_row_hint.setText(
             tr("整套配色与造型（圆角 / 字重 / 徽章形态），深浅色在其之上生效"))
         for key, btn in self._ui_skin_buttons.items():
             # 皮肤名是产品名词，不翻译：翻译后用户在两台机器上会看到

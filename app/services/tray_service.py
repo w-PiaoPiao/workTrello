@@ -139,7 +139,11 @@ class TrayService(QObject):
             self._on_toggle()
             return
         if reason == QSystemTrayIcon.DoubleClick:
-            if self._tray.isVisible() and self.parent().isVisible():
+            # parent 判空与 reapply_texts 同款防御：生产构造恒有 parent，
+            # 但隔离测试/复用场景下无宿主时不该 AttributeError
+            window = self.parent()
+            if self._tray.isVisible() and (
+                    window is None or window.isVisible()):
                 self.signal_hide_requested.emit()
             else:
                 self.signal_show_requested.emit()
