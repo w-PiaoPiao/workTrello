@@ -489,9 +489,6 @@ _zh_en: dict[str, str] = {
     "已从备份恢复看板数据": "Board restored from backup",
     "快照 {name} 无法解析，恢复失败。":
         "Snapshot {name} can't be parsed — restore failed.",
-    "备份文件 {name} 无法解析，恢复失败，本次以默认看板启动。":
-        "Backup {name} can't be parsed — restore failed; starting with the "
-        "default board.",
     "本次以默认看板启动。": "Starting with the default board.",
     "看板数据文件异常（{detail}），本次以默认看板启动。":
         "Board data file error ({detail}). Starting with the default board.",
@@ -818,6 +815,8 @@ _zh_en: dict[str, str] = {
     # ── 2026-10 全量审查修复补缺 ──
     '看板数据文件异常（{detail}），本次以默认看板打开。':
         'Board data file error ({detail}). Opening with the default board.',
+    '{detail}，且备份副本无法解析':
+        '{detail}; the backup copy could not be read either',
     '超出上限，仅保留前 {n} 行':
         'over the limit, only the first {n} kept',
     '超出上限，仅保留前 {n} 个':

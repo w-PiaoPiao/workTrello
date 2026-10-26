@@ -246,14 +246,18 @@ class AppController(QObject):
         if self._store.problems:
             kinds = [k for k, _ in self._store.problems]
             self._store.problems.clear()
-            if self._offer_restore(kinds):
+            restored = self._offer_restore(kinds)
+            if restored:
                 return  # 已从备份恢复并刷新视图
-            # 用户放弃恢复：好数据仍躺在 .prev 里，先固化一份带时间戳的副本，
-            # 避免随后的默认看板首次落盘把 .prev 轮转覆盖掉
+            # 用户放弃恢复或副本也损坏：好数据仍躺在 .prev 里，先固化一份
+            # 带时间戳的副本，避免随后的默认看板首次落盘把 .prev 轮转覆盖掉
             self._preserve_good_copy()
             detail_txt = tr("；").join(
                 tr("已损坏并隔离") if k == "corrupted"
                 else tr("暂时无法读取") for k in kinds)
+            if restored is None:
+                detail_txt = tr("{detail}，且备份副本无法解析").format(
+                    detail=detail_txt)
             self._show_error(
                 tr("看板数据文件异常（{detail}），本次以默认看板启动。").format(
                     detail=detail_txt))
@@ -340,8 +344,14 @@ class AppController(QObject):
         json_io.rotate_backups(self._store.path, "good",
                                json_io.GOOD_BACKUP_KEEP)
 
-    def _offer_restore(self, kinds: list[str]) -> bool:
-        """数据文件异常时询问是否从最近好副本（.prev）恢复；成功恢复返回 True"""
+    def _offer_restore(self, kinds: list[str]) -> bool | None:
+        """数据文件异常时询问是否从最近好副本（.prev）恢复。
+
+        返回 True=已恢复；False=用户拒绝或无可用副本；None=尝试恢复但
+        失败（副本本身无法解析 / 落盘失败）。失败收尾（固化好副本 +
+        提示 + 空板落盘）统一由调用方处理——本方法内部再做一遍会与调用
+        方叠加成重复固化与重复弹窗。
+        """
         bak = json_io.good_prev_copy(self._store.path)
         if bak is None:
             return False
@@ -361,11 +371,7 @@ class AppController(QObject):
         if reply != QMessageBox.Yes:
             return False
         if not json_io.restore_from_backup(self._store.path, bak):
-            self._preserve_good_copy()
-            self._show_error(
-                tr("备份文件 {name} 无法解析，恢复失败，本次以默认看板启动。").format(
-                    name=bak.name))
-            return False
+            return None   # 具体原因已由 restore_from_backup 记入日志
         # 重新读盘，取回刚写入的恢复数据
         board = self._store.reload()
         self._apply_board_to_ui(board)
@@ -531,14 +537,20 @@ class AppController(QObject):
             # 否则用户对着空板录入，损坏主文件会被轮转进 .prev 污染好副本
             kinds = [k for k, _ in self._store.problems]
             self._store.problems.clear()
-            if self._offer_restore(kinds):
+            restored = self._offer_restore(kinds)
+            if restored:
                 # 恢复流程已落盘并刷新视图；取回恢复后的内容继续本路径
                 board = self._store.load()
             else:
+                # 用户放弃或副本也损坏：固化好副本 + 说明 + 空板落盘，
+                # 否则用户对着空板录入，损坏主文件会被轮转进 .prev
                 self._preserve_good_copy()
                 detail_txt = tr("；").join(
                     tr("已损坏并隔离") if k == "corrupted"
                     else tr("暂时无法读取") for k in kinds)
+                if restored is None:
+                    detail_txt = tr("{detail}，且备份副本无法解析").format(
+                        detail=detail_txt)
                 self._show_error(
                     tr("看板数据文件异常（{detail}），本次以默认看板打开。").format(
                         detail=detail_txt))
