@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from functools import cmp_to_key, lru_cache
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,
@@ -213,7 +213,13 @@ class ArchiveDialog(QDialog):
         self._search_edit.setPlaceholderText(tr("搜索归档卡片…"))
         self._search_edit.setAccessibleName(tr("搜索归档卡片…"))
         self._search_edit.setClearButtonEnabled(True)
-        self._search_edit.textChanged.connect(lambda _t: self._render())
+        # 输入防抖：每敲一个键全量销毁/重建归档行，300 张时约 200ms/键
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(120)
+        self._search_timer.timeout.connect(self._render)
+        self._search_edit.textChanged.connect(
+            lambda _t: self._search_timer.start())
         tools.addWidget(self._search_edit, 1)
         # 排序下拉不设 accessibleName：需要一个"排序"词条，而 i18n 词典
         # 不在本阶段写作用域内（读屏靠条目文本本身播报当前值）

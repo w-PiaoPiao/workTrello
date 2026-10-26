@@ -821,6 +821,30 @@ _zh_en: dict[str, str] = {
         'The board is still being saved — please try again shortly',
     '看板已变更，操作取消':
         'The board changed — operation cancelled',
+    '无法保存粘贴图片（临时目录不可写或磁盘已满）':
+        "Couldn't save the pasted image (temp folder not writable or disk full)",
+    '数据目录不可用：{path}\n{err}':
+        'Data folder unavailable: {path}\n{err}',
+    # 资金分配监视环节名（模型里存中文模板名，显示层翻译）
+    '收集分配方案': 'Collect allocation plan',
+    '汇总上会材料': 'Compile meeting materials',
+    '上会': 'Submit to meeting',
+    '出会议纪要': 'Issue meeting minutes',
+    '财政去函': 'Letter to Finance',
+    '财政复函': 'Reply from Finance',
+    '报分管': 'Report to deputy head',
+    '分管批复': 'Deputy head approval',
+    '送律师': 'Send to lawyer',
+    '律师法律意见': 'Legal opinion from lawyer',
+    '法规处法律意见': 'Legal opinion from regulations office',
+    '征求司法局意见': 'Seek justice bureau opinion',
+    '司法局回复': 'Justice bureau reply',
+    '报政府常务会': 'Report to government executive meeting',
+    '商市财政局代上会': 'Coordinate with city finance bureau',
+    '会签下达文件': 'Jointly sign and issue document',
+    '资金文件下达': 'Issue funding document',
+    '资金入库追加': 'Fund receipt and addition',
+    '财政二次去函': 'Second letter to Finance',
     '超出上限，仅保留前 {n} 行':
         'over the limit, only the first {n} kept',
     '超出上限，仅保留前 {n} 个':

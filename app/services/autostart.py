@@ -14,7 +14,6 @@ from __future__ import annotations
 import logging
 import os
 import plistlib
-import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -199,17 +198,32 @@ class _LinuxAutostart(_Autostart):
                               / f"{AUTOSTART_ID.lower()}.desktop")
 
     def _command(self) -> str:
-        return " ".join(shlex.quote(p) for p in launch_command())
+        # Desktop Entry 规范只认双引号（POSIX 单引号不是合法 Exec 语法），
+        # 且值里的 " ` $ \ 需转义、% 需写成 %%（否则被当字段码）
+        def quote(arg: str) -> str:
+            arg = arg.replace("%", "%%")
+            for ch in ("\\", '"', "`", "$"):
+                arg = arg.replace(ch, "\\" + ch)
+            return f'"{arg}"'
+        return " ".join(quote(p) for p in launch_command())
 
     def _registered(self) -> str | None:
         try:
             text = self._path.read_text(encoding="utf-8")
         except OSError:
             return None
+        exec_line: str | None = None
+        disabled = False
         for line in text.splitlines():
-            if line.startswith("Exec="):
-                return line[len("Exec="):].strip()
-        return None
+            stripped = line.strip()
+            if stripped.startswith("Exec="):
+                exec_line = stripped[len("Exec="):].strip()
+            elif stripped in ("Hidden=true",
+                              "X-GNOME-Autostart-enabled=false"):
+                disabled = True
+        # 用户可能在 GNOME「启动应用程序」面板里关掉它：只看 Exec= 会让
+        # 设置页误报"已开启"
+        return None if disabled else exec_line
 
     def enable(self) -> bool:
         text = (

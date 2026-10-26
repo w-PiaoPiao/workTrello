@@ -457,6 +457,9 @@ class _DayCell(QFrame):
             event.acceptProposedAction()
 
     def dropEvent(self, event) -> None:
+        # drop 后通常不再派发 DragLeave：通知父级停掉 650ms 翻月定时器，
+        # 否则松手后日历会自己再翻一个月
+        self.signal_drag_leave.emit()
         if event.mimeData().hasFormat(MIME_CARD) and self._iso:
             card_id = bytes(event.mimeData().data(MIME_CARD)).decode("utf-8")
             self.signal_drop_card.emit(card_id, self._iso)
@@ -714,6 +717,12 @@ class CalendarDialog(QDialog):
         self._row_h = max(_CELL_MIN_H, min(ideal, avail // rows))
         for cell in self._cells:
             cell.set_row_height(self._row_h)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        # 首次 show 前 viewport 高度还是布局前的默认值（实测 480 → 实际
+        # 386），此时算出的行高让整月一打开就带滚动条；等布局完成后重算
+        QTimer.singleShot(0, self._fit_row_height)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)

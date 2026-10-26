@@ -530,7 +530,7 @@ class SettingsDialog(QDialog):
     # ── 内部 ──────────────────────────────────────────────
 
     def _open_data_dir(self) -> None:
-        AppConfig.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        AppConfig.ensure_data_dir()
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(AppConfig.DATA_DIR)))
 
     @staticmethod

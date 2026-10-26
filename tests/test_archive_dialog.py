@@ -49,8 +49,15 @@ class ArchiveDialogRenderTest(unittest.TestCase):
         self.dlg.close()
         self.dlg.deleteLater()
 
+    def _flush_search(self):
+        """搜索输入是 120ms 防抖：测试里立即到点，不做真实等待"""
+        if self.dlg._search_timer.isActive():
+            self.dlg._search_timer.stop()
+            self.dlg._render()
+
     def _rendered(self):
         """当前渲染出的行标题（按显示顺序；去掉完成态前缀）"""
+        self._flush_search()
         out = []
         for i in range(self.dlg._rows_layout.count()):
             w = self.dlg._rows_layout.itemAt(i).widget()
@@ -86,6 +93,7 @@ class ArchiveDialogRenderTest(unittest.TestCase):
 
     def test_search_stats_show_match_count(self):
         self.dlg._search_edit.setText("周报")
+        self._flush_search()
         text = self.dlg._stats_label.text()
         self.assertIn("1", text)
         self.assertIn("3", text)

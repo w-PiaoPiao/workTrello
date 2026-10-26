@@ -811,21 +811,18 @@ class CardDialog(QDialog):
     def _discard_paste_tmp(att: dict) -> None:
         """清掉粘贴产生、尚未入库的临时 PNG（用户原文件绝不触碰）
 
-        判定与控制器 _materialize_attachments 一致：pending 标记 +
-        系统临时目录 + petboard_paste_ 前缀三重限定。
+        只认显式的 paste 来源标记：此前按"临时目录 + 文件名前缀"判断，
+        用户手选的同前缀文件会被误删。
         """
-        if not att.get("pending"):
+        if not att.get("pending") or not att.get("paste"):
             return
         path = str(att.get("path", ""))
         if not path:
             return
-        p = Path(path)
-        if (p.parent == Path(tempfile.gettempdir())
-                and p.name.startswith("petboard_paste_")):
-            try:
-                p.unlink()
-            except OSError:
-                pass
+        try:
+            Path(path).unlink()
+        except OSError:
+            pass
 
     def _on_add_attachment(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -858,6 +855,9 @@ class CardDialog(QDialog):
                 os.unlink(tmp)
             except OSError:
                 pass
+            from PySide6.QtWidgets import QToolTip
+            QToolTip.showText(self.cursor().pos(),
+                              tr("无法保存粘贴图片（临时目录不可写或磁盘已满）"))
             return
         self._attachments.append({
             "id": uuid.uuid4().hex,
@@ -866,6 +866,7 @@ class CardDialog(QDialog):
             "path": tmp,
             "is_image": True,
             "pending": True,
+            "paste": True,   # 来源标记：取消/移除时只清这类临时文件
         })
         self._rebuild_attach_rows()
 
@@ -1050,7 +1051,8 @@ class CardDialog(QDialog):
             lay.setSpacing(6)
             check = QCheckBox()
             check.setChecked(bool(step.get("done")))
-            name = QLabel(step.get("name", ""))
+            # 环节名是随卡快照的中文模板名，显示层翻译（历史数据也能本地化）
+            name = QLabel(tr(step.get("name", "")))
             name.setObjectName("fundStepName")
             date_edit = DateEdit()   # 滚轮/触控板滑动不改值（防悬停误触）
             date_edit.setMinimumDate(_FUND_DATE_SENTINEL)

@@ -3983,6 +3983,9 @@ class BoardView(QWidget):
             col._header.reapply_theme()
             for cw in col._card_widgets:
                 cw.reapply_style()
+                cw._fit_width = None   # 字号/密度变了，徽章取舍必须重算
+        # 密度改变会改字号与按钮内边距，但窗口尺寸不变、resizeEvent 不触发
+        self._apply_toolbar_overflow()
 
     def reapply_skin(self) -> None:
         """皮肤切换：整块样式表 + 自绘骨架 + 卡片重建
@@ -4000,6 +4003,8 @@ class BoardView(QWidget):
             col.reapply_frame_style()
             for cw in col._card_widgets:
                 cw._fingerprint = ()
+        # 清指纹只会在下一次 refresh 时触发 rebuild；换肤当场就要生效
+        self.refresh(self._lists)
         self.update_stats(self._lists)
         self._sync_overflow_menu()
         self.update()
@@ -4051,6 +4056,8 @@ class BoardView(QWidget):
             for cw in col._card_widgets:
                 cw._fingerprint = ()   # 强制后续 refresh 时 rebuild
         self.update_stats(self._lists)
+        # 按钮文案宽度随语言变化，窗口尺寸不变时 resizeEvent 不会重算收纳
+        self._apply_toolbar_overflow()
 
     def _on_theme_clicked(self) -> None:
         self.signal_theme_selected.emit(
@@ -4365,7 +4372,9 @@ class BoardView(QWidget):
         # 未选中，这里统一重刷一次（集合没变时设置是幂等短路）
         # 先收窄集合到现存卡：单卡删除路径不清集合，否则"已选 N 张"虚报
         if self._selected_ids:
-            self._selected_ids &= {c.id for lst in lists for c in lst.cards}
+            # 归档卡不渲染也不该参与批量操作：收窄时一并剔除
+            self._selected_ids &= {c.id for lst in lists
+                                   for c in lst.cards if not c.archived}
             self._update_selection_bar()
         self._apply_selection_props()
         sb.setValue(scroll_pos)
@@ -4433,11 +4442,11 @@ class BoardView(QWidget):
             bar.adjustSize()
             bar.move((self.width() - bar.width()) // 2,
                      self.height() - bar.height() - 14)
-            was_visible = bar.isVisible()
             bar.show()
             bar.raise_()
-            # 出现与卡片/列同一套淡入（此前是裸 show，浮层"啪"地跳出）
-            if not was_visible and motion.enabled():
+            # 无条件淡入：若此时旧的 fade_out 还在跑（160ms 内重新选中），
+            # 它结束时会把刚显示的栏 hide() 掉
+            if motion.enabled():
                 motion.fade_in(bar, AppConfig.POPOVER_ANIM_MS)
         elif bar.isVisible():
             if motion.enabled():
@@ -4680,8 +4689,7 @@ class BoardView(QWidget):
     def _update_label_chip(self) -> None:
         """过滤 chip：过滤态显示「标签：红」，点它清除过滤"""
         if self._label_filter:
-            name = AppConfig.LABEL_NAMES.get(self._label_filter,
-                                             self._label_filter)
+            name = label_display(self._label_filter)
             self._label_chip.setText(tr("标签：{name}").format(name=name))
             self._label_chip.show()
         else:
@@ -4881,8 +4889,7 @@ class BoardView(QWidget):
                 total = sum(len(self._visible_cards_for(l) or []) for l in lists)
             else:
                 total = sum(len(v or []) for v in visibles.values())
-            name = AppConfig.LABEL_NAMES.get(self._label_filter,
-                                             self._label_filter)
+            name = label_display(self._label_filter)
             self._stats_label.setText(
                 tr("标签 {name} · {n} 张").format(name=name, n=total))
             return

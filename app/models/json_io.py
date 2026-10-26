@@ -150,6 +150,11 @@ def atomic_write_json(path: Path, data, *, indent: int | None = 2,
             f.flush()
             if durable:
                 os.fsync(f.fileno())
+        if os.name != "nt":
+            try:
+                os.chmod(tmp_path, 0o600)   # replace 后即主文件权限
+            except OSError:
+                pass
         # 轮转 .prev：硬链接零拷贝，失败（平台差异/文件占用）降级复制；
         # 轮转失败只影响备份新鲜度，不阻断本次写入（主文件仍在）
         if rotate_prev and path.exists():

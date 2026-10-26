@@ -391,12 +391,27 @@ def icon(name: str, size: int = _DEFAULT_SIZE, color=None) -> QIcon:
 
 
 def pixmap(name: str, size: int = _DEFAULT_SIZE, color=None) -> QPixmap:
-    """图标 → QPixmap（QLabel.setPixmap 用）"""
+    """图标 → QPixmap（QLabel.setPixmap 用）
+
+    按屏幕 devicePixelRatio 生成位图并回填 dpr：否则 2x 屏上 16px 位图
+    被拉伸到 32 物理像素，和走 QIcon 引擎的图标清晰度不一致。
+    """
     side = max(1, int(size))
-    pm = QPixmap(side, side)
+    try:
+        from PySide6.QtGui import QGuiApplication
+        screen = QGuiApplication.primaryScreen()
+        dpr = screen.devicePixelRatioF() if screen is not None else 1.0
+    except Exception:   # noqa: BLE001 — 无 GUI 环境（纯逻辑测试）降级
+        dpr = 1.0
+    if dpr <= 0:
+        dpr = 1.0
+    pm = QPixmap(max(1, int(round(side * dpr))),
+                 max(1, int(round(side * dpr))))
+    pm.setDevicePixelRatio(dpr)
     pm.fill(Qt.transparent)
     painter = QPainter(pm)
     painter.setRenderHint(QPainter.Antialiasing)
+    painter.scale(dpr, dpr)
     paint(painter, name, side, color)
     painter.end()
     return pm

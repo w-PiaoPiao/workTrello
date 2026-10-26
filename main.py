@@ -7,6 +7,7 @@
 """
 
 import logging
+import os
 import sys
 
 
@@ -30,8 +31,11 @@ def main():
     from PySide6.QtWidgets import QApplication
 
     app = QApplication(sys.argv)
-    app.setApplicationName("桌宠看板")
-    app.setOrganizationName("Personal")
+
+    from app.config import AppConfig
+    from app import i18n
+    app.setApplicationName(AppConfig.APP_NAME)
+    app.setOrganizationName(AppConfig.APP_ORG)
     app.setQuitOnLastWindowClosed(False)
 
     from app.services.app_icon import create_app_icon
@@ -50,12 +54,17 @@ def main():
 
     from PySide6.QtCore import QLockFile
 
-    from app.config import AppConfig
-
     try:
-        AppConfig.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    except Exception as e:
-        logging.warning("创建数据目录失败: %s", e)
+        AppConfig.ensure_data_dir()
+    except OSError as e:
+        # 目录不可写时继续走下去，QLockFile 必然拿不到锁，最后被误报成
+        # "已有实例在运行"，用户永远找不到真正原因
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.critical(
+            None, AppConfig.APP_NAME,
+            i18n.tr("数据目录不可用：{path}\n{err}").format(
+                path=AppConfig.DATA_DIR, err=e))
+        sys.exit(1)
 
     # 文件日志：打包版 console=False 看不到 stderr，落盘才能事后定位
     # （放锁检查之前：第二实例/启动崩溃的场景也要能留下痕迹）
@@ -68,11 +77,15 @@ def main():
         _fh.setFormatter(logging.Formatter(
             "%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
         logging.getLogger().addHandler(_fh)
+        if hasattr(os, "chmod") and sys.platform != "win32":
+            try:
+                os.chmod(log_path, 0o600)   # 日志含卡片文本与堆栈
+            except OSError:
+                pass
     except OSError as e:
         logging.warning("日志文件不可用: %s", e)
 
     # 语言先于任何 UI（含锁冲突提示框）确定（QSettings 已按数据目录定位好）
-    from app import i18n
     i18n.set_lang(AppConfig.get_language())
 
     _lock = QLockFile(str(AppConfig.DATA_DIR / "instance.lock"))

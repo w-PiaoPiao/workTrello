@@ -8,7 +8,6 @@ import csv
 import json
 import logging
 import shutil
-import tempfile
 import time
 import uuid
 from datetime import date, timedelta
@@ -1268,13 +1267,12 @@ class AppController(QObject):
                 att["path"] = str(dest)
                 att.pop("pending", None)
                 # 粘贴图片的源是临时 PNG：入库后清掉源文件（用户原文件不动）
-                tmp_dir = Path(tempfile.gettempdir())
-                if (src.parent == tmp_dir
-                        and src.name.startswith("petboard_paste_")):
+                if att.get("paste"):
                     try:
                         src.unlink()
                     except OSError:
                         pass
+                    att.pop("paste", None)
             except OSError as e:
                 # 复制失败：保留 pending 标记（不落库路径），提示但不中断
                 logger.warning("附件复制失败: %s -> %s (%s)", src, dest_dir, e)

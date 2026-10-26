@@ -109,6 +109,9 @@ def normalize_attachments(raw) -> list[dict]:
             # pending（复制失败待重试）是运行时态：必须保留，否则
             # apply/落盘一次后重试机制失效，附件永久指向临时文件
             **({"pending": True} if entry.get("pending") else {}),
+            # paste（剪贴板临时 PNG 来源）同样只在内存态保留：清理时
+            # 只删这类文件，用户手选的原文件绝不能被误删
+            **({"paste": True} if entry.get("paste") else {}),
         })
     return out
 

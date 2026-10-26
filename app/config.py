@@ -369,9 +369,25 @@ class AppConfig:
     BOARD_FILE = "board.json"
 
     @classmethod
+    def ensure_data_dir(cls) -> Path:
+        """创建数据目录并收紧权限
+
+        Linux 上 $HOME 常见 0755，mkdir 默认按 umask 得到 0755——同机
+        其他本地用户可直接读取全部卡片与日志。目录建成 0700，已存在的
+        目录也纠正一次。
+        """
+        cls.DATA_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if not cls.IS_WINDOWS:
+            try:
+                os.chmod(cls.DATA_DIR, 0o700)
+            except OSError:
+                pass
+        return cls.DATA_DIR
+
+    @classmethod
     def board_path(cls) -> Path:
         """看板数据文件路径（确保目录存在）"""
-        cls.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        cls.ensure_data_dir()
         return cls.DATA_DIR / cls.BOARD_FILE
 
     # ── 窗口尺寸与位置 ────────────────────────────────────────

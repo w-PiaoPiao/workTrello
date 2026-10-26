@@ -19,7 +19,8 @@ import ctypes
 import logging
 import sys
 
-from PySide6.QtCore import QAbstractNativeEventFilter, QObject, Qt, Signal
+from PySide6.QtCore import (
+    QAbstractNativeEventFilter, QObject, Qt, QTimer, Signal)
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import QApplication, QWidget
 
@@ -117,7 +118,9 @@ class _WinHotkeyFilter(QAbstractNativeEventFilter):
         except (ctypes.ArgumentError, ValueError):
             return False, 0
         if msg.message == WM_HOTKEY and int(msg.wParam) == self._id:
-            self._on_hit()
+            # 不在原生事件过滤器里直接开模态对话框：槽会 activateWindow
+            # 并 exec 快速添加框，等于在 C++ 分发栈内启动嵌套事件循环
+            QTimer.singleShot(0, self._on_hit)
         return False, 0   # 不拦截：继续走 Qt 自己的分发
 
 

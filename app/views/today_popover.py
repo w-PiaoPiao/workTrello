@@ -359,7 +359,15 @@ class TodayPopover(QWidget):
         else:
             done_label.hide()
         layout.addStretch(1)
-        h = min(_MAX_POP_H, _CHROME_H + _ROW_MIN_H * len(items)
+        def _row_height(card) -> int:
+            # 标题可换行：按显示宽度估算行数（ASCII 记 1、其他记 2，
+            # 13px 字号下约 14 单位/行），避免固定 42px/行把长标题裁掉
+            width = sum(2 if ord(ch) > 0x2E80 else 1 for ch in card.title)
+            lines = max(1, (width + 13) // 14)
+            return _ROW_MIN_H + (lines - 1) * 18
+
+        h = min(_MAX_POP_H, _CHROME_H
+                + sum(_row_height(card) for _lst, card in items)
                 + (24 if show_done else 0))
         self._set_pop_height(h, dismiss=current, keep=keep)
 
