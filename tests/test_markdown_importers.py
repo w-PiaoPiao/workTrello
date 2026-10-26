@@ -47,6 +47,20 @@ class MarkdownLiteTest(unittest.TestCase):
         self.assertIn('<a href="https://a.b/c">', html)
         self.assertIn("第一行<br>", html)
 
+    def test_link_quote_injection_escaped(self):
+        """链接 URL 里的引号不能注入 HTML 属性"""
+        html = render_markdown('[click](x"onmouseover="alert(1))')
+        self.assertNotIn('onmouseover="alert', html)
+        self.assertIn("&quot;", html)
+
+    def test_unclosed_brackets_are_linear(self):
+        """未闭合 [a](b 反复出现曾触发平方级回溯（50KB 近 10s）"""
+        import time
+        text = "[a](b" * 4000
+        started = time.monotonic()
+        render_markdown(text)
+        self.assertLess(time.monotonic() - started, 1.0)
+
     def test_empty(self):
         self.assertEqual(render_markdown("   "), "")
 

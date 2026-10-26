@@ -9,7 +9,8 @@
   含今天；"上周X/每周X"等前缀词不解析，保留原文）| 下周X（下周对应日）|
   M月D日 / M/D（今年已过则明年）| YYYY-MM-DD
 - 截止日（英）：today / tomorrow / day after tomorrow | in N days |
-  next mon…（缩写或全名）| mon/tue/…/fri…（未来最近一天）| M/D | YYYY-MM-DD
+  next mon…（缩写或全名）| monday…（全名）| mon/tue/thu/fri（裸缩写）|
+  wed/sat/sun 单独成行（避免 "I sat down"/"sun exposure" 被误吞）| M/D | YYYY-MM-DD
 - 优先级：!P1 !P2 !P3（大小写均可，1=高 3=低）
 - 标签：#红 #红色 #blue（LABEL_NAMES 中文名可只写前缀，或英文 key），
   去重
@@ -49,7 +50,7 @@ _RE_MD = re.compile(
 # 静默吞掉（卡片凭空多出逾期截止日）
 _RE_MD_SLASH = re.compile(r"(?<!\S)(\d{1,2})/(\d{1,2})(?![0-9])")
 _RE_PRIORITY = re.compile(r"(?<![A-Za-z])![pP]([123])\b")
-_RE_TAG = re.compile(r"#([\u4e00-\u9fa5A-Za-z]+)")
+_RE_TAG = re.compile(r"(?<![/&#])#([\u4e00-\u9fa5A-Za-z]+)")
 _RE_NEXT_WEEKDAY = re.compile(r"下(?:周|星期|礼拜)([一二三四五六日天])")
 # "上周三/每周三/本周三"等前缀词不是"未来最近一天"语义（前者指过去，
 # 后者是周期性）：负向后视排除，保留原文不解析
@@ -62,9 +63,14 @@ _RE_RELATIVE_EN = re.compile(
 # "saturate" 之类普通单词误命中
 _RE_NEXT_WEEKDAY_EN = re.compile(
     r"\bnext\s+(mon|tue|wed|thu|fri|sat|sun)[a-z]*\b", re.IGNORECASE)
+# 英文周几：全名随时可识别；mon/tue/thu/fri 不是英文单词，裸缩写可夹在
+# 句中；wed/sat/sun 是常见单词（I sat down / sun exposure / we wed），
+# 裸缩写只接受"整行只有它"，避免静默吞正文
 _RE_WEEKDAY_EN = re.compile(
-    r"\b(mon|tue|wed|thu|fri|sat|sun)(?:day|sday|nesday|rsday|urday)?\b",
+    r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
     re.IGNORECASE)
+_RE_WEEKDAY_ABBR_EN = re.compile(r"\b(mon|tue|thu|fri)\b", re.IGNORECASE)
+_RE_WEEKDAY_AMBIG_EN = re.compile(r"^\s*(wed|sat|sun)\s*$", re.IGNORECASE)
 
 
 def _iso(d: date) -> str:
@@ -152,11 +158,22 @@ def _parse_due(text: str, today: date) -> tuple[str, str | None]:
     m = _RE_NEXT_WEEKDAY_EN.search(text)
     if m:
         monday = today - timedelta(days=today.weekday())
+        # group(1) 是捕获的三字母缩写，但保留原大小写（IGNORECASE 只影响
+        # 匹配），查表前必须 lower，否则 "Next Monday" 抛 KeyError("Mon")
         return _cut(text, m), _iso(
-            monday + timedelta(days=7 + _WEEKDAY_EN[m.group(1)]))
+            monday + timedelta(days=7 + _WEEKDAY_EN[m.group(1).lower()]))
     m = _RE_WEEKDAY_EN.search(text)
     if m:
-        ahead = (_WEEKDAY_EN[m.group(1)] - today.weekday()) % 7
+        key = m.group(1)[:3].lower()   # 全名取前三个字母查表
+        ahead = (_WEEKDAY_EN[key] - today.weekday()) % 7
+        return _cut(text, m), _iso(today + timedelta(days=ahead))
+    m = _RE_WEEKDAY_ABBR_EN.search(text)   # mon/tue/thu/fri 无歧义
+    if m:
+        ahead = (_WEEKDAY_EN[m.group(1).lower()] - today.weekday()) % 7
+        return _cut(text, m), _iso(today + timedelta(days=ahead))
+    m = _RE_WEEKDAY_AMBIG_EN.search(text)  # wed/sat/sun 仅整行
+    if m:
+        ahead = (_WEEKDAY_EN[m.group(1).lower()] - today.weekday()) % 7
         return _cut(text, m), _iso(today + timedelta(days=ahead))
     return text, None
 

@@ -375,9 +375,16 @@ class CardDialog(QDialog):
         # 截止日期可选：新建/无日期默认"未设置"，提交 due_date=None，不再默认今天。
         # 未设置态显示灰色"未设置"文字（而非禁用的日期框），设置后才是日期选择框
         has_due = card is not None and bool(card.due_date)
+        qdate = QDate()
+        if has_due:
+            qdate = QDate.fromString(card.due_date, "yyyy-MM-dd")
+            if not qdate.isValid():
+                # 非法日期按"未设置"处理：QDateEdit 会忽略 invalid 并保留
+                # 占位日期，保存时把原值改写成 2000-01-01
+                has_due = False
         self._due_cleared = not has_due
         if has_due:
-            self._due_edit.setDate(QDate.fromString(card.due_date, "yyyy-MM-dd"))
+            self._due_edit.setDate(qdate)
         else:
             self._due_edit.setDate(QDate.currentDate())  # 占位值，未设置态不显示
         self._due_none_label = QLabel(tr("未设置"))

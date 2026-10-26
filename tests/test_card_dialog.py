@@ -74,6 +74,14 @@ class DueDateOptionalTest(unittest.TestCase):
         self.assertEqual(dlg.result_card()["due_date"], "2026-09-10")
         dlg.deleteLater()
 
+    def test_invalid_due_treated_as_unset(self):
+        """非法 due_date 不能落成 2000-01-01（QDateEdit 会忽略 invalid）"""
+        card = Card(title="x", due_date="2026-13-45")
+        dlg = CardDialog(card)
+        self.assertTrue(dlg._due_cleared)
+        self.assertIsNone(dlg.result_card()["due_date"])
+        dlg.deleteLater()
+
     def test_clear_and_reset_roundtrip(self):
         """编辑有日期卡片：清除后显示"未设置"，再设置可改日期（双向不锁死）"""
         card = Card(title="x", due_date="2026-09-10")

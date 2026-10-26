@@ -170,6 +170,27 @@ class EnglishShorthandTest(unittest.TestCase):
         self.assertNotIn("due_date", f)
         self.assertEqual(t, "read saturate docs")
 
+    def test_uppercase_weekday_does_not_crash(self):
+        # 回归：正则 IGNORECASE 但 group 保留原大小写，曾 KeyError("Mon")
+        for text in ("Monday meeting", "Next Monday", "NEXT MONDAY"):
+            t, f = parse_quick_input(text, self.today)
+            self.assertIn("due_date", f)
+        t, f = parse_quick_input("Monday meeting", self.today)
+        self.assertEqual(t, "meeting")
+        self.assertEqual(f["due_date"], "2026-09-14")
+
+    def test_ambiguous_abbreviation_needs_whole_line(self):
+        # sat/sun/wed 是常见英文单词，不能静默从正文里吞掉
+        for text in ("I sat down", "sun exposure", "we wed in June"):
+            t, f = parse_quick_input(text, self.today)
+            self.assertEqual(t, text)
+            self.assertEqual(f, {})
+        # 整行缩写仍识别；mon/tue/thu/fri 可夹在句中
+        self.assertEqual(parse_quick_input("wed", self.today)[1]["due_date"],
+                         "2026-09-16")
+        self.assertEqual(parse_quick_input("demo thu", self.today)[1]["due_date"],
+                         "2026-09-17")
+
     def test_priority_and_label_english(self):
         t, f = parse_quick_input("fix bug !P1 #red", self.today)
         self.assertEqual(t, "fix bug")

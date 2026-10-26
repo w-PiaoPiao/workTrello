@@ -26,7 +26,7 @@ _RE_BOLD = re.compile(r"\*\*(.+?)\*\*")
 _RE_ITALIC = re.compile(r"(?<!\*)\*([^*\s][^*]*?)\*(?!\*)")
 _RE_STRIKE = re.compile(r"~~(.+?)~~")
 _RE_CODE = re.compile(r"`([^`]+)`")
-_RE_LINK = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
+_RE_LINK = re.compile(r"\[([^\[\]]{1,1000})\]\(([^()\s]{1,2048})\)")
 _RE_URL = re.compile(
     r"(?<![\"'>=\w])(https?://[^\s<>\"']+)")
 
@@ -67,7 +67,7 @@ def render_markdown(text: str, secondary_color: str = "") -> str:
         if _RE_CODE_FENCE.match(line.strip()):
             in_code = not in_code
             continue
-        esc = html.escape(line, quote=False)
+        esc = html.escape(line, quote=True)
         if in_code:
             if line.strip():
                 out.append(f"<code>{esc}</code>")
@@ -78,7 +78,7 @@ def render_markdown(text: str, secondary_color: str = "") -> str:
             continue
         m = _RE_HEADING.match(line)
         if m:
-            level, body = len(m.group(1)), _inline(html.escape(m.group(2), quote=False))
+            level, body = len(m.group(1)), _inline(html.escape(m.group(2), quote=True))
             if level == 1:
                 out.append(f"<b><big>{body}</big></b>")
             elif level == 2:
@@ -91,22 +91,24 @@ def render_markdown(text: str, secondary_color: str = "") -> str:
             continue
         m = _RE_TODO_DONE.match(line)
         if m:
-            body = _inline(html.escape(m.group(2), quote=False))
+            body = _inline(html.escape(m.group(2), quote=True))
             out.append(f"☑ <s>{body}</s>")
             continue
         m = _RE_TODO_OPEN.match(line)
         if m:
-            out.append("☐ " + _inline(html.escape(m.group(2), quote=False)))
+            out.append("☐ " + _inline(html.escape(m.group(2), quote=True)))
             continue
         m = _RE_BULLET.match(line)
         if m:
-            out.append("• " + _inline(html.escape(m.group(1), quote=False)))
+            out.append("• " + _inline(html.escape(m.group(1), quote=True)))
             continue
         m = _RE_QUOTE.match(line)
         if m:
-            body = _inline(html.escape(m.group(1), quote=False))
+            body = _inline(html.escape(m.group(1), quote=True))
             if secondary_color:
-                out.append(f'<i><span style="color:{secondary_color};">'
+                # 颜色值来自主题 token，仍按属性上下文转义，避免注入 style
+                color = html.escape(secondary_color, quote=True)
+                out.append(f'<i><span style="color:{color};">'
                            f"{body}</span></i>")
             else:
                 out.append(f"<i>{body}</i>")
