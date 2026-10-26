@@ -42,7 +42,7 @@ from PySide6.QtGui import (QColor, QIcon, QIconEngine, QPainter, QPainterPath,
                            QPen, QPixmap, QPolygonF)
 from PySide6.QtWidgets import QPushButton
 
-from app.views.theme import AppTheme
+from app.views.theme import AppTheme, to_qcolor
 
 # 统一线宽：设备像素，不随尺寸缩放（16px 档也是这个粗细）
 STROKE = 1.6
@@ -327,7 +327,9 @@ def _resolve(color) -> QColor:
         return QColor(color)
     c = AppTheme.colors()
     if isinstance(color, str) and color in c:
-        return QColor(c[color])
+        # 皮肤表里有 rgba() 半透明键（mask/accent_soft…）：QColor 直接构造
+        # 会解析失败画成黑色，必须走 to_qcolor
+        return to_qcolor(c[color])
     resolved = QColor(color)
     return resolved if resolved.isValid() else QColor(c["text_primary"])
 
@@ -367,7 +369,12 @@ class _IconEngine(QIconEngine):
         painter.setRenderHint(QPainter.Antialiasing)
         painter.translate(rect.center())
         painter.translate(-side / 2.0, -side / 2.0)
-        paint(painter, self._name, side, self._color)
+        color = self._color
+        if mode == QIcon.Mode.Disabled:
+            # 引擎不置灰会让禁用态图标仍是正常色，失去"不可点"的视觉线索
+            color = _resolve(color)
+            color.setAlphaF(color.alphaF() * 0.4)
+        paint(painter, self._name, side, color)
         painter.restore()
 
     def pixmap(self, size: QSize, mode, state) -> QPixmap:

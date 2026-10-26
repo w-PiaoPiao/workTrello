@@ -146,9 +146,6 @@ class ToggleSwitch(QAbstractButton):
         self._anim.setEndValue(target)
         self._anim.start()
 
-    def nextCheckState(self) -> None:   # 点击时走这里（覆盖默认翻转）
-        self.setChecked(not self.isChecked())
-
     def setChecked(self, on: bool) -> None:   # type: ignore[override]
         # super() 在状态变化时自动 emit toggled，这里只负责滑动动画
         super().setChecked(on)

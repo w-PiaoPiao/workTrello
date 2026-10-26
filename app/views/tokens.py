@@ -161,9 +161,17 @@ _SKIN_SHAPE_DEFAULTS = {
 
 
 def _current_skin() -> str:
-    """当前皮肤（`AppConfig.get_ui_skin` 不存在时回退默认，同 scale() 范式）"""
-    getter = getattr(AppConfig, "get_ui_skin", None)
-    return getter() if callable(getter) else AppConfig.UI_SKIN_DEFAULT
+    """当前皮肤（以 AppTheme 的运行时皮肤为唯一真相）
+
+    直接读 AppConfig.get_ui_skin() 会让"预览未保存皮肤"（set_skin(
+    touch_pref=False)）的自绘控件与 QSS 用两套圆角。
+    """
+    try:
+        from app.views.theme import AppTheme
+        return AppTheme.skin()
+    except Exception:   # noqa: BLE001 — 主题模块未就绪（早期导入/测试）
+        getter = getattr(AppConfig, "get_ui_skin", None)
+        return getter() if callable(getter) else AppConfig.UI_SKIN_DEFAULT
 
 
 def shape(skin: str | None = None) -> dict:

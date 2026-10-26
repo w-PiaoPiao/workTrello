@@ -161,6 +161,10 @@ class _PopRow(QFrame):
         lay.addWidget(self._star_btn)
         self.reapply_theme()
 
+    def retexts(self) -> None:
+        """语言切换：行内勾选按钮的文案是构造期定格的"""
+        self._check.retexts()
+
     def _emit_done(self) -> None:
         self.signal_card_done.emit(self._list_id, self._card_id, True)
 
@@ -256,6 +260,8 @@ class TodayPopover(QWidget):
         self._search_edit.setAccessibleName(tr("筛选今日待办…"))
         self._close_btn.setToolTip(tr("关闭"))
         self._close_btn.setAccessibleName(tr("关闭"))
+        for _lid, _cid, row in self._rows:
+            row.retexts()
 
     # ── 主题 ──────────────────────────────────────────────
 
@@ -402,12 +408,19 @@ class TodayPopover(QWidget):
         self.set_items(self._items, done_count=self._done_count)
 
     def _on_quick_add(self) -> None:
-        """就地新建：输入框内容交给控制器解析速记并建卡（自动带星标）"""
+        """就地新建：输入框内容交给控制器解析速记并建卡（自动带星标）
+
+        不在 emit 前清空：没有列表时控制器会失败返回，先清会让用户
+        刚输入的文字永久丢失。成功后由 clear_add_edit() 清空。
+        """
         text = self._add_edit.text().strip()
         if not text:
             return
-        self._add_edit.clear()
         self.signal_quick_add.emit(text)
+
+    def clear_add_edit(self) -> None:
+        """新建成功：清空就地输入框"""
+        self._add_edit.clear()
 
     def _set_pop_height(self, h: int, dismiss: list[QWidget],
                         keep: set[int]) -> None:

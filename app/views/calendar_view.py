@@ -180,6 +180,7 @@ class _DayCell(QFrame):
                  iso: str, month_offset: int = 0, parent=None):
         super().__init__(parent)
         self._iso = iso
+        self.setAccessibleName(iso)   # 读屏聚焦到格子时能报出日期
         self._month_offset = month_offset
         self.setAcceptDrops(True)
         self.setObjectName("dayCell")
@@ -438,7 +439,10 @@ class _DayCell(QFrame):
                 lambda _=False, cid=card.id: self.signal_edit_card.emit(cid))
         anchor_widget = self._more_btn if self._more_btn is not None else self
         anchor = anchor_widget.mapToGlobal(QPoint(0, anchor_widget.height()))
-        menu.exec(anchor)
+        try:
+            menu.exec(anchor)
+        finally:
+            menu.deleteLater()   # 反复点开会累积隐藏菜单子对象
 
     # ── 拖放改期 ──────────────────────────────────────────
 
@@ -545,6 +549,8 @@ class CalendarDialog(QDialog):
         head = QHBoxLayout()
         self._prev_btn = icons.IconButton("chevron-left", 16)
         self._prev_btn.setFixedWidth(36)
+        self._prev_btn.setToolTip(tr("上一月"))
+        self._prev_btn.setAccessibleName(tr("上一月"))
         self._prev_btn.setCursor(Qt.PointingHandCursor)
         self._prev_btn.clicked.connect(lambda: self._shift_month(-1))
         head.addWidget(self._prev_btn)
@@ -553,6 +559,8 @@ class CalendarDialog(QDialog):
         head.addWidget(self._month_label, 1, Qt.AlignCenter)
         self._next_btn = icons.IconButton("chevron-right", 16)
         self._next_btn.setFixedWidth(36)
+        self._next_btn.setToolTip(tr("下一月"))
+        self._next_btn.setAccessibleName(tr("下一月"))
         self._next_btn.setCursor(Qt.PointingHandCursor)
         self._next_btn.clicked.connect(lambda: self._shift_month(1))
         head.addWidget(self._next_btn)

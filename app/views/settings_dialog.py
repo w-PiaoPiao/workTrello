@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import AppConfig
-from app.i18n import skin_display, tr
+from app.i18n import app_display_name, skin_display, tr
 from app.services.global_hotkey import GlobalHotkeyService
 from app.views import tokens
 from app.views.controls import ComboBox, SegmentedControl, ToggleSwitch
@@ -519,7 +519,7 @@ class SettingsDialog(QDialog):
         self._dir_label.setText(str(AppConfig.DATA_DIR))
         self._sec_about.retexts(tr("关于"))
         self._about_label.setText(
-            f"{AppConfig.APP_NAME}  v{AppConfig.APP_VERSION}\n{tr(_ABOUT_LINE)}")
+            f"{app_display_name()}  v{AppConfig.APP_VERSION}\n{tr(_ABOUT_LINE)}")
         self._done_btn.setText(tr("完成"))
         # 读屏名与行标题同源：标题刚刷新过，这里补一次同步
         for section in (self._sec_appearance, self._sec_language, self._sec_pet,

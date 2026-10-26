@@ -1136,6 +1136,8 @@ class AppController(QObject):
         self._pin_cards_visible([card])
         self._after_data_change(
             tr("已加入今日「{title}」").format(title=card.title))
+        if self._today_popover is not None:
+            self._today_popover.clear_add_edit()
 
     def _on_today_list_open(self) -> None:
         """桌宠右键"今日清单"：浮窗概览今日待办（勾选/打开编辑直通控制器）"""
@@ -1457,11 +1459,13 @@ class AppController(QObject):
         _lst, card = board.find_card(card_id)
         if card is None or not card.attachments:
             return
-        att = card.attachments[0]
-        path = Path(str(att.get("path", "")))
-        if not path.exists():
+        att = next((a for a in card.attachments
+                    if Path(str(a.get("path", ""))).exists()), None)
+        if att is None:
+            # 首个附件缺失时继续尝试后续，而不是直接报"不存在"
             self._notify(tr("附件文件不存在（可能已被移动或删除）"))
             return
+        path = Path(str(att.get("path", "")))
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def _on_cards_move(self, card_ids: list, target_list_id: str,
@@ -1736,6 +1740,10 @@ class AppController(QObject):
         # 文本输入中的 ? 是普通字符，不弹速查（对话框内的输入也一样）
         fw = QApplication.focusWidget()
         if isinstance(fw, (QLineEdit, QPlainTextEdit, QTextEdit)):
+            return
+        if QApplication.activeModalWidget() is not None:
+            # 模态对话框开着时焦点可能落在按钮/复选上：再叠一个速查窗
+            # 会压住正在编辑的卡片框
             return
         from app.views.shortcuts_dialog import ShortcutsDialog
 
@@ -2322,7 +2330,6 @@ class AppController(QObject):
         act_redo.triggered.connect(lambda: self._on_redo_requested(False))
         m_edit.addAction(act_redo)
         m_edit.addSeparator()
-        self._menu_act_paste = None
         for label, seq, method in (("剪切", QKeySequence.Cut, "cut"),
                                    ("复制", QKeySequence.Copy, "copy"),
                                    ("粘贴", QKeySequence.Paste, "paste"),
@@ -2335,7 +2342,6 @@ class AppController(QObject):
                 # 在没有文本控件聚焦时落到看板粘贴建卡——两条平台路径
                 # 语义对齐：文本框内粘文本，看板内粘贴建卡。
                 act.triggered.connect(self._on_paste_action)
-                self._menu_act_paste = act
             else:
                 act.triggered.connect(
                     lambda _=False, m=method: self._edit_focus_widget(m))

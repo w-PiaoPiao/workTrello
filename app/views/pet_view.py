@@ -366,9 +366,7 @@ class PetCanvas(QWidget):
 
         assets = {
             "shadow": QColor(60, 40, 20, 28),
-            "outline": QColor(*skin["outline"]),
             "accent": QColor(*skin["ear_inner"]),
-            "belly": QColor(*skin["belly"]),
             "sweat": QColor(*skin["sweat"]),
             "ear_pen": QPen(QColor(*skin["outline"]), max(2.0, s * 0.022)),
             "body_pen": QPen(QColor(*skin["outline"]), max(2.2, s * 0.024)),
@@ -712,6 +710,7 @@ class PetView(QWidget):
         self._pet_canvas.set_blink_enabled(False)
         if self._active_action is not None:
             self._active_action.stop()
+            self._active_action.deleteLater()   # 打断的动画组否则随 parent 常驻
             self._active_action = None
         if self._hover_anim is not None:
             self._hover_anim.stop()   # finished 回调自行解冻呼吸
@@ -977,6 +976,4 @@ class PetView(QWidget):
             # 内容相同也触发 re-polish：仅在真正变化时下发
             if self._badge.styleSheet() != qss:
                 self._badge.setStyleSheet(qss)
-        gqss = AppTheme.global_qss()
-        if self._context_menu.styleSheet() != gqss:
-            self._context_menu.setStyleSheet(gqss)
+            # 菜单样式由应用级 QSS 覆盖，无需再下发整份全局样式表

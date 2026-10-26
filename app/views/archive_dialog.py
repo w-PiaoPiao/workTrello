@@ -52,11 +52,6 @@ class _ElidedLabel(QLabel):
         self.setMinimumWidth(min_width)
         self.setToolTip(text)
 
-    def set_full_text(self, text: str) -> None:
-        self._full = text
-        self.setToolTip(text)
-        self._apply_elide()
-
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._apply_elide()
@@ -192,7 +187,6 @@ class ArchiveDialog(QDialog):
     signal_clear_requested = Signal()        # 清空归档
 
     # 排序维度：value → 比较键（缺省按传入顺序 = 看板顺序）
-    _SORTS = ("default", "title", "origin", "done_first")
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -272,6 +266,7 @@ class ArchiveDialog(QDialog):
         self._clear_btn.setText(tr("清空归档"))
         self._clear_btn.setToolTip(tr("删除全部归档卡片（可撤销）"))
         self._search_edit.setPlaceholderText(tr("搜索归档卡片…"))
+        self._search_edit.setAccessibleName(tr("搜索归档卡片…"))
         labels = {"default": tr("默认顺序"), "title": tr("按标题"),
                   "origin": tr("按来源列"), "done_first": tr("已完成在前")}
         for i in range(self._sort_combo.count()):

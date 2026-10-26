@@ -167,6 +167,9 @@ class TodayPopoverEnhanceTest(unittest.TestCase):
         self.pop._add_edit.setText("  明天 交周报  ")
         self.pop._on_quick_add()
         self.assertEqual(got, ["明天 交周报"])
+        # 输入由控制器在创建成功后清空：失败（如无列表）时要保留原文
+        self.assertEqual(self.pop._add_edit.text(), "  明天 交周报  ")
+        self.pop.clear_add_edit()
         self.assertEqual(self.pop._add_edit.text(), "")
 
     def test_quick_add_blank_is_ignored(self):

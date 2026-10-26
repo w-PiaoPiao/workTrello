@@ -290,7 +290,7 @@ def restore_from_backup(store_path: Path, backup: Path) -> bool:
         logger.error("备份文件无法解析，恢复失败: %s (%s)", backup, e)
         return False
     try:
-        atomic_write_json(store_path, data, rotate_prev=False)
+        atomic_write_json(store_path, data, rotate_prev=False, durable=True)
     except StoreError as e:
         logger.error("恢复落盘失败: %s", e)
         return False

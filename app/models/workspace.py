@@ -371,33 +371,7 @@ class Workspace:
         except Exception as e:   # noqa: BLE001 — 索引写失败不阻断会话
             logger.error("工作区索引保存失败: %s", e)
 
-    # 供测试与导入外部数据使用：浅拷贝文件进工作区
-    def import_board_file(self, source: Path, name: str = "") -> BoardMeta | None:
-        """把一个已存在的看板 JSON 文件复制进工作区（极少用；导入走
-        create_board(board=...)，此处仅供运维/测试）"""
-        from app.models.json_io import load_json_doc as _load
-        doc = _load(source)
-        if not doc:
-            return None
-        meta = self.create_board(name=name, board=Board.from_dict(doc))
-        return meta
-
 
 def _new_board_id() -> str:
     import uuid
     return uuid.uuid4().hex
-
-
-def legacy_migration_available(data_dir: Path) -> bool:
-    """旧单看板文件是否存在（仅测试/诊断用）"""
-    return (data_dir / LEGACY_BOARD_FILE).exists()
-
-
-def remove_legacy_file(data_dir: Path) -> None:
-    """删除旧单看板文件（迁移确认无误后的可选清理；默认不调用）"""
-    target = data_dir / LEGACY_BOARD_FILE
-    try:
-        if target.exists():
-            target.unlink()
-    except OSError as e:
-        logger.warning("清理旧看板文件失败: %s (%s)", target, e)

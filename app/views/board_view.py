@@ -144,7 +144,6 @@ _BADGE_TONE_COLORS = {
     "accent": ("accent_soft", "accent_text"),
     "text_secondary": ("neutral_soft", "neutral_text"),
 }
-_BADGE_TONES = tuple(_BADGE_TONE_COLORS)
 
 # 优先级徽标语义色：P1 红 / P2 橙 / P3 中性灰。
 # P3 此前取 accent（皮肤强调色），但 accent 在 warm / brutal 等皮肤里
@@ -708,6 +707,11 @@ class _CardCheckButton(QPushButton):
         self._done = False
         self._check_anim: QVariantAnimation | None = None
         self._check_progress = 1.0   # 对勾描画进度 0..1（1=完整对勾）
+
+    def retexts(self) -> None:
+        """语言切换：读屏名与 tooltip 是构造期定格的，需要重设"""
+        self.setToolTip(tr("点击切换完成状态"))
+        self.setAccessibleName(tr("切换完成状态"))
 
     def enterEvent(self, event) -> None:
         """悬停变色必须自己请求重绘
@@ -4042,8 +4046,13 @@ class BoardView(QWidget):
         self._export_btn.setText(tr("导出"))
         self._export_btn.setToolTip(tr("导出为 Markdown / CSV"))
         self._theme_btn.setToolTip(tr("切换浅色 / 深色主题"))
+        self._theme_btn.setAccessibleName(tr("切换浅色 / 深色主题"))
         self._collapse_btn.setToolTip(tr("折叠为桌宠"))
+        self._collapse_btn.setAccessibleName(tr("折叠为桌宠"))
         self._settings_btn.setToolTip(tr("设置"))
+        self._settings_btn.setAccessibleName(tr("设置"))
+        self._calendar_btn.setAccessibleName(tr("日历视图"))
+        self._overflow_btn.setAccessibleName(tr("更多操作"))
         lights = getattr(self, "_traffic_lights", None)
         if lights is not None:
             lights.reapply_texts()
@@ -4366,7 +4375,10 @@ class BoardView(QWidget):
             self._columns = ordered_cols
 
         self.update_stats(lists, visibles=visibles, stats=stats)
-        self._set_today_count(self._today_count_from(visibles))
+        # stats 里已算好 focus_count：再走 _today_count_from 是全板第二遍扫描
+        self._set_today_count(
+            stats["focus_count"] if stats is not None
+            else self._today_count_from(visibles))
         self._update_empty_hint(lists)
         # 列/卡控件按 id 复用，选中态属性随控件保留；重建出的新卡默认
         # 未选中，这里统一重刷一次（集合没变时设置是幂等短路）
@@ -4422,12 +4434,6 @@ class BoardView(QWidget):
         for col in self._columns:
             for cw in col._card_widgets:
                 yield cw
-
-    def _find_card_widget(self, card_id: str) -> "CardWidget | None":
-        for cw in self._iter_card_widgets():
-            if cw.card().id == card_id:
-                return cw
-        return None
 
     def _apply_selection_props(self) -> None:
         selected = self._selected_ids

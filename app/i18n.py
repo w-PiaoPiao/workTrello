@@ -22,8 +22,6 @@ from PySide6.QtCore import QLocale
 
 from app.config import AppConfig
 
-_zh_en: dict[str, str] = {}
-
 
 class _StrongRef:
     """非绑定回调（函数/lambda）的强引用包装（它们没有宿主，弱引用会立刻失效）"""
@@ -825,6 +823,8 @@ _zh_en: dict[str, str] = {
         "Couldn't save the pasted image (temp folder not writable or disk full)",
     '数据目录不可用：{path}\n{err}':
         'Data folder unavailable: {path}\n{err}',
+    '上一月': 'Previous month',
+    '下一月': 'Next month',
     # 资金分配监视环节名（模型里存中文模板名，显示层翻译）
     '收集分配方案': 'Collect allocation plan',
     '汇总上会材料': 'Compile meeting materials',
