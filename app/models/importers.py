@@ -85,20 +85,23 @@ def board_from_trello(doc: dict) -> tuple[Board, str]:
 
     lists_by_id: dict[str, BoardList] = {}
     order: list[str] = []
+    empty_list_id: str | None = None   # 首个无 id 列表的实际 id（空 idList 的归属）
     raw_lists = doc.get("lists", [])
     if isinstance(raw_lists, list):
         for lst in raw_lists:
             if not isinstance(lst, dict) or lst.get("closed"):
                 continue
-            lid = str(lst.get("id", "") or "")
-            if lid in lists_by_id:
-                continue   # 病态导出（重复/空 list id）：同一列只登记一次，
-                           # 否则 order 里的重复 id 会让同一列在结果中出现两次
+            raw_lid = str(lst.get("id", "") or "").strip()
+            if raw_lid and raw_lid in lists_by_id:
+                continue   # 病态导出（重复 list id）：同一列只登记一次
             title = str(lst.get("name", "") or "").strip() or tr("未命名列表")
-            # 空 id 省略 id 参数走 default_factory 生成：显式传 None/空串
-            # 会绕过它，多张无 id 卡/列会共用 None 键互相覆盖（find_card
-            # 删错卡）
-            bl = BoardList(title=title, **({"id": lid} if lid else {}))
+            # 空 id 交给 default_factory 生成，并用生成后的 id 作为键：
+            # 空串键会让第二个无 id 列表命中重复判断被整列丢弃
+            bl = BoardList(title=title,
+                           **({"id": raw_lid} if raw_lid else {}))
+            lid = bl.id
+            if not raw_lid and empty_list_id is None:
+                empty_list_id = lid
             lists_by_id[lid] = bl
             order.append(lid)
 
@@ -143,11 +146,17 @@ def board_from_trello(doc: dict) -> tuple[Board, str]:
                 notes=str(entry.get("desc", "") or ""),
                 labels=labels,
                 due_date=_parse_trello_due(entry.get("due")),
-                done=bool(entry.get("dueComplete")),
+                # dueComplete 只表示"截止日期已勾掉"，不代表卡片完成：
+                # 映射成完成会让这类卡从今日聚焦消失
+                done=False,
                 archived=bool(entry.get("closed")),
                 checklist=normalize_checklist(checklist),
             )
-            target = lists_by_id.get(str(entry.get("idList", "") or ""))
+            raw_list_id = str(entry.get("idList", "") or "")
+            target = lists_by_id.get(raw_list_id)
+            if target is None and not raw_list_id and empty_list_id:
+                # 卡片也无 idList：归入首个无 id 列表（顺序上最可信）
+                target = lists_by_id.get(empty_list_id)
             if target is None:
                 # 卡片挂在已 closed 的列表下：丢进最后一个有效列表保数据
                 target = lists_by_id.get(order[-1]) if order else None

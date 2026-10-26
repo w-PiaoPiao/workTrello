@@ -817,6 +817,8 @@ _zh_en: dict[str, str] = {
         'Board data file error ({detail}). Opening with the default board.',
     '{detail}，且备份副本无法解析':
         '{detail}; the backup copy could not be read either',
+    '看板仍在保存，请稍后重试':
+        'The board is still being saved — please try again shortly',
     '超出上限，仅保留前 {n} 行':
         'over the limit, only the first {n} kept',
     '超出上限，仅保留前 {n} 个':

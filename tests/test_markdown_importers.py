@@ -114,7 +114,8 @@ class TrelloImportTest(unittest.TestCase):
                          [{"text": "第一步", "done": True},
                           {"text": "第二步", "done": False}])
         c2 = board.lists[1].cards[0]
-        self.assertTrue(c2.done)
+        # Trello 的 dueComplete 只表示"截止日期已勾掉"，不代表卡片完成
+        self.assertFalse(c2.done)
 
     def test_closed_card_archived_and_closed_list_dropped(self):
         board, _ = board_from_trello(self._doc())
@@ -139,14 +140,17 @@ class TrelloImportTest(unittest.TestCase):
         for lst in doc["lists"]:
             lst["id"] = ""
         board, _ = board_from_trello(doc)
-        ids = [c.id for l in board.lists for c in l.cards]
+        cards = [c for l in board.lists for c in l.cards]
+        ids = [c.id for c in cards]
         self.assertTrue(all(i for i in ids), "卡片 id 不得为 None/空")
         self.assertEqual(len(ids), len(set(ids)), "卡片 id 必须互不相同")
         # find_card 精确命中第一张卡（此前 None 键会返回最后一张）
-        first = board.lists[0].cards[0]
+        first = cards[0]
         _lst, found = board.find_card(first.id)
         self.assertIs(found, first)
         self.assertTrue(all(l.id for l in board.lists), "列表 id 不得为空")
+        self.assertEqual(len({l.id for l in board.lists}),
+                         len(board.lists), "列表 id 必须互不相同")
 
     def test_malformed_due_not_stored(self):
         """畸形时间戳（2024-13-01T…）不得截成非法日期落库"""

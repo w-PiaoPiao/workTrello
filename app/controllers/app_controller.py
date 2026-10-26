@@ -134,6 +134,7 @@ class AppController(QObject):
         self._flush_notifier.save_recovered.connect(self._on_save_recovered)
         self._last_save_error_notify: float | None = None   # 失败气泡去重
         self._save_fail_streak = 0   # 连续失败计数（重试指数退避）
+        self._save_retry_seq = 0     # 待执行退避重试的代数（成功/新失败作废旧重试）
         if app is not None:
             app.aboutToQuit.connect(self._on_about_to_quit)
 
@@ -332,17 +333,23 @@ class AppController(QObject):
         prev = json_io.good_prev_copy(self._store.path)
         if prev is None:
             return
-        keep = prev.with_name(prev.name + json_io.backup_ext("good"))
+        path = self._store.path
+        # 命名必须与 rotate_backups/delete_board 的 glob 一致（<名>.good.*）：
+        # 沿用 .prev.good.* 会让"只保留 N 份"从未生效
+        keep = path.with_name(path.name + json_io.backup_ext("good"))
         try:
             shutil.copy2(prev, keep)
         except OSError as e:
             logger.warning("保留好副本失败: %s (%s)", keep, e)
             return
         logger.info("已保留最近好数据副本: %s", keep)
-        # 此前只创建不清理：每次"数据异常且放弃恢复"都会新增一份且永不
-        # 删除，磁盘随事故次数无限累积（corrupt/snap 都有轮转，唯独它没有）
-        json_io.rotate_backups(self._store.path, "good",
-                               json_io.GOOD_BACKUP_KEEP)
+        # 旧版本按 <名>.prev.good.* 命名，轮转匹配不到，清掉残留
+        for old in path.parent.glob(f"{path.name}.prev.good.*.bak"):
+            try:
+                old.unlink(missing_ok=True)
+            except OSError:
+                pass
+        json_io.rotate_backups(path, "good", json_io.GOOD_BACKUP_KEEP)
 
     def _offer_restore(self, kinds: list[str]) -> bool | None:
         """数据文件异常时询问是否从最近好副本（.prev）恢复。
@@ -452,7 +459,9 @@ class AppController(QObject):
         had_cards = any(lst.cards for lst in board.lists)
         self._store.flush_async(
             self._save_pool,
-            on_error=self._flush_notifier.save_failed.emit,
+            # 信号声明是 Signal(str)：直接传异常对象 PySide 转换失败，
+            # 槽里 detail 会变成空串，磁盘满/权限问题在日志里无从定位
+            on_error=lambda e: self._flush_notifier.save_failed.emit(str(e)),
             on_success=self._flush_notifier.save_recovered.emit)
         if had_cards and AppConfig.get_empty_board_ack():
             # 标记绝大多数时间缺席：先查再删，省掉每次保存的一次 QSettings remove
@@ -460,33 +469,43 @@ class AppController(QObject):
 
     def _on_about_to_quit(self) -> None:
         """退出兜底：等在途后台写完成，再把剩余脏数据同步落盘（含 fsync）"""
-        self._save_pool.waitForDone(3000)
+        self._save_timer.stop()
+        if not self._save_pool.waitForDone(5000):
+            # 仍有 worker 在写：此时主线程再 flush 会与它并发写同一文件，
+            # 旧快照可能后写获胜。线程池随进程退出会等待其完成，交出去
+            logger.error("退出时仍有在途写入（5s 超时），跳过落盘与附件回收")
+            return
         try:
             self._store.flush()
         except json_io.StoreError as e:
             # 这是生命周期最后一次落盘机会：异常逃出 aboutToQuit 槽只会
-            # 被 Qt 吞进 stderr（打包版不可见），且其后的附件 GC 会被
-            # 整段跳过——失败必须留日志并尽力通知用户
+            # 被 Qt 吞进 stderr（打包版不可见）——失败必须留日志并尽力通知
             logger.error("退出时落盘失败: %s", e)
             self._tray.show_notification(
                 tr("看板数据保存失败，请检查磁盘空间或文件权限"))
-        finally:
-            self._gc_orphan_attachments()   # 撤销窗口随会话结束，回收孤儿附件
+            # 落盘失败时不做附件 GC：磁盘上的看板可能比内存旧，
+            # 按旧引用集回收会删掉刚入库、只在内存里的附件
+            return
+        self._gc_orphan_attachments()   # 撤销窗口随会话结束，回收孤儿附件
 
     def _on_save_recovered(self) -> None:
         """落盘恢复成功（worker 线程经信号 queued 回主线程）：重置退避"""
         self._save_fail_streak = 0
+        self._save_retry_seq += 1      # 作废已排定的退避重试
         self._save_timer.setInterval(AppConfig.SAVE_DEBOUNCE_MS)
 
     def _on_save_failed(self, detail: str) -> None:
         """后台落盘失败（worker 线程经信号 queued 回主线程）"""
         logger.error("保存数据失败: %s", detail)
-        # 指数退避重试：磁盘满/持续失败时按 500ms 无脑重试只会空转轰炸
+        # 指数退避重试：磁盘满/持续失败时按 500ms 无脑重试只会空转轰炸。
+        # 退避用一次性 singleShot，不改进防抖定时器的 interval——否则
+        # 之后的正常编辑会沿用退避值，间隔小于它时落盘被无限期推迟
         self._save_fail_streak += 1
         backoff = min(AppConfig.SAVE_DEBOUNCE_MS * 2 ** (
             self._save_fail_streak - 1), 600_000)   # 上限 10 分钟
-        self._save_timer.setInterval(backoff)
-        self._schedule_save()
+        self._save_retry_seq += 1
+        seq = self._save_retry_seq
+        QTimer.singleShot(backoff, lambda: self._retry_save(seq))
         now = time.monotonic()
         last = self._last_save_error_notify
         if last is not None and now - last < 30:
@@ -496,18 +515,25 @@ class AppController(QObject):
         self._tray.show_notification(
             tr("看板数据保存失败，请检查磁盘空间或文件权限"))
 
+    def _retry_save(self, seq: int) -> None:
+        """退避到点：仅当仍是本轮失败（期间没有成功/新失败）才重试"""
+        if seq == self._save_retry_seq:
+            self._flush_store()
+
     # ── 多看板管理 ────────────────────────────────────────
 
     def _activate_board(self, board_id: str,
-                        notify: str | None = None) -> None:
+                        notify: str | None = None) -> bool:
         """切换/激活看板：落盘旧看板 → 换存储 → 清撤销栈 → 刷新 UI
+
+        返回是否切换成功（新建/导入后调用方据此回滚索引指向）。
 
         判据是 _store_board_id（存储实际归属），而非 workspace.current_id
         ——create_board/delete_board 会先改掉 current_id，激活路径必须
         以"内存里的 store 是否已指向该看板"为准。
         """
         if self._workspace.meta(board_id) is None:
-            return
+            return False
         if board_id != self._store_board_id:
             self._save_timer.stop()
             if self._pomo_card_id is not None:
@@ -515,15 +541,18 @@ class AppController(QObject):
             # 旧看板先完整落盘再切走：等在途写收口 + 剩余脏数据同步写。
             # 不能走异步提交——写失败的退避重试路径用的是"当前 store"，
             # 换板后重试会写错板，旧板尾部编辑就此悬空。写失败则取消切换
-            self._save_pool.waitForDone(3000)
+            if not self._save_pool.waitForDone(5000):
+                self._show_error(tr("看板仍在保存，请稍后重试"))
+                return False
             try:
                 self._store.flush()
             except json_io.StoreError as e:
                 self._show_error(
                     tr("看板保存失败，已取消切换：{err}").format(err=e))
-                return
+                self._schedule_save()      # 失败也要安排重试，别让脏数据悬空
+                return False
             if not self._workspace.set_current(board_id):
-                return
+                return False
             self._store = BoardStore(self._workspace.board_path(board_id))
             self._store_board_id = board_id
             self._undo_stack.clear()
@@ -566,6 +595,7 @@ class AppController(QObject):
         self._refresh_calendar()
         if notify:
             self._notify(notify)
+        return True
 
     def _on_board_create(self) -> None:
         """新建看板：命名后创建并切换过去"""
@@ -584,8 +614,12 @@ class AppController(QObject):
         except json_io.StoreError as e:
             self._show_error(tr("看板创建失败：{err}").format(err=e))
             return
-        self._activate_board(meta.id, notify=tr("已新建看板「{name}」").format(
-            name=name or tr("我的看板")))
+        if not self._activate_board(meta.id, notify=tr("已新建看板「{name}」").format(
+                name=name or tr("我的看板"))):
+            # 切换失败（旧板落盘失败等）：create_board 已把 current_id 指向
+            # 新板，必须回滚——否则之后切回旧板会走"同一块板"短路，并用
+            # 新板名覆盖旧板落盘
+            self._workspace.set_current(self._store_board_id)
 
     def _on_board_rename(self) -> None:
         """重命名当前看板"""
@@ -605,7 +639,9 @@ class AppController(QObject):
             return
         # 在途异步写先收口再同步落盘：rename 随后直写板文件，若排在保存池
         # 已提交任务之前，worker 会用旧 name 快照把它覆盖回去（双写者）
-        self._save_pool.waitForDone(3000)
+        if not self._save_pool.waitForDone(5000):
+            self._show_error(tr("看板仍在保存，请稍后重试"))
+            return
         try:
             self._store.flush()
         except json_io.StoreError:
@@ -660,13 +696,18 @@ class AppController(QObject):
             return
         if was_current:
             # 在途写若在 discard 置位前已越过检查点，replace 会把已删文件
-            # 写回"复活"。等保存池收口后补删一次（正常路径毫秒级）
-            self._save_pool.waitForDone(3000)
-            try:
-                self._workspace.board_path(board_id).unlink(missing_ok=True)
-            except OSError as e:
-                logger.warning("删除看板在途写回文件失败: %s (%s)",
-                               board_id, e)
+            # 写回"复活"。等保存池收口后补删一次（正常路径毫秒级）；
+            # 超时说明 worker 仍在写，此时 unlink 会被紧随的 replace 反超，
+            # 跳过并留日志，下次启动孤儿收编会把它带回而不是静默丢数据
+            if self._save_pool.waitForDone(5000):
+                try:
+                    self._workspace.board_path(board_id).unlink(missing_ok=True)
+                except OSError as e:
+                    logger.warning("删除看板在途写回文件失败: %s (%s)",
+                                   board_id, e)
+            else:
+                logger.error("删除看板时仍有在途写入（5s 超时），跳过补删: %s",
+                             board_id)
             self._store = BoardStore(
                 self._workspace.board_path(self._workspace.current_id))
             self._store_board_id = self._workspace.current_id
@@ -721,10 +762,11 @@ class AppController(QObject):
             # 磁盘满/权限问题：写板文件失败不能让导入静默无反馈
             self._show_error(tr("导入失败：{err}").format(err=e))
             return
-        self._activate_board(
-            meta.id,
-            notify=tr("已导入看板「{name}」（{report}）").format(
-                name=board.name or tr("我的看板"), report=report))
+        if not self._activate_board(
+                meta.id,
+                notify=tr("已导入看板「{name}」（{report}）").format(
+                    name=board.name or tr("我的看板"), report=report)):
+            self._workspace.set_current(self._store_board_id)
 
     # ── 信号 ──────────────────────────────────────────────
 
@@ -1216,11 +1258,23 @@ class AppController(QObject):
             return
         referenced: set[Path] = set()
         for meta in self._workspace.boards:
+            board_path = self._workspace.board_path(meta.id)
             try:
-                doc = json_io.load_json_doc(self._workspace.board_path(meta.id))
+                doc = json_io.load_json_doc(board_path)
             except Exception as e:   # noqa: BLE001 — 单板解析失败不碍回收
                 logger.warning("附件 GC 读取看板失败: %s (%s)", meta.id, e)
                 continue
+            if not doc:
+                try:
+                    if board_path.exists() and board_path.stat().st_size > 0:
+                        # 文件非空却解析为空：损坏/暂时不可读。此时无法
+                        # 得知它引用了哪些附件，保守放弃整次回收，不能
+                        # 把该板的附件当孤儿删掉（恢复后附件已没了）
+                        logger.warning(
+                            "附件 GC 跳过：看板 %s 无法解析，保守不回收", meta.id)
+                        return
+                except OSError:
+                    return
             for lst in doc.get("lists") or []:
                 if not isinstance(lst, dict):
                     continue
@@ -3143,7 +3197,10 @@ class AppController(QObject):
                 tr("已最小化到托盘；右键托盘图标可显示或退出"))
 
     def _on_quit(self) -> None:
-        self._flush_store()
+        # 不再在这里异步 flush：flush_async 提交时就把脏标记清掉，
+        # 随后的 aboutToQuit 同步 flush 会变成空操作，带 fsync 的退出兜底
+        # 永远不执行。停掉防抖定时器，把收尾统一交给 _on_about_to_quit
+        self._save_timer.stop()
         # 全局热键是系统级独占资源：显式注销，别留给下一个进程
         self._hotkeys.dispose()
         self._tray.hide()

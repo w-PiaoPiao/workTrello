@@ -103,9 +103,11 @@ class Workspace:
         metas: list[BoardMeta] = []
         version_ok = doc.get("version") == WORKSPACE_VERSION
         if isinstance(doc.get("boards"), list) and version_ok:
+            seen: set[str] = set()
             for entry in doc["boards"]:
                 meta = BoardMeta.from_dict(entry)
-                if meta is not None:
+                if meta is not None and meta.id not in seen:
+                    seen.add(meta.id)
                     metas.append(meta)
         elif doc:
             # 索引存在但版本不匹配/字段错乱：先留档再重建，避免接下来的
@@ -151,28 +153,35 @@ class Workspace:
                 meta = BoardMeta(id=_new_board_id(),
                                  name=str(board.name or ""),
                                  created_at=_now_iso())
+                write_failed = False
                 try:
                     self._write_board_file(meta, board)
                 except StoreError as e:
                     # 启动期写盘失败（磁盘满/权限）：保留内存态继续会话，
-                    # 原件不受影响，下次启动重试迁移——不能让迁移路径
-                    # 的 StoreError 一路炸到 AppController.__init__ 直接崩
+                    # 原件不受影响。**不能写索引**——写了之后下次启动会走
+                    # "索引有效"分支，迁移再也不会重试，用户只看到空板
+                    write_failed = True
                     logger.error("迁移旧看板写盘失败（下次启动重试）: %s", e)
                 self.boards = [meta]
                 self.current_id = meta.id
-                self._save()
+                if not write_failed:
+                    self._save()
                 logger.info("已迁移旧看板数据到 %s", self.board_path(meta.id))
                 return
 
         meta = BoardMeta(id=_new_board_id(), name="", created_at=_now_iso())
+        default_failed = False
         try:
             self._write_board_file(meta, Board.from_dict({}))
         except StoreError as e:
-            # 同上：默认板写盘失败以内存态启动（首次落盘会重写该文件）
+            # 同上：默认板写盘失败以内存态启动（首次落盘会重写该文件），
+            # 但索引同样不能先落——否则板文件永远缺失、每次启动都是空板
+            default_failed = True
             logger.error("创建默认看板写盘失败（以内存态启动）: %s", e)
         self.boards = [meta]
         self.current_id = meta.id
-        self._save()
+        if not default_failed:
+            self._save()
 
     def _archive_workspace_index(self) -> None:
         """把可疑的原索引复制为 .wsbak.<时间戳>.bak（保留最近 3 份）"""
@@ -323,7 +332,8 @@ class Workspace:
             for pattern in (f"{path.name}.prev",
                             f"{path.name}.snap.*.bak",
                             f"{path.name}.corrupt.*.bak",
-                            f"{path.name}.good.*.bak"):
+                            f"{path.name}.good.*.bak",
+                            f"{path.name}.prev.good.*.bak"):   # 旧命名
                 for old in self.boards_dir.glob(pattern):
                     old.unlink(missing_ok=True)
         except OSError as e:
