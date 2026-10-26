@@ -3532,6 +3532,9 @@ class BoardView(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        # 键盘焦点：return_focus_from_search() 的 setFocus() 需要看板本身
+        # 可聚焦，否则 Esc 退出搜索后焦点仍留在输入框，方向键导航不可达
+        self.setFocusPolicy(Qt.StrongFocus)
         self._lists: list[BoardList] = []
         self._columns: list[ListColumn] = []
         # 当前被悬停的卡片（单光标 → 全局最多一张）。用于零成本自愈：

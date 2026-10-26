@@ -141,6 +141,9 @@ class AppController(QObject):
         # ── 撤销/重做 / 日期检查 / 系统主题跟随 / 番茄钟 ──
         self._undo_stack: list[dict] = []
         self._redo_stack: list[dict] = []
+        # 已压栈但尚未确认"确有变化"的快照：无变化路径 pop() 后不能
+        # 留下副作用（清空重做栈 / 裁掉最老一步）
+        self._pending_undo_doc: dict | None = None
         self._today_popover: TodayPopover | None = None   # 今日清单浮窗（惰性创建）
         self._ui_day = date.today()   # 日相关视图的渲染日期（跨天检测基线）
         self._due_timer = QTimer(self)
@@ -557,6 +560,7 @@ class AppController(QObject):
             self._store_board_id = board_id
             self._undo_stack.clear()
             self._redo_stack.clear()
+            self._pending_undo_doc = None
             self._board_view.clear_selection()
             self._board_view.clear_view_filters()
         board = self._store.load()
@@ -604,9 +608,11 @@ class AppController(QObject):
         dlg = QuickAddDialog(tr("新建看板"), tr("看板名称："),
                              tr("例如：工作项目"), parent=self._window,
                              ok_text=tr("创建"))
-        if dlg.exec() != QDialog.Accepted:
-            return
+        accepted = dlg.exec() == QDialog.Accepted
         name = dlg.text().strip()
+        dlg.deleteLater()   # exec 后 parent 持有 C++ 对象，不删会随使用累积
+        if not accepted:
+            return
         default_board = Board.from_dict({})
         default_board.name = name
         try:
@@ -632,9 +638,11 @@ class AppController(QObject):
                              tr("例如：工作项目"),
                              initial_text=meta.name, parent=self._window,
                              ok_text=tr("保存"))
-        if dlg.exec() != QDialog.Accepted:
-            return
+        accepted = dlg.exec() == QDialog.Accepted
         name = dlg.text().strip()
+        dlg.deleteLater()
+        if not accepted:
+            return
         if name == meta.name:
             return
         # 在途异步写先收口再同步落盘：rename 随后直写板文件，若排在保存池
@@ -713,6 +721,7 @@ class AppController(QObject):
             self._store_board_id = self._workspace.current_id
             self._undo_stack.clear()
             self._redo_stack.clear()
+            self._pending_undo_doc = None
             self._board_view.clear_selection()
             self._board_view.clear_view_filters()
         self._apply_board_to_ui()
@@ -900,9 +909,11 @@ class AppController(QObject):
             tr("例：明天 交周报 !P1 #红"),
             syntax_preview=True,
             parent=self._window)
-        if dlg.exec() != QDialog.Accepted:
-            return
+        accepted = dlg.exec() == QDialog.Accepted
         title = dlg.text().strip()
+        dlg.deleteLater()
+        if not accepted:
+            return
         if title and board.lists:
             self._on_card_add(board.lists[0].id, title)
 
@@ -925,13 +936,19 @@ class AppController(QObject):
         clip = clipboard.text() if clipboard is not None else ""
         prefill = clip if "\n" in clip else ""
         dlg = BulkAddDialog(names, prefill, parent=self._window)
-        if dlg.exec() != QDialog.Accepted:
-            return
+        accepted = dlg.exec() == QDialog.Accepted
         lines = [ln.strip() for ln in dlg.text().splitlines()
                  if ln.strip()][:100]
-        if not lines:
+        list_index = dlg.list_index()
+        dlg.deleteLater()
+        if not accepted or not lines:
             return
-        target = board.lists[dlg.list_index()]
+        # 对话框期间可能撤销/切板：重新取当前板，列表数可能已变
+        board = self._store.load()
+        if list_index >= len(board.lists):
+            self._notify(tr("看板已变更，操作取消"))
+            return
+        target = board.lists[list_index]
         self._push_undo()
         new_cards = [self._make_card_from_text(ln) for ln in lines]
         target.cards[0:0] = new_cards   # 保序插入列首（第一行在最上）
@@ -940,6 +957,7 @@ class AppController(QObject):
                 if card.fund is None:
                     card.ensure_fund()   # 资金监视泳道：批量添加同样自动补配置
         board.invalidate_index()
+        self._pin_cards_visible(new_cards)
         self._after_data_change(
             tr("已批量添加 {n} 张卡片").format(n=len(new_cards)))
 
@@ -1017,6 +1035,7 @@ class AppController(QObject):
         if len(raw_lines) > len(lines):
             # 静默截断 100 行上限会让用户以为整段都进去了
             msg += " · " + tr("超出上限，仅保留前 {n} 行").format(n=len(lines))
+        self._pin_cards_visible(new_cards)
         self._after_data_change(msg)
 
     def _on_files_dropped(self, list_id: str, paths: list) -> None:
@@ -1080,6 +1099,7 @@ class AppController(QObject):
                 n=len(paths[:50]))
         if failed:
             msg += " · " + tr("{n} 个未能添加").format(n=failed)
+        self._pin_cards_visible(created)
         self._after_data_change(msg)
 
     def _today_focus_items(self, focus=None) -> list[tuple[BoardList, Card]]:
@@ -1114,6 +1134,7 @@ class AppController(QObject):
         if target.fund_watch:
             card.ensure_fund()
         target.cards.insert(0, card)
+        self._pin_cards_visible([card])
         self._after_data_change(
             tr("已加入今日「{title}」").format(title=card.title))
 
@@ -1172,12 +1193,21 @@ class AppController(QObject):
                 fund_init={"role": "assist"} if lst.fund_watch else None)
             if result is None:
                 return
+            # exec 是嵌套事件循环：期间可能撤销/切板，旧 lst 已成孤儿
+            lst = self._store.load().find_list(list_id)
+            if lst is None:
+                self._notify(tr("看板已变更，操作取消"))
+                return
             self._push_undo()
             card = Card(**result)
             # 新建卡也可能带附件（粘贴图片/选文件）：与编辑同一落库路径
             # （result["attachments"] 与 card.attachments 同引用，路径就地改写）
             self._materialize_attachments(card, result)
         else:
+            lst = self._store.load().find_list(list_id)
+            if lst is None:
+                self._notify(tr("看板已变更，操作取消"))
+                return
             self._push_undo()
             card = self._make_card_from_text(title)
         lst.cards.insert(0, card)
@@ -1196,6 +1226,11 @@ class AppController(QObject):
             return
         result = self._run_card_dialog(card)
         if result is None:
+            return
+        # 对话框期间撤销/切板会让旧 card 脱离当前看板：按 id 重新取
+        _lst, card = self._store.load().find_card(card_id)
+        if card is None:
+            self._notify(tr("看板已变更，操作取消"))
             return
         # 附件先落库（复制文件/清理删除项），失败项保留 pending 不阻塞保存
         self._materialize_attachments(card, result)
@@ -1674,10 +1709,15 @@ class AppController(QObject):
             tr("例：交周报 !P1 #红"),
             syntax_preview=True,
             parent=self._window)
-        if dlg.exec() != QDialog.Accepted:
-            return
+        accepted = dlg.exec() == QDialog.Accepted
         title = dlg.text().strip()
-        if not title:
+        dlg.deleteLater()
+        if not accepted or not title:
+            return
+        # 对话框期间可能撤销/切板：重新取当前板
+        board = self._store.load()
+        if not board.lists:
+            self._notify(tr("看板已变更，操作取消"))
             return
         card = self._make_card_from_text(title)
         if not card.due_date:
@@ -1687,6 +1727,7 @@ class AppController(QObject):
         if target.fund_watch:
             card.ensure_fund()   # 资金监视泳道：新建卡自动补配置
         target.cards.insert(0, card)
+        self._pin_cards_visible([card])
         self._after_data_change(
             tr("已添加「{title}」到 {list}").format(
                 title=card.title, list=target.title))
@@ -1700,7 +1741,9 @@ class AppController(QObject):
             return
         from app.views.shortcuts_dialog import ShortcutsDialog
 
-        ShortcutsDialog(self._window).exec()
+        dlg = ShortcutsDialog(self._window)
+        dlg.setAttribute(Qt.WA_DeleteOnClose)   # 每次按 ? 都建新窗，用完即毁
+        dlg.exec()
 
     # ── 列表操作 ──────────────────────────────────────────
 
@@ -1710,10 +1753,10 @@ class AppController(QObject):
         dlg = QuickAddDialog(tr("添加列表"), tr("列表名称："),
                              tr("例如：进行中"), parent=self._window,
                              ok_text=tr("添加"))
-        if dlg.exec() != QDialog.Accepted:
-            return
+        accepted = dlg.exec() == QDialog.Accepted
         title = dlg.text().strip()
-        if not title:
+        dlg.deleteLater()
+        if not accepted or not title:
             return
         self._push_undo()
         lst = BoardList(title=title)
@@ -1865,8 +1908,26 @@ class AppController(QObject):
 
     # ── 数据变更后的统一刷新 ──────────────────────────────
 
+    def _pin_cards_visible(self, cards) -> None:
+        """新建卡在搜索/今日过滤态下也要立即可见
+
+        单卡添加早已这么做，其他建卡入口（粘贴/批量/拖文件/日历/模板/
+        今日浮窗）漏了：卡片进了模型却被过滤器挡住，用户只看到一条 toast。
+        """
+        if not self._board_ui_built:
+            return
+        for card in cards:
+            self._board_view.pin_card_visible(card.id)
+
     def _after_data_change(self, notify: str | None) -> dict:
         """数据变更后的统一刷新；返回 today_stats() 结果供调用方复用"""
+        if self._pending_undo_doc is not None:
+            # 确有变化：此时才清重做栈并裁剪上限（见 _push_undo）
+            self._pending_undo_doc = None
+            self._redo_stack.clear()
+            if self._undo_stack:   # 测试/外部可能已清栈
+                del self._undo_stack[:-self._undo_limit_for(
+                    self._undo_stack[-1])]
         board = self._store.load()
         # 任何模型改动（增删改卡/列、拖拽、归档、番茄计数…）都必须在此标脏：
         # flush() 只在脏标记为真时落盘，只 start() 防抖计时器而不标脏，
@@ -2405,11 +2466,15 @@ class AppController(QObject):
         return AppConfig.UNDO_LIMIT
 
     def _push_undo(self) -> None:
-        """在变更前保存看板快照（撤销恢复用）；新变更会清空重做栈"""
+        """在变更前保存看板快照（撤销恢复用）
+
+        清空重做栈与裁剪上限延迟到 _after_data_change：无变化路径
+        （拖回原位/批量全失败）会 pop() 掉这次快照，若在此处就清 redo，
+        一次空操作也会把重做历史抹掉。
+        """
         doc = self._store.load().to_dict()
         self._undo_stack.append(doc)
-        del self._undo_stack[:-self._undo_limit_for(doc)]
-        self._redo_stack.clear()
+        self._pending_undo_doc = doc
 
     def _stop_pomo_if_card_gone(self) -> None:
         """整板替换（撤销/重做）或整列删除后专注卡可能已不存在
@@ -2423,6 +2488,7 @@ class AppController(QObject):
             self._pomo_stop()
 
     def _on_undo_requested(self, notify_empty: bool = False) -> None:
+        self._pending_undo_doc = None   # 撤销不是新变更，不得触发 redo 清空
         if not self._undo_stack:
             if notify_empty:
                 self._notify(tr("没有可撤销的操作"))
@@ -2438,6 +2504,7 @@ class AppController(QObject):
 
     def _on_redo_requested(self, notify_empty: bool = False) -> None:
         """重做：恢复被撤销前的状态（撤销本身可再被撤销）"""
+        self._pending_undo_doc = None
         if not self._redo_stack:
             if notify_empty:
                 self._notify(tr("没有可重做的操作"))
@@ -2756,10 +2823,10 @@ class AppController(QObject):
             initial_text=card.title,
             ok_text=tr("保存"),
             parent=self._window)
-        if dlg.exec() != QDialog.Accepted:
-            return
+        accepted = dlg.exec() == QDialog.Accepted
         name = dlg.text().strip()
-        if not name:
+        dlg.deleteLater()
+        if not accepted or not name:
             return
         if templates_mod.save_template(name, card):
             self._notify(tr("已保存模板「{name}」").format(name=name))
@@ -2782,6 +2849,7 @@ class AppController(QObject):
         if target.fund_watch:
             card.ensure_fund()
         target.cards.insert(0, card)
+        self._pin_cards_visible([card])
         self._after_data_change(
             tr("已按模板添加「{title}」").format(title=card.title))
 
@@ -2832,10 +2900,10 @@ class AppController(QObject):
         if not cards:
             return
         dlg = BatchEditDialog(len(cards), parent=self._window)
-        if dlg.exec() != QDialog.Accepted:
-            return
+        accepted = dlg.exec() == QDialog.Accepted
         changes = dlg.changes()
-        if not changes:
+        dlg.deleteLater()
+        if not accepted or not changes:
             return
         self._push_undo()
         n = 0
@@ -2930,8 +2998,11 @@ class AppController(QObject):
         board = self._store.load()
         archived = board.archived_cards()
         weekly = board.weekly_done_count()
-        key = (weekly, tuple((lst.id, c.id, c.title, c.done)
-                             for lst, c in archived))
+        # 指纹必须含看板 id：两块板都"无归档卡且本周完成数相同"时会
+        # 完全相等，切板后归档窗继续显示上一块板的行
+        key = (self._store_board_id, weekly,
+               tuple((lst.id, lst.title, c.id, c.title, c.done)
+                     for lst, c in archived))
         if key == self._archive_key:
             return
         self._archive_key = key
@@ -3112,7 +3183,9 @@ class AppController(QObject):
                     writer.writerow([
                         cls._csv_safe(lst.title), cls._csv_safe(c.title),
                         cls._csv_safe(c.notes),
-                        ";".join(c.labels), c.due_date or "",
+                        # 标签同样可能来自导入/手工数据，公式前缀必须防注入
+                        cls._csv_safe(";".join(c.labels)),
+                        c.due_date or "",
                         "是" if c.done else "否",
                         AppConfig.PRIORITY_NAMES.get(c.priority, ""),
                         c.pomodoros,

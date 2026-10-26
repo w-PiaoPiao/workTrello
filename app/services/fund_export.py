@@ -70,6 +70,12 @@ def export_xlsx(board_list: BoardList, path: str | Path,
         cell.font = Font(bold=True)
     for row in rows:
         ws.append(row)
+        # 公式注入：标题/备注来自导入数据，以 = + - @ 开头会被 Excel 当公式。
+        # 直接前置 ' 会显示出来，强制单元格类型为字符串更干净
+        for cell in ws[ws.max_row]:
+            if (isinstance(cell.value, str)
+                    and cell.value[:1] in ("=", "+", "-", "@")):
+                cell.data_type = "s"
     widths = [28, 14, 32] + [14] * len(FUND_EXPORT_STEPS)
     for i, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = width

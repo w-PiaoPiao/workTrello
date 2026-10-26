@@ -123,6 +123,9 @@ class MainWindow(QWidget):
             self.setAttribute(Qt.WA_MacAlwaysShowToolWindow, True)
 
         self._mode = "collapsed"
+        # setWindowFlag 会隐藏并重建原生窗口；期间派发的 hideEvent 不是
+        # 用户隐藏，不能走折叠收尾（否则展开态切置顶会折回桌宠）
+        self._changing_flags = False
         self._drag_pos = QPoint()
         self._is_dragging = False
         self._animation_running = False
@@ -246,10 +249,18 @@ class MainWindow(QWidget):
         if self.is_always_on_top() == on:
             return
         was_visible = self.isVisible()
+        was_expanded = self._mode == "expanded"
+        geo = self.geometry()
         reopen = [d for d in self.findChildren(QDialog) if d.isVisible()]
-        self.setWindowFlag(Qt.WindowStaysOnTopHint, on)
+        self._changing_flags = True
+        try:
+            self.setWindowFlag(Qt.WindowStaysOnTopHint, on)
+        finally:
+            self._changing_flags = False
         if was_visible:
             self.show()
+            if was_expanded:
+                self.setGeometry(geo)   # 原生窗口重建后恢复展开几何
             if on:
                 self.raise_()
                 self.activateWindow()
@@ -527,6 +538,10 @@ class MainWindow(QWidget):
             self._visible_cb(True)
 
     def hideEvent(self, event) -> None:
+        if self._changing_flags:
+            # setWindowFlag 重建原生窗口时的隐藏：保持模式/几何/视图堆栈
+            super().hideEvent(event)
+            return
         # 立即终止进行中的折叠/展开动画，避免隐藏态下动画继续驱动 geometry
         anim_was_running = self._animation_running
         if self._animation_running and hasattr(self, "anim"):
