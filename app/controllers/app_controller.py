@@ -3069,13 +3069,17 @@ class AppController(QObject):
 
         托盘不可用时（极少数环境没有系统托盘）退化为"折叠回桌宠"而非退出：
         桌宠就在屏幕上，应用仍然找得到；退出这条路由菜单承担，不由 ✕ 承担。
-        桌宠也被禁用时折叠等于整个隐藏且无路召回——退化为最小化到任务栏。
+        桌宠也被禁用时**保持窗口原样**，不再最小化：主窗口是 Qt.Tool（不占
+        任务栏），最小化与隐藏一样等于消失——低配机器上关掉桌宠是常态，
+        不能把应用送进一个不存在的入口。
         """
         if not self._tray.is_available():
             if self._window.is_pet_enabled():
                 self._window.collapse()
-            else:
-                self._window.showMinimized()
+            elif not self._tray_hint_shown:
+                self._tray_hint_shown = True
+                logger.warning(
+                    "托盘不可用且桌宠已关闭：✕ 保持窗口可见，避免失联")
             return
         self._window.hide_to_tray()
         if not self._tray_hint_shown:

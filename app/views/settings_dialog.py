@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -168,7 +169,10 @@ class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setModal(True)
-        self.setFixedWidth(560)
+        # 宽度不写死：内容最小宽度由"视觉皮肤"那一排按钮和提醒下拉的
+        # 选项文字决定（中文约 600px、英文约 690px）。固定 560 时内容
+        # 比视口宽，QScrollArea 不会换行只会裁——右侧开关少半截、最后
+        # 一个皮肤按钮露不全。初始宽度由 _fit_width 按内容算出。
         self.setMinimumHeight(500)
         self.setSizeGripEnabled(True)
 
@@ -183,6 +187,7 @@ class SettingsDialog(QDialog):
         scroll.setObjectName("settingsScroll")
         host = QWidget()
         host.setObjectName("settingsHost")
+        self._host = host
         page = QVBoxLayout(host)
         page.setContentsMargins(
             *tokens.dialog_margins(bottom_trim=2, top=16))
@@ -207,14 +212,14 @@ class SettingsDialog(QDialog):
             self._scale_seg)
         # 视觉皮肤：换的是一整套配色 + 造型（圆角/字重/徽章形态/板底纹理），
         # 与上面的深浅色正交——所以是单选的一排色板，不是嵌套菜单。
-        self._skin_row_title = QLabel(tr("视觉皮肤"))
-        self._skin_row_title.setObjectName("rowTitle")
-        self._skin_row_hint = QLabel(
+        self._ui_skin_row_title = QLabel(tr("视觉皮肤"))
+        self._ui_skin_row_title.setObjectName("rowTitle")
+        self._ui_skin_row_hint = QLabel(
             tr("整套配色与造型（圆角 / 字重 / 徽章形态），深浅色在其之上生效"))
-        self._skin_row_hint.setObjectName("rowHint")
-        self._skin_row_hint.setWordWrap(True)
-        self._sec_appearance._lay.addWidget(self._skin_row_title)
-        self._sec_appearance._lay.addWidget(self._skin_row_hint)
+        self._ui_skin_row_hint.setObjectName("rowHint")
+        self._ui_skin_row_hint.setWordWrap(True)
+        self._sec_appearance._lay.addWidget(self._ui_skin_row_title)
+        self._sec_appearance._lay.addWidget(self._ui_skin_row_hint)
         skin_row = QWidget()
         skin_row_lay = QHBoxLayout(skin_row)
         skin_row_lay.setContentsMargins(0, 0, 0, 0)
@@ -380,8 +385,9 @@ class SettingsDialog(QDialog):
         fl.addWidget(self._done_btn)
         root.addWidget(footer)
 
-        self.reapply_theme()
+        # retexts 内部会 reapply_theme（刷新样式与布局缓存）并按内容定宽
         self.retexts()
+        self.resize(self.minimumWidth(), 500)
 
     # ── 对外 ──────────────────────────────────────────────
 
@@ -455,7 +461,14 @@ class SettingsDialog(QDialog):
         self._hotkey_toggle.blockSignals(prev)
 
     def reapply_theme(self) -> None:
+        """重刷样式，并按新字号重算宽度
+
+        字号随界面密度与皮肤变化，最宽的一行（皮肤按钮排 / 提醒下拉）
+        的宽度也跟着变；不重算的话切到"宽松"密度或大字号皮肤时，
+        右侧控件又会被裁掉。
+        """
         self.setStyleSheet(self._build_qss())
+        self._fit_width()
 
     def retexts(self) -> None:
         """语言切换后刷新全部文案（控件选中值不变）"""
@@ -471,8 +484,8 @@ class SettingsDialog(QDialog):
         self._scale_seg.retexts(
             [("compact", tr("紧凑")), ("normal", tr("标准")),
              ("comfortable", tr("宽松"))])
-        self._skin_row_title.setText(tr("视觉皮肤"))
-        self._skin_row_hint.setText(
+        self._ui_skin_row_title.setText(tr("视觉皮肤"))
+        self._ui_skin_row_hint.setText(
             tr("整套配色与造型（圆角 / 字重 / 徽章形态），深浅色在其之上生效"))
         for key, btn in self._ui_skin_buttons.items():
             # 皮肤名是产品名词，不翻译：翻译后用户在两台机器上会看到
@@ -524,8 +537,27 @@ class SettingsDialog(QDialog):
                         self._sec_window, self._sec_remind, self._sec_data,
                         self._sec_about):
             section.sync_a11y()
+        # 文案变了，最宽的一行也跟着变（中→英会宽 100px 上下）。
+        # reapply_theme 会重刷样式（顺带刷新 QComboBox 缓存的
+        # minimumSizeHint——setItemText 不会让它失效）再按内容定宽。
+        self.reapply_theme()
 
     # ── 内部 ──────────────────────────────────────────────
+
+    def _fit_width(self) -> None:
+        """按内容最小宽度定窗口宽度，并把它作为最小宽度
+
+        QScrollArea 在 widgetResizable 下把内容压到视口宽度，压不下时
+        不换行、只裁切（右侧开关/最后一个皮肤按钮被切掉，同时冒出横向
+        滚动条）。这里取内容自身最小宽度 + 竖向滚动条宽度作为下限，
+        保证最宽的一行始终完整；用户仍可继续往宽拉。
+        """
+        self.layout().activate()
+        bar = self.style().pixelMetric(QStyle.PM_ScrollBarExtent, None, self)
+        width = max(560, self._host.minimumSizeHint().width() + bar + 2)
+        self.setMinimumWidth(width)
+        if self.width() < width:
+            self.resize(width, self.height())
 
     def _open_data_dir(self) -> None:
         AppConfig.DATA_DIR.mkdir(parents=True, exist_ok=True)

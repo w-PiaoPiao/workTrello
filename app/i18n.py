@@ -499,6 +499,11 @@ _zh_en: dict[str, str] = {
         "Failed to save board data — check disk space or file permissions",
     "应用已在运行，请查看系统托盘。":
         "The app is already running — check the system tray.",
+    "数据目录不可写：{path}\n\n请把应用放到可写目录，"
+    "或用环境变量 PET_BOARD_DATA_DIR 指定一个可写目录。":
+        "Data directory is not writable: {path}\n\n"
+        "Move the app to a writable folder, or point PET_BOARD_DATA_DIR "
+        "at a writable one.",
     "应用启动失败：{err}": "Failed to start: {err}",
     "详情见日志文件：{path}": "See the log file for details: {path}",
     # ── 补缺词条（此前英文界面回退显示中文）──

@@ -46,8 +46,6 @@ def main():
         enable_dynamic_activation(app)
 
     # ── 单实例锁 ──────────────────────────────────────────
-    from pathlib import Path
-
     from PySide6.QtCore import QLockFile
 
     from app.config import AppConfig
@@ -75,19 +73,42 @@ def main():
     from app import i18n
     i18n.set_lang(AppConfig.get_language())
 
+    if AppConfig.DATA_DIR_FALLBACK:
+        logging.warning("默认数据目录不可写，已改用便携目录: %s",
+                        AppConfig.DATA_DIR)
+
+    # 数据目录真写不进时明确报错：放行只会让每次保存都静默失败
+    if not AppConfig.data_dir_writable():
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.critical(
+            None, AppConfig.APP_NAME,
+            i18n.tr("数据目录不可写：{path}\n\n请把应用放到可写目录，"
+                    "或用环境变量 PET_BOARD_DATA_DIR 指定一个可写目录。")
+            .format(path=AppConfig.DATA_DIR))
+        sys.exit(1)
+
     _lock = QLockFile(str(AppConfig.DATA_DIR / "instance.lock"))
     _lock.setStaleLockTime(5000)
     if not _lock.tryLock(100):
-        # 已有实例在跑：优先唤醒它把界面亮出来（常驻托盘时窗口整个隐藏，
-        # 只弹"已在运行"的提示观感与闪退无异）；唤醒通道不可用再弹提示框
-        from app.services.single_instance import InstanceWaker
+        if _lock.error() == QLockFile.LockError.PermissionError:
+            # 锁文件建不出来 ≠ 已有实例在跑。旧代码一律弹"已在运行"，
+            # 受限令牌（沙箱/只读重定向）下会变成永久假提示：应用再也
+            # 起不来，且提示词本身是错的。继续启动，数据目录可写性
+            # 上面已单独校验过，这里不再拦。
+            logging.warning("单实例锁不可用（%s），跳过锁检查继续启动",
+                            AppConfig.DATA_DIR)
+        else:
+            # 已有实例在跑：优先唤醒它把界面亮出来（常驻托盘时窗口整个
+            # 隐藏，只弹"已在运行"的提示观感与闪退无异）；唤醒通道不可用
+            # 再弹提示框
+            from app.services.single_instance import InstanceWaker
 
-        if InstanceWaker(AppConfig.DATA_DIR).wake():
+            if InstanceWaker(AppConfig.DATA_DIR).wake():
+                sys.exit(0)
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(None, AppConfig.APP_NAME,
+                                i18n.tr("应用已在运行，请查看系统托盘。"))
             sys.exit(0)
-        from PySide6.QtWidgets import QMessageBox
-        QMessageBox.warning(None, AppConfig.APP_NAME,
-                            i18n.tr("应用已在运行，请查看系统托盘。"))
-        sys.exit(0)
 
     # ── 全局样式 ──────────────────────────────────────────
     from app.views.theme import AppTheme

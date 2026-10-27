@@ -79,12 +79,12 @@ class InstanceWakerTest(unittest.TestCase):
 
 
 @mock.patch.object(single_instance, "_AF_UNIX_SUPPORTED", False)
-class NoAfUnixDegradationTest(unittest.TestCase):
-    """无 AF_UNIX 平台（Windows 官方 CPython）：start/wake 降级为空操作。
+class TcpFallbackTest(unittest.TestCase):
+    """无 AF_UNIX 平台（Windows 官方 CPython）：回环 TCP 接管唤醒通道
 
-    v0.2.3 在这里漏了守卫，AttributeError 逃出 except OSError，
-    AppController 构造时直接崩——Windows 上一个版本都起不来。
-    替身置 False 让降级分支在所有平台都被跑到，不只依赖 CI 的 Windows 任务。
+    此前这里整条降级为空操作，于是 Windows 上"应用已在运行"的提示没有
+    出口——托盘图标被系统折叠进溢出区、或低完整性进程注册图标被 UIPI
+    拦掉时，用户再也叫不出窗口。替身置 False 让该分支在所有平台都跑到。
     """
 
     def setUp(self):
@@ -96,17 +96,29 @@ class NoAfUnixDegradationTest(unittest.TestCase):
             lambda: self.received.append(1))
 
     def tearDown(self):
+        if self.waker._server is not None:
+            self.waker._server.close()
         self.tmp.cleanup()
 
-    def test_start_is_noop(self):
-        """start 不得抛异常，也不得建立监听（否则 AttributeError 逃逸）"""
+    def test_start_binds_loopback_and_writes_port(self):
+        """start 建回环监听，并把端口写进 instance.port"""
         self.waker.start()
-        self.assertIsNone(self.waker._server)
-        self.assertIsNone(self.waker._notifier)
+        self.assertIsNotNone(self.waker._server)
+        self.assertIsNotNone(self.waker._notifier)
+        port_file = Path(self.tmp.name) / "instance.port"
+        self.assertTrue(port_file.exists())
+        self.assertEqual(int(port_file.read_text(encoding="utf-8")),
+                         self.waker._port)
 
-    def test_wake_returns_false(self):
-        """wake 失败返回 False，调用方（main.py）据此退回提示框路径"""
+    def test_wake_delivers_show_request(self):
+        """第二实例 wake → 首实例信号触发"""
         self.waker.start()
+        self.assertTrue(self.waker.wake())
+        QTest.qWait(300)
+        self.assertEqual(self.received, [1])
+
+    def test_wake_without_listener_returns_false(self):
+        """首实例未运行（无端口文件）：wake 失败，调用方退回提示框路径"""
         self.assertFalse(self.waker.wake())
         self.assertEqual(self.received, [])
 

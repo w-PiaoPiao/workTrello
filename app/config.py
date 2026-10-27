@@ -5,11 +5,18 @@
 """
 
 import json
+import logging
 import os
+import shutil
 import sys
 from pathlib import Path
 
 from PySide6.QtCore import QSettings
+
+logger = logging.getLogger(__name__)
+
+# 模块级常量：类体执行时 AppConfig 还不存在，_resolve_data_dir 需要这个名字
+_APP_NAME = "桌宠看板"
 
 
 # 按 env key 缓存的 QSettings 单例（PET_BOARD_DATA_DIR 进程内不变，
@@ -47,11 +54,140 @@ def _settings() -> QSettings:
     return inst
 
 
+# ── 数据目录可写性 ────────────────────────────────────────────
+# 受限令牌（托管桌面/沙箱/只读重定向）下目录"可见可读但写不进"：
+# 只判断 mkdir 不报错会误判——目录已存在时 mkdir 直接返回成功，实际
+# 写文件仍被拒（WinError 5）。必须真落一个探针文件才算可写。
+
+def _dir_writable(path: Path) -> bool:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / f".write_probe_{os.getpid()}"
+        probe.write_bytes(b"")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def _fallback_data_dirs() -> list[Path]:
+    """默认数据目录不可写时的备选：exe 旁的 data/（便携模式）
+
+    frozen 下锚点用 sys.executable 而非 __file__：后者指向每次启动重建的
+    _MEIPASS 临时目录，数据会随进程消失。源码运行时锚点为项目根。
+    """
+    if getattr(sys, "frozen", False):
+        anchor = Path(sys.executable).resolve().parent
+    else:
+        anchor = Path(__file__).resolve().parent.parent
+    cands = [anchor / "data"]
+    try:
+        cwd_data = Path.cwd() / "data"
+    except OSError:
+        return cands
+    if cwd_data != cands[0]:
+        cands.append(cwd_data)
+    return cands
+
+
+# 便携目录版的标记文件（由 tools/build_app.py --onedir 生成在 exe 旁）
+_PORTABLE_MARKER = "portable.marker"
+
+
+def _portable_data_dir() -> Path | None:
+    """便携目录版：始终用 exe 旁的 data/，不因系统数据目录可写而改道
+
+    便携版的语义是"整个文件夹搬走就能用"——数据必须跟着 exe 走。若在
+    正常机器上退回 %LOCALAPPDATA%，把文件夹拷到另一台机器就会看起来
+    "数据丢了"。标记文件由打包脚本写入，不会误伤单文件版与源码运行。
+    """
+    if not getattr(sys, "frozen", False):
+        return None
+    base = Path(sys.executable).resolve().parent
+    if (base / _PORTABLE_MARKER).exists():
+        return base / "data"
+    return None
+
+
+# 迁移清单：看板本体 + 索引 + 多板文件 + 模板 + 附件。
+# app.log / instance.lock / settings.ini 不迁（属于运行态，落新目录即可）。
+_MIGRATE_ENTRIES = ("workspace.json", "boards", "board.json",
+                    "templates.json", "attachments")
+
+
+def _migrate_data(src: Path, dst: Path) -> None:
+    """把旧数据目录的看板数据复制到便携目录（目标已有数据则不动）
+
+    只复制不删除：受限环境里旧目录往往也删不动，原处留一份当备份更稳。
+    """
+    if (dst / "workspace.json").exists() or (dst / "board.json").exists():
+        return
+    for name in _MIGRATE_ENTRIES:
+        source = src / name
+        if not source.exists():
+            continue
+        try:
+            if source.is_dir():
+                shutil.copytree(source, dst / name)
+            else:
+                shutil.copy2(source, dst / name)
+        except OSError as exc:
+            logger.warning("迁移数据失败（%s）: %s", source, exc)
+
+
+def _resolve_data_dir() -> tuple[Path, bool]:
+    """解析数据目录，返回 (路径, 是否退到了便携目录)
+
+    默认位置写不进时（沙箱/受限令牌下 %LOCALAPPDATA% 常被拒），退到
+    exe 旁 data/ 并迁移旧数据；都不可写则原样返回默认位置，由 main.py
+    给出明确报错——总比把"写不进"伪装成"应用已在运行"强。
+    """
+    override = os.environ.get("PET_BOARD_DATA_DIR")
+    if override:
+        return Path(override), False
+
+    # 便携目录版：数据固定跟着 exe 走（搬走文件夹＝带走数据）
+    portable = _portable_data_dir()
+    if portable is not None and _dir_writable(portable):
+        return portable, False
+
+    try:
+        import appdirs
+        preferred = Path(appdirs.user_data_dir(_APP_NAME, False))
+    except ImportError:
+        # 兜底（如 PyInstaller frozen 环境缺 appdirs）：仍落到系统
+        # 数据目录，绝不回退 __file__ 旁路径（见 _fallback_data_dirs）
+        if sys.platform == "win32":
+            base = os.environ.get("LOCALAPPDATA") or str(Path.home())
+        elif sys.platform == "darwin":
+            base = str(Path.home() / "Library" / "Application Support")
+        else:
+            base = os.environ.get("XDG_DATA_HOME") \
+                or str(Path.home() / ".local" / "share")
+        preferred = Path(base) / _APP_NAME
+
+    if _dir_writable(preferred):
+        return preferred, False
+
+    for cand in _fallback_data_dirs():
+        if not _dir_writable(cand):
+            continue
+        _migrate_data(preferred, cand)
+        # QSettings 一并落到该目录：受限环境里 HKCU 同样写不进，
+        # 保持"设置跟着数据目录走"的既有约定
+        os.environ["PET_BOARD_DATA_DIR"] = str(cand)
+        logger.warning("默认数据目录不可写（%s），改用便携目录 %s",
+                       preferred, cand)
+        return cand, True
+
+    return preferred, False
+
+
 class AppConfig:
     """应用全局配置"""
 
     # 应用信息
-    APP_NAME = "桌宠看板"
+    APP_NAME = _APP_NAME
     APP_VERSION = "0.4.0"
     APP_ORG = "Personal"
 
@@ -346,27 +482,15 @@ class AppConfig:
         _settings().setValue(cls.KEY_DEFAULT_VIEW, view)
 
     # ── 数据路径 ──────────────────────────────────────────────
-    _env_override = os.environ.get("PET_BOARD_DATA_DIR")
-    if _env_override:
-        DATA_DIR = Path(_env_override)
-    else:
-        try:
-            import appdirs
-            DATA_DIR = Path(appdirs.user_data_dir(APP_NAME, False))
-        except ImportError:
-            # 兜底（如 PyInstaller frozen 环境缺 appdirs）：仍落到系统
-            # 数据目录，绝不回退 __file__ 旁路径——frozen 下 __file__ 指向
-            # 每次启动都重建的 _MEIPASS 临时目录，数据会随进程消失
-            if sys.platform == "win32":
-                base = os.environ.get("LOCALAPPDATA") or str(Path.home())
-            elif sys.platform == "darwin":
-                base = str(Path.home() / "Library" / "Application Support")
-            else:
-                base = os.environ.get("XDG_DATA_HOME") \
-                    or str(Path.home() / ".local" / "share")
-            DATA_DIR = Path(base) / APP_NAME
+    # 解析逻辑见模块级 _resolve_data_dir：默认位置不可写时退到便携目录
+    DATA_DIR, DATA_DIR_FALLBACK = _resolve_data_dir()
 
     BOARD_FILE = "board.json"
+
+    @classmethod
+    def data_dir_writable(cls) -> bool:
+        """数据目录是否真的可写（仅判断存在性在受限令牌下会误判）"""
+        return _dir_writable(cls.DATA_DIR)
 
     @classmethod
     def board_path(cls) -> Path:

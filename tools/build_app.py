@@ -9,18 +9,25 @@ onefile 产物是单个 exe，无法打包后清理内部文件，所以这里�
 （--exclude-module 只挡 Python 绑定，Qt 的 C++ dll 仍会被 PySide6
 hook 全量收集；应用只用 QtCore/QtGui/QtWidgets）。
 
-用法：python tools/build_app.py
+用法：
+    python tools/build_app.py            # onefile（dist/<name>.exe）
+    python tools/build_app.py --onedir   # 便携目录版（dist/<name>-portable/ + zip）
+
+便携目录版不向 %TEMP% 解包：onefile 的 bootloader 必须先解包到系统临时
+目录，而受限令牌（沙箱/托管桌面）下 %TEMP% 往往写不进，会直接弹
+"Could not create temporary directory!" 且 Python 代码根本没机会运行。
 """
 
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+DIST = ROOT / "dist"
 
 # dist_name 里路径分隔符统一按 / 匹配（已小写）。命中即从产物剔除：
 # Qt6* 为 C++ dll（PySide6/Qt/bin），PySide6/Qt* 为绑定扩展，
@@ -122,6 +129,77 @@ exe = EXE(
 )
 '''
 
+SPEC_TEMPLATE_ONEDIR = '''# -*- mode: python ; coding: utf-8 -*-
+# 由 tools/build_app.py 自动生成，勿手改（Windows 便携目录版 + Qt 死重过滤）
+
+DEAD_PATTERNS = {dead!r}
+KEEP_TRANSLATIONS = {keep!r}
+
+
+def _is_dead(dest_name):
+    n = dest_name.replace("\\\\", "/").lower()
+    for p in DEAD_PATTERNS:
+        if p in n:
+            return True
+    if "pyside6/qt/translations/" in n and not n.endswith(KEEP_TRANSLATIONS):
+        return True
+    return False
+
+
+a = Analysis(
+    [{entry!r}],
+    pathex=[],
+    binaries=[],
+    datas=[],
+    hiddenimports=[],
+    hookspath=[],
+    hooksconfig={{}},
+    runtime_hooks=[],
+    excludes=[
+        'PySide6.QtWebEngineCore', 'PySide6.QtWebEngineWidgets',
+        'PySide6.QtQml', 'PySide6.QtQuick', 'PySide6.QtMultimedia',
+        'PySide6.Qt3DCore', 'PySide6.QtNetwork',
+    ],
+    noarchive=False,
+    optimize=0,
+)
+
+# PyInstaller 6 起 TOC 已移除，a.binaries / a.datas 是普通 list
+a.binaries = [x for x in a.binaries if not _is_dead(x[0])]
+a.datas = [x for x in a.datas if not _is_dead(x[0])]
+
+pyz = PYZ(a.pure)
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name={name!r},
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    icon={icon!r},
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name={name!r},
+)
+'''
+
 
 def _read_app_version() -> str:
     cfg = (ROOT / "app" / "config.py").read_text(encoding="utf-8")
@@ -140,10 +218,13 @@ def main() -> int:
         except (AttributeError, ValueError, OSError):
             pass
 
-    name = f"peTTrello-v{_read_app_version()}"
-    print(f"打包: {name}")
+    onedir = "--onedir" in sys.argv[1:]
+    base = f"peTTrello-v{_read_app_version()}"
+    name = f"{base}-portable" if onedir else base
+    print(f"打包: {name}（{'便携目录' if onedir else 'onefile'}）")
 
-    spec = SPEC_TEMPLATE.format(
+    template = SPEC_TEMPLATE_ONEDIR if onedir else SPEC_TEMPLATE
+    spec = template.format(
         dead=DEAD_PATTERNS,
         keep=KEEP_TRANSLATIONS,
         entry=str(ROOT / "main.py"),
@@ -163,7 +244,18 @@ def main() -> int:
     finally:
         spec_path.unlink(missing_ok=True)
 
-    print(f"完成: dist\\{name}.exe")
+    if onedir:
+        # 便携标记：app/config.py 据此把数据固定在 exe 旁的 data/，
+        # 整个文件夹搬走即可带走数据（见 _portable_data_dir）
+        (DIST / name / "portable.marker").write_text(
+            "便携目录版：数据保存在同级 data/ 目录，可整个文件夹搬移\n",
+            encoding="utf-8")
+        archive = shutil.make_archive(
+            str(DIST / name), "zip", root_dir=DIST, base_dir=name)
+        print(f"完成: dist\\{name}\\{name}.exe")
+        print(f"压缩: dist\\{Path(archive).name}")
+    else:
+        print(f"完成: dist\\{name}.exe")
     return 0
 
 

@@ -4,13 +4,35 @@
 
 from __future__ import annotations
 
+import logging
+
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from app.config import AppConfig
 from app.i18n import app_display_name, tr
+from app.platform.win_integrity import at_least_medium
 from app.services.app_icon import create_app_icon
+
+logger = logging.getLogger(__name__)
+
+# 进程能否真的把图标注册进通知区域（一次查询，结果进程内不变）
+_icon_registrable: bool | None = None
+
+
+def tray_icon_registrable() -> bool:
+    """本进程注册托盘图标是否会成功
+
+    Windows 的 UIPI 会拦掉低完整性进程对任务栏窗口的调用，
+    `Shell_NotifyIcon` 随之失败——但 Qt 的 `isVisible()` 只反映
+    "我要显示"，照样返回 True。低完整性下（沙箱、受限令牌）把窗口
+    藏进托盘，等于藏进一个不存在的图标里。
+    """
+    global _icon_registrable
+    if _icon_registrable is None:
+        _icon_registrable = at_least_medium()
+    return _icon_registrable
 
 
 class TrayService(QObject):
@@ -72,6 +94,12 @@ class TrayService(QObject):
         self._tray.messageClicked.connect(
             self.signal_notification_clicked.emit)
         self._tray.show()
+        if not tray_icon_registrable():
+            # 只记日志不弹窗：这是环境限制，不是用户操作错误。留在日志里
+            # 是为了下次"图标怎么不见了"能一眼查到原因
+            logger.warning(
+                "进程完整性级别过低，托盘图标未能注册（把程序移出受限目录/"
+                "沙箱后恢复正常）")
 
     def set_always_top_checked(self, on: bool) -> None:
         """由控制器同步勾选态（blockSignals 防止 toggled 回环）"""
@@ -89,7 +117,12 @@ class TrayService(QObject):
 
         窗口 ✕ 靠它决定"藏起来"还是"退出"：托盘不可用时把窗口藏掉，应用就
         再也叫不回来了（没有任务栏/Dock 图标），只能回退为退出。
+
+        只问 `isSystemTrayAvailable()` + `isVisible()` 不够：低完整性
+        进程注册图标会被 UIPI 拦掉，而这两个判断都还是 True。
         """
+        if not tray_icon_registrable():
+            return False
         return QSystemTrayIcon.isSystemTrayAvailable() and self._tray.isVisible()
 
     def reapply_texts(self) -> None:

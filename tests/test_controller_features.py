@@ -827,6 +827,25 @@ class ControllerFeatureTest(unittest.TestCase):
         self.assertEqual(self.c._window.mode, "collapsed")
         self.assertEqual(notify.call_count, 0)
 
+    def test_close_without_tray_and_pet_disabled_keeps_visible(self):
+        """托盘不可用 + 桌宠关闭：窗口保持原样
+
+        主窗口是 Qt.Tool（不占任务栏），最小化和隐藏一样等于消失——
+        低配机器上关掉桌宠是常态，✕ 不能把应用送进不存在的入口。
+        """
+        self._reset()
+        self.c._window.set_pet_enabled(False)
+        try:
+            self.c._window.show_and_activate()
+            with patch.object(self.c._tray, "is_available", return_value=False), \
+                 patch.object(self.c._tray, "show_notification") as notify:
+                self.c._board_view.signal_close_requested.emit()
+            self.assertTrue(self.c._window.isVisible())
+            self.assertFalse(self.c._window.isMinimized())
+            self.assertEqual(notify.call_count, 0)
+        finally:
+            self.c._window.set_pet_enabled(True)
+
     def test_close_never_quits_and_quit_lives_in_menus(self):
         """✕ 不接退出；退出的入口只有显式菜单（托盘菜单项仍在且可用）"""
         self._reset()
