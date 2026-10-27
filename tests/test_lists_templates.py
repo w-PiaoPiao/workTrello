@@ -92,6 +92,21 @@ class TemplateStoreTest(unittest.TestCase):
                          ["B"])
         self.assertFalse(templates_mod.delete_template("不存在"))
 
+    def test_store_error_returns_false(self):
+        """写盘抛 StoreError（磁盘满/权限）按 False 契约返回，不冒泡
+
+        StoreError 不是 OSError 子类：只捕 OSError 时它会直接逃进
+        Qt 槽，save_template 的 bool 契约与调用方错误提示全部失效。
+        """
+        from app.models.json_io import StoreError
+        with patch.object(templates_mod.json_io, "atomic_write_json",
+                          side_effect=StoreError("disk full")):
+            self.assertFalse(templates_mod.save_template("复盘", self._card()))
+        templates_mod.save_template("复盘", self._card())
+        with patch.object(templates_mod.json_io, "atomic_write_json",
+                          side_effect=StoreError("disk full")):
+            self.assertFalse(templates_mod.delete_template("复盘"))
+
     def test_card_from_template_uses_new_identity(self):
         src = self._card()
         templates_mod.save_template("复盘", src)

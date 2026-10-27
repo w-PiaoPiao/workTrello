@@ -241,8 +241,11 @@ class _Theme(QObject):
         pal.setColor(QPalette.ColorRole.Text, QColor(c["text_primary"]))
         pal.setColor(QPalette.ColorRole.Button, QColor(c["bg_card"]))
         pal.setColor(QPalette.ColorRole.ButtonText, QColor(c["text_primary"]))
-        pal.setColor(QPalette.ColorRole.Highlight, QColor(c["accent"]))
-        pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#FFFFFF"))
+        pal.setColor(QPalette.ColorRole.Highlight, to_qcolor(c["accent"]))
+        # accent_on 而非写死白色：终端等皮肤的 accent 是荧光绿，白字压
+        # 上去对比不足（与 primary_button_style 同一条理由）
+        pal.setColor(QPalette.ColorRole.HighlightedText,
+                     to_qcolor(c["accent_on"]))
         pal.setColor(QPalette.ColorRole.ToolTipBase, QColor(c["bg_card"]))
         pal.setColor(QPalette.ColorRole.ToolTipText, QColor(c["text_primary"]))
         # 占位文字走 text_muted 而不是 text_disabled：占位符是**说明性文字**
@@ -380,6 +383,8 @@ class _Theme(QObject):
     def global_qss(self) -> str:
         c = self.colors()
         sh = self.shape()
+        # 边框宽度随皮肤走（brutal 的 2.5px 此前只作用于看板卡片）
+        bw = sh.get("border_width", 1)
         # macOS 只用系统中文字体，避免 Qt 为不存在的字体族做别名探测；
         # 等宽皮肤把等宽族放最前（西文走等宽，中文由 Qt 逐字回退）
         if sh["font_mono"]:
@@ -394,13 +399,13 @@ class _Theme(QObject):
             QToolTip {{
                 background: {c['bg_card']};
                 color: {c['text_primary']};
-                border: 1px solid {c['border']};
+                border: {bw}px solid {c['border']};
                 border-radius: {sh['radii']['chip']}px;
                 {tokens.pad(5, 8)};
             }}
             QLineEdit, QPlainTextEdit, QTextEdit {{
                 background: {c['bg_card']};
-                border: 1px solid {c['border']};
+                border: {bw}px solid {c['border']};
                 border-radius: {sh['radii']['control']}px;
                 {tokens.pad_preset(AppConfig.UI_PAD_INPUT)};
                 selection-background-color: {c['accent']};
@@ -411,7 +416,7 @@ class _Theme(QObject):
             QDateEdit, QTimeEdit, QDateTimeEdit, QSpinBox {{
                 background: {c['bg_card']};
                 color: {c['text_primary']};
-                border: 1px solid {c['border']};
+                border: {bw}px solid {c['border']};
                 border-radius: {sh['radii']['control']}px;
                 {tokens.pad_preset(AppConfig.UI_PAD_INPUT_DENSE)};
                 selection-background-color: {c['accent']};
@@ -431,7 +436,7 @@ class _Theme(QObject):
             QComboBox {{
                 background: {c['bg_card']};
                 color: {c['text_primary']};
-                border: 1px solid {c['border']};
+                border: {bw}px solid {c['border']};
                 border-radius: {sh['radii']['control']}px;
                 {tokens.pad(5, 10)};
             }}
@@ -443,7 +448,7 @@ class _Theme(QObject):
             QComboBox QAbstractItemView {{
                 background: {c['bg_card']};
                 color: {c['text_primary']};
-                border: 1px solid {c['border']};
+                border: {bw}px solid {c['border']};
                 border-radius: {sh['radii']['chip']}px;
                 selection-background-color: {c['accent_soft']};
                 selection-color: {c['text_primary']};
@@ -456,7 +461,7 @@ class _Theme(QObject):
             QCheckBox:disabled {{ color: {c['text_disabled']}; }}
             QPushButton {{
                 background: {c['bg_card']};
-                border: 1px solid {c['border']};
+                border: {bw}px solid {c['border']};
                 border-radius: {sh['radii']['control']}px;
                 {tokens.pad_preset(AppConfig.UI_PAD_SECONDARY)};
             }}
@@ -477,7 +482,7 @@ class _Theme(QObject):
             }}
             QMenu {{
                 background: {c['bg_card']};
-                border: 1px solid {c['border']};
+                border: {bw}px solid {c['border']};
                 border-radius: {sh['radii']['card']}px;
                 padding: {tokens.space(6)}px;
             }}

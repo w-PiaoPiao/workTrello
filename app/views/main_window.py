@@ -123,6 +123,12 @@ class MainWindow(QWidget):
             self.setAttribute(Qt.WA_MacAlwaysShowToolWindow, True)
 
         self._mode = "collapsed"
+        # setWindowFlag 会隐藏并重建原生窗口；期间派发的 hideEvent 不是
+        # 用户隐藏，不能走折叠收尾（否则展开态切置顶会折回桌宠）
+        self._changing_flags = False
+        # 展开动画期间暂不施加最小尺寸（否则 132×132 起点先被钳到 980×480）；
+        # 动画结束后在 _on_animation_finished 里恢复
+        self._pending_min_size: tuple[int, int] | None = None
         self._drag_pos = QPoint()
         self._is_dragging = False
         self._animation_running = False
@@ -246,10 +252,18 @@ class MainWindow(QWidget):
         if self.is_always_on_top() == on:
             return
         was_visible = self.isVisible()
+        was_expanded = self._mode == "expanded"
+        geo = self.geometry()
         reopen = [d for d in self.findChildren(QDialog) if d.isVisible()]
-        self.setWindowFlag(Qt.WindowStaysOnTopHint, on)
+        self._changing_flags = True
+        try:
+            self.setWindowFlag(Qt.WindowStaysOnTopHint, on)
+        finally:
+            self._changing_flags = False
         if was_visible:
             self.show()
+            if was_expanded:
+                self.setGeometry(geo)   # 原生窗口重建后恢复展开几何
             if on:
                 self.raise_()
                 self.activateWindow()
@@ -327,7 +341,10 @@ class MainWindow(QWidget):
 
         self.setFixedSize(QSize(16777215, 16777215))
         min_w, min_h = self._effective_min_size()
-        self.setMinimumSize(min_w, min_h)
+        # 动画起点必须是真正的桌宠几何：先设 min 会把窗口瞬间钳到
+        # 980×480，动画只覆盖"最小尺寸 → 目标尺寸"的剩余段
+        self.setMinimumSize(0, 0)
+        self._pending_min_size = (min_w, min_h)
         self.setMaximumSize(AppConfig.BOARD_MAX_WIDTH, AppConfig.BOARD_MAX_HEIGHT)
         self._stack.setCurrentWidget(self._expanded_view)
         self._animate_size(
@@ -404,7 +421,17 @@ class MainWindow(QWidget):
         if self._mode != "expanded" or self._animation_running:
             return
         if self._zoomed:
-            geo = self._zoom_restore_geo
+            geo = QRect(self._zoom_restore_geo)
+            # 副屏被拔掉/分辨率变化后，旧几何可能落在不存在的屏幕：
+            # 与**所有**屏幕都不相交才退回当前屏。只判中心点不行——窗口
+            # 比屏幕宽、或中心恰好压在屏幕外时，几何本身仍然可用，却会被
+            # 误判成"屏幕没了"而强行铺满。
+            from PySide6.QtGui import QGuiApplication
+            if not any(s.availableGeometry().intersects(geo)
+                       for s in QGuiApplication.screens()):
+                screen = self._current_screen()
+                if screen is not None:
+                    geo = screen.availableGeometry()
             self._zoomed = False
         else:
             self._zoom_restore_geo = self.geometry()
@@ -527,6 +554,10 @@ class MainWindow(QWidget):
             self._visible_cb(True)
 
     def hideEvent(self, event) -> None:
+        if self._changing_flags:
+            # setWindowFlag 重建原生窗口时的隐藏：保持模式/几何/视图堆栈
+            super().hideEvent(event)
+            return
         # 立即终止进行中的折叠/展开动画，避免隐藏态下动画继续驱动 geometry
         anim_was_running = self._animation_running
         if self._animation_running and hasattr(self, "anim"):
@@ -602,6 +633,10 @@ class MainWindow(QWidget):
             self.unsetCursor()
             self._snap_to_screen_edge()   # 双保险：落点出屏时收回可用区
             self._set_pet_idle(True)
+        elif self._pending_min_size is not None:
+            # 展开完成才施加最小尺寸（见 expand：动画起点不能被钳制）
+            self.setMinimumSize(*self._pending_min_size)
+        self._pending_min_size = None
         self._update_grip_visibility()
 
     def _reset_zoom_state(self) -> None:

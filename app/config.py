@@ -493,9 +493,25 @@ class AppConfig:
         return _dir_writable(cls.DATA_DIR)
 
     @classmethod
+    def ensure_data_dir(cls) -> Path:
+        """创建数据目录并收紧权限
+
+        Linux 上 $HOME 常见 0755，mkdir 默认按 umask 得到 0755——同机
+        其他本地用户可直接读取全部卡片与日志。目录建成 0700，已存在的
+        目录也纠正一次。
+        """
+        cls.DATA_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if not cls.IS_WINDOWS:
+            try:
+                os.chmod(cls.DATA_DIR, 0o700)
+            except OSError:
+                pass
+        return cls.DATA_DIR
+
+    @classmethod
     def board_path(cls) -> Path:
         """看板数据文件路径（确保目录存在）"""
-        cls.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        cls.ensure_data_dir()
         return cls.DATA_DIR / cls.BOARD_FILE
 
     # ── 窗口尺寸与位置 ────────────────────────────────────────
@@ -796,14 +812,6 @@ class AppConfig:
         "choco": "可可",
         "midnight": "子夜",
     }
-
-    # ── 列表（Trello 列）配色点缀 ───────────────────────────
-    # 已停用：列头原本按 `crc32(list_id) % len(LIST_ACCENTS)` 取一个色点，
-    # 跨进程稳定但**没有任何含义**——用户会把它读成状态，而删掉一列再新建
-    # 同名列就会换色。一个稳定的假信号比没有信号更糟。列表相关的视觉区分
-    # 改由标题与计数徽章承担。保留常量仅为兼容旧数据/外部引用。
-    LIST_ACCENTS = ["#2F6BFF", "#1FA971", "#F5A623", "#E5484D",
-                    "#8B5CF6", "#0EA5A5", "#EC4899"]
 
     # ── 桌宠皮肤（key → 配色；全部 RGBA 元组，QColor(*value) 使用）──
     PET_SKINS = {

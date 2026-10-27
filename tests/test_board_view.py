@@ -38,7 +38,7 @@ _qapp = QApplication.instance() or QApplication([])
 from app.config import AppConfig
 from app.models.board import BoardList, Card
 from app.views import board_view
-from app.views.board_view import WORKDIR_BADGE_TEXT, BoardView, CardWidget
+from app.views.board_view import BoardView, CardWidget
 
 
 def make_lists(spec):
@@ -1111,7 +1111,9 @@ class BoardViewRefreshTest(unittest.TestCase):
         cw = self.view._columns[0]._card_widgets[0]
         badge = cw._workdir_badge
         self.assertIsNotNone(badge)   # 设置了目录才构建徽章
-        self.assertEqual(badge.text(), WORKDIR_BADGE_TEXT)
+        # 徽章文本走 tr（识别用 kind 字段，显示与识别解耦）
+        from app.i18n import tr
+        self.assertEqual(badge.text(), tr("工作目录"))
         received = []
         cw.signal_card_workdir_open.connect(lambda cid: received.append(cid))
         event = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(2, 2),
@@ -1370,12 +1372,16 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(self.view._selected_ids, {ids[1]})
 
     def test_shift_click_across_columns_degrades_to_single(self):
-        """跨列 Shift：范围只在同列内生效，否则只加该卡"""
+        """跨列 Shift：范围只在同列内生效，否则退化为单选该卡并挪锚点"""
         col0_ids, col1_ids = self._ids(0), self._ids(1)
         self.view._on_card_ctrl_clicked(col0_ids[0])
         self.view._on_card_shift_clicked(col1_ids[0])    # D 在另一列
-        self.assertEqual(self.view._selected_ids,
-                         {col0_ids[0], col1_ids[0]})
+        self.assertEqual(self.view._selected_ids, {col1_ids[0]})
+        self.assertEqual(self.view._sel_anchor, col1_ids[0])
+        # 锚点挪回本列后，后续跨列 Shift 仍按新锚点退化单选
+        self.view._on_card_shift_clicked(col0_ids[2])
+        self.assertEqual(self.view._selected_ids, {col0_ids[2]})
+        self.assertEqual(self.view._sel_anchor, col0_ids[2])
 
     def test_clear_selection_if_active_eats_esc(self):
         a = self._ids()[0]
@@ -1935,7 +1941,19 @@ class RawDropIndexTest(unittest.TestCase):
         self.assertEqual(col._raw_index_from_visible(1), 2)   # C 前
         self.assertEqual(col._raw_index_from_visible(2), 3)   # 末尾
 
-    def test_raw_index_without_filter_is_identity(self):
+    def test_raw_index_without_filter_skips_archived_cards(self):
+        """无过滤路径同样换算归档卡（渲染层在任何状态下都剔除归档卡）"""
+        lst = BoardList(title="列")
+        a, b, c = Card(title="A"), Card(title="B"), Card(title="C")
+        a.archived = True
+        lst.cards = [a, b, c]
+        self.view.refresh([lst])
+        col = self.view._columns[0]
+        self.assertEqual(col._raw_index_from_visible(0), 1)   # B 前（跳过归档 A）
+        self.assertEqual(col._raw_index_from_visible(1), 2)   # C 前
+        self.assertEqual(col._raw_index_from_visible(2), 3)   # 末尾 append
+
+    def test_raw_index_without_filter_is_identity_when_no_archived(self):
         lst = BoardList(title="列")
         lst.cards = [Card(title="A"), Card(title="B")]
         self.view.refresh([lst])

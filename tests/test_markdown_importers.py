@@ -47,6 +47,20 @@ class MarkdownLiteTest(unittest.TestCase):
         self.assertIn('<a href="https://a.b/c">', html)
         self.assertIn("第一行<br>", html)
 
+    def test_link_quote_injection_escaped(self):
+        """链接 URL 里的引号不能注入 HTML 属性"""
+        html = render_markdown('[click](x"onmouseover="alert(1))')
+        self.assertNotIn('onmouseover="alert', html)
+        self.assertIn("&quot;", html)
+
+    def test_unclosed_brackets_are_linear(self):
+        """未闭合 [a](b 反复出现曾触发平方级回溯（50KB 近 10s）"""
+        import time
+        text = "[a](b" * 4000
+        started = time.monotonic()
+        render_markdown(text)
+        self.assertLess(time.monotonic() - started, 1.0)
+
     def test_empty(self):
         self.assertEqual(render_markdown("   "), "")
 
@@ -54,6 +68,14 @@ class MarkdownLiteTest(unittest.TestCase):
         html = render_markdown("> 引用一句", secondary_color="#888888")
         self.assertIn('color:#888888', html)
         self.assertIn("<i>", html)
+
+    def test_inline_code_shields_bold_markers(self):
+        """行内代码内的 ** 不与外部的 ** 跨界配对（断裂嵌套的回归）"""
+        html = render_markdown("看 `a**b` 和 **粗体** 的混排")
+        self.assertIn("<code>a**b</code>", html)
+        self.assertIn("<b>粗体</b>", html)
+        # 不允许出现跨标签的断裂嵌套（修复前的产物）
+        self.assertNotIn("<code>a<b>", html)
 
 
 class TrelloImportTest(unittest.TestCase):
@@ -106,7 +128,8 @@ class TrelloImportTest(unittest.TestCase):
                          [{"text": "第一步", "done": True},
                           {"text": "第二步", "done": False}])
         c2 = board.lists[1].cards[0]
-        self.assertTrue(c2.done)
+        # Trello 的 dueComplete 只表示"截止日期已勾掉"，不代表卡片完成
+        self.assertFalse(c2.done)
 
     def test_closed_card_archived_and_closed_list_dropped(self):
         board, _ = board_from_trello(self._doc())
@@ -121,6 +144,34 @@ class TrelloImportTest(unittest.TestCase):
             board_from_trello({"foo": 1})
         with self.assertRaises(ValueError):
             board_from_trello("not a dict")   # type: ignore[arg-type]
+
+    def test_cards_without_id_get_generated_ids(self):
+        """无 id 卡/列必须生成新 id：id=None 会让 find_card 按 None 键
+        互相覆盖（删错卡、索引错乱）"""
+        doc = self._doc()
+        for entry in doc["cards"]:
+            entry["id"] = ""
+        for lst in doc["lists"]:
+            lst["id"] = ""
+        board, _ = board_from_trello(doc)
+        cards = [c for l in board.lists for c in l.cards]
+        ids = [c.id for c in cards]
+        self.assertTrue(all(i for i in ids), "卡片 id 不得为 None/空")
+        self.assertEqual(len(ids), len(set(ids)), "卡片 id 必须互不相同")
+        # find_card 精确命中第一张卡（此前 None 键会返回最后一张）
+        first = cards[0]
+        _lst, found = board.find_card(first.id)
+        self.assertIs(found, first)
+        self.assertTrue(all(l.id for l in board.lists), "列表 id 不得为空")
+        self.assertEqual(len({l.id for l in board.lists}),
+                         len(board.lists), "列表 id 必须互不相同")
+
+    def test_malformed_due_not_stored(self):
+        """畸形时间戳（2024-13-01T…）不得截成非法日期落库"""
+        doc = self._doc()
+        doc["cards"][0]["due"] = "2024-13-01T00:00:00.000Z"
+        board, _ = board_from_trello(doc)
+        self.assertIsNone(board.lists[0].cards[0].due_date)
 
 
 class MarkdownImportTest(unittest.TestCase):

@@ -180,6 +180,7 @@ class _DayCell(QFrame):
                  iso: str, month_offset: int = 0, parent=None):
         super().__init__(parent)
         self._iso = iso
+        self.setAccessibleName(iso)   # 读屏聚焦到格子时能报出日期
         self._month_offset = month_offset
         self.setAcceptDrops(True)
         self.setObjectName("dayCell")
@@ -438,7 +439,10 @@ class _DayCell(QFrame):
                 lambda _=False, cid=card.id: self.signal_edit_card.emit(cid))
         anchor_widget = self._more_btn if self._more_btn is not None else self
         anchor = anchor_widget.mapToGlobal(QPoint(0, anchor_widget.height()))
-        menu.exec(anchor)
+        try:
+            menu.exec(anchor)
+        finally:
+            menu.deleteLater()   # 反复点开会累积隐藏菜单子对象
 
     # ── 拖放改期 ──────────────────────────────────────────
 
@@ -457,6 +461,9 @@ class _DayCell(QFrame):
             event.acceptProposedAction()
 
     def dropEvent(self, event) -> None:
+        # drop 后通常不再派发 DragLeave：通知父级停掉 650ms 翻月定时器，
+        # 否则松手后日历会自己再翻一个月
+        self.signal_drag_leave.emit()
         if event.mimeData().hasFormat(MIME_CARD) and self._iso:
             card_id = bytes(event.mimeData().data(MIME_CARD)).decode("utf-8")
             self.signal_drop_card.emit(card_id, self._iso)
@@ -542,6 +549,8 @@ class CalendarDialog(QDialog):
         head = QHBoxLayout()
         self._prev_btn = icons.IconButton("chevron-left", 16)
         self._prev_btn.setFixedWidth(36)
+        self._prev_btn.setToolTip(tr("上一月"))
+        self._prev_btn.setAccessibleName(tr("上一月"))
         self._prev_btn.setCursor(Qt.PointingHandCursor)
         self._prev_btn.clicked.connect(lambda: self._shift_month(-1))
         head.addWidget(self._prev_btn)
@@ -550,6 +559,8 @@ class CalendarDialog(QDialog):
         head.addWidget(self._month_label, 1, Qt.AlignCenter)
         self._next_btn = icons.IconButton("chevron-right", 16)
         self._next_btn.setFixedWidth(36)
+        self._next_btn.setToolTip(tr("下一月"))
+        self._next_btn.setAccessibleName(tr("下一月"))
         self._next_btn.setCursor(Qt.PointingHandCursor)
         self._next_btn.clicked.connect(lambda: self._shift_month(1))
         head.addWidget(self._next_btn)
@@ -596,6 +607,14 @@ class CalendarDialog(QDialog):
         AppTheme.register(self._on_theme_changed)
 
     # ── 导航 ──────────────────────────────────────────────
+
+    def current_year(self) -> int:
+        """当前显示的年（公开访问器：控制器刷新数据用，勿直读 _year）"""
+        return self._year
+
+    def current_month(self) -> int:
+        """当前显示的月（同上）"""
+        return self._month
 
     def _shift_month(self, delta: int) -> None:
         m = self._month + delta
@@ -706,6 +725,12 @@ class CalendarDialog(QDialog):
         self._row_h = max(_CELL_MIN_H, min(ideal, avail // rows))
         for cell in self._cells:
             cell.set_row_height(self._row_h)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        # 首次 show 前 viewport 高度还是布局前的默认值（实测 480 → 实际
+        # 386），此时算出的行高让整月一打开就带滚动条；等布局完成后重算
+        QTimer.singleShot(0, self._fit_row_height)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)

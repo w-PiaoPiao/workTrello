@@ -12,6 +12,7 @@ Board 是看板聚合（lists 列表与跨列表查找/统计），不依赖存�
 from __future__ import annotations
 
 import calendar
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -30,6 +31,43 @@ def _new_id() -> str:
     return uuid.uuid4().hex
 
 
+_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def _clean_str(value) -> str:
+    """容错字符串：None → ""，并剔除孤立代理项
+
+    孤立代理项（如 "\\ud800"）能通过 json.loads，却在 ensure_ascii=False
+    写盘时抛 UnicodeEncodeError——一旦落库，此后每次保存都失败。
+    """
+    if value is None:
+        return ""
+    text = str(value)
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        text = text.encode("utf-8", "replace").decode("utf-8")
+    return text
+
+
+def _as_bool(value) -> bool:
+    """严格布尔：bool("false") 为 True 会把手工/第三方数据的假值读成真"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value == 1
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return False
+
+
+def _clean_id(value) -> str:
+    """id 只允许安全字符：Card.id 会拼进附件目录，路径分隔符必须拒绝"""
+    text = _clean_str(value)
+    return text if _ID_RE.fullmatch(text) else _new_id()
+
+
+
 # 重复周期全集（完成时自动滚动截止日期到下一周期）
 REPEAT_KINDS = ("never", "daily", "weekly", "weekdays",
                 "monthly", "yearly", "custom")
@@ -42,12 +80,12 @@ def normalize_checklist(raw) -> list[dict]:
     out: list[dict] = []
     for entry in raw:
         if isinstance(entry, dict):
-            text = str(entry.get("text", "")).strip()
+            text = _clean_str(entry.get("text")).strip()
             if text:
                 out.append({"text": text,
-                            "done": bool(entry.get("done", False))})
+                            "done": _as_bool(entry.get("done", False))})
         elif isinstance(entry, str) and entry.strip():
-            out.append({"text": entry.strip(), "done": False})
+            out.append({"text": _clean_str(entry).strip(), "done": False})
     return out
 
 
@@ -59,18 +97,21 @@ def normalize_attachments(raw) -> list[dict]:
     for entry in raw:
         if not isinstance(entry, dict):
             continue
-        name = str(entry.get("name", "")).strip()
-        path = str(entry.get("path", "")).strip()
+        name = _clean_str(entry.get("name")).strip()
+        path = _clean_str(entry.get("path")).strip()
         if not name or not path:
             continue
         out.append({
-            "id": str(entry.get("id") or _new_id()),
+            "id": _clean_id(entry.get("id")),
             "name": name,
             "path": path,
-            "is_image": bool(entry.get("is_image", False)),
+            "is_image": _as_bool(entry.get("is_image", False)),
             # pending（复制失败待重试）是运行时态：必须保留，否则
             # apply/落盘一次后重试机制失效，附件永久指向临时文件
             **({"pending": True} if entry.get("pending") else {}),
+            # paste（剪贴板临时 PNG 来源）同样只在内存态保留：清理时
+            # 只删这类文件，用户手选的原文件绝不能被误删
+            **({"paste": True} if entry.get("paste") else {}),
         })
     return out
 
@@ -127,7 +168,7 @@ def normalize_fund(raw) -> dict | None:
         for entry in steps_raw:
             if not isinstance(entry, dict):
                 continue
-            name = str(entry.get("name", "")).strip()
+            name = _clean_str(entry.get("name")).strip()
             if not name:
                 continue
             step_date = str(entry.get("date") or "").strip() or None
@@ -137,7 +178,7 @@ def normalize_fund(raw) -> dict | None:
                 except ValueError:
                     step_date = None
             steps.append({"name": name,
-                          "done": bool(entry.get("done", False)),
+                          "done": _as_bool(entry.get("done", False)),
                           "date": step_date})
     return {"role": role, "kind": kind, "start_date": start,
             "steps": steps}
@@ -242,7 +283,7 @@ class Card:
     def from_dict(cls, data: dict) -> "Card":
         # 空白标题回退默认名而非抛错：手工编辑的 JSON / 旧版本数据一旦
         # 带入，抛错会让加载端把整张卡静默丢弃（并随下次保存永久落定）
-        title = str(data.get("title", "")).strip() or tr("未命名卡片")
+        title = _clean_str(data.get("title")).strip() or tr("未命名卡片")
         labels_raw = data.get("labels", [])
         labels = ([str(x) for x in labels_raw if isinstance(x, str)]
                   if isinstance(labels_raw, list) else [])
@@ -267,19 +308,19 @@ class Card:
             interval = 1
         return cls(
             title=title,
-            id=str(data.get("id") or _new_id()),
-            notes=str(data.get("notes", "")),
+            id=_clean_id(data.get("id")),
+            notes=_clean_str(data.get("notes")),
             labels=labels,
             due_date=due,
-            done=bool(data.get("done", False)),
-            created_at=str(data.get("created_at") or _now_iso()),
-            starred=bool(data.get("starred", False)),
+            done=_as_bool(data.get("done", False)),
+            created_at=_clean_str(data.get("created_at")) or _now_iso(),
+            starred=_as_bool(data.get("starred", False)),
             pomodoros=max(0, pomodoros),
-            done_at=str(done_at) if done_at else None,
-            archived=bool(data.get("archived", False)),
+            done_at=_clean_str(done_at).strip() or None,
+            archived=_as_bool(data.get("archived", False)),
             repeat=repeat,
             priority=max(0, min(3, priority)),
-            workdir=str(data.get("workdir", "") or ""),
+            workdir=_clean_str(data.get("workdir")).strip(),
             checklist=normalize_checklist(data.get("checklist")),
             attachments=normalize_attachments(data.get("attachments")),
             repeat_interval=max(1, min(365, interval)),
@@ -296,12 +337,17 @@ class Card:
 
     def apply(self, data: dict) -> None:
         """用表单结果 dict 就地更新字段（CardDialog.result_card 的输出）"""
-        self.title = str(data.get("title", self.title)).strip()
-        self.notes = str(data.get("notes", self.notes)).strip()
-        self.labels = list(data.get("labels", self.labels))
+        self.title = _clean_str(data.get("title", self.title)).strip()
+        self.notes = _clean_str(data.get("notes", self.notes)).strip()
+        # 与 from_dict 同强度防御：labels 为 None/含非 str 时不炸
+        # （list(None) 抛 TypeError）也不落脏值
+        labels_raw = data.get("labels", self.labels)
+        if isinstance(labels_raw, list):
+            self.labels = [str(x) for x in labels_raw
+                           if isinstance(x, str)]
         self.due_date = data.get("due_date", self.due_date)
-        self.workdir = str(data.get("workdir", self.workdir) or "").strip()
-        self.starred = bool(data.get("starred", self.starred))
+        self.workdir = _clean_str(data.get("workdir", self.workdir)).strip()
+        self.starred = _as_bool(data.get("starred", self.starred))
         repeat = data.get("repeat", self.repeat)
         self.repeat = repeat if repeat in REPEAT_KINDS else "never"
         if "checklist" in data:
@@ -321,7 +367,7 @@ class Card:
         except (TypeError, ValueError):
             interval = self.repeat_interval
         self.repeat_interval = max(1, min(365, interval))
-        self.set_done(bool(data.get("done", self.done)))
+        self.set_done(_as_bool(data.get("done", self.done)))
 
     def checklist_progress(self) -> tuple[int, int]:
         """清单进度：(已完成项数, 总项数)；无清单返回 (0, 0)"""
@@ -518,7 +564,7 @@ class BoardList:
 
     @classmethod
     def from_dict(cls, data: dict) -> "BoardList":
-        title = str(data.get("title", "")).strip() or tr("未命名列表")
+        title = _clean_str(data.get("title")).strip() or tr("未命名列表")
         cards_raw = data.get("cards", [])
         cards: list[Card] = []
         if isinstance(cards_raw, list):
@@ -531,9 +577,9 @@ class BoardList:
                     continue
         return cls(
             title=title,
-            id=str(data.get("id") or _new_id()),
+            id=_clean_id(data.get("id")),
             cards=cards,
-            fund_watch=bool(data.get("fund_watch", False)),
+            fund_watch=_as_bool(data.get("fund_watch", False)),
         )
 
 
@@ -580,9 +626,22 @@ class Board:
                 BoardList(title=tr("进行中")),
                 BoardList(title=tr("已完成")),
             ]
+        # id 唯一性：重复 id 会让 find_card/find_list 命中错误的卡/列
+        # （索引是 dict 推导，后者覆盖前者，界面上另一张卡成了"幽灵"）
+        seen_cards: set[str] = set()
+        seen_lists: set[str] = set()
+        for lst in lists:
+            if lst.id in seen_lists:
+                lst.id = _new_id()
+            seen_lists.add(lst.id)
+            for card in lst.cards:
+                if card.id in seen_cards:
+                    card.id = _new_id()
+                seen_cards.add(card.id)
+        board_id = _clean_str(data.get("id")).strip()
         return cls(lists=lists,
-                   name=str(data.get("name", "") or ""),
-                   id=str(data.get("id") or "") or None)
+                   name=_clean_str(data.get("name")),
+                   id=board_id if _ID_RE.fullmatch(board_id) else None)
 
     def invalidate_index(self) -> None:
         """卡片结构变更后丢弃索引（下次 find_card 懒重建）"""
@@ -772,6 +831,11 @@ class BoardStore:
                 on_problem=lambda kind, _p, detail: self.problems.append(
                     (kind, detail)),
             )
+            if "lists" in doc and not isinstance(doc.get("lists"), list):
+                # 结构异常：静默回退默认三列会让下一次保存永久覆盖原文件
+                from app.models.json_io import backup_corrupted
+                backup_corrupted(self._path)
+                self.problems.append(("corrupted", "lists 结构异常"))
             self._board = Board.from_dict(doc)
         return self._board
 
@@ -845,11 +909,17 @@ class BoardStore:
             return
         self._dirty = False
         self._flush_seq += 1
+        seq = self._flush_seq
         path = self._path
 
         def _work() -> None:
             if self._discarded:
                 return   # 看板已删除：放弃写回，防孤儿文件
+            if seq != self._flush_seq:
+                # 提交后又有更新的写入（主线程 flush / 新一轮提交）：
+                # 本任务的 doc 是旧快照，照写会用旧数据覆盖新落盘
+                # （waitForDone(3000) 超时窗口下曾经发生）
+                return
             try:
                 atomic_write_json(path, doc)
             except Exception as e:

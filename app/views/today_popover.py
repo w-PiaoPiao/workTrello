@@ -161,6 +161,10 @@ class _PopRow(QFrame):
         lay.addWidget(self._star_btn)
         self.reapply_theme()
 
+    def retexts(self) -> None:
+        """语言切换：行内勾选按钮的文案是构造期定格的"""
+        self._check.retexts()
+
     def _emit_done(self) -> None:
         self.signal_card_done.emit(self._list_id, self._card_id, True)
 
@@ -240,6 +244,24 @@ class TodayPopover(QWidget):
         self._query = ""                                  # 标题/备注过滤词
         self._built = False
         AppTheme.register(self._on_theme_changed)
+        # 浮窗由控制器持久持有（惰性创建后复用），构建期定格的文案需要
+        # 跟随语言切换刷新（行内文案随 set_items 重绑自然刷新）
+        from app import i18n
+        i18n.register(self.retexts)
+
+    def retexts(self) -> None:
+        """语言切换：刷新构建期定格的文案（未构建时跳过，构建时自取新语言）"""
+        if not self._built:
+            return
+        self._title_label.setText(tr("今日待办"))
+        self._add_edit.setPlaceholderText(tr("添加今日待办（支持速记）…"))
+        self._add_edit.setAccessibleName(tr("添加今日待办（支持速记）…"))
+        self._search_edit.setPlaceholderText(tr("筛选今日待办…"))
+        self._search_edit.setAccessibleName(tr("筛选今日待办…"))
+        self._close_btn.setToolTip(tr("关闭"))
+        self._close_btn.setAccessibleName(tr("关闭"))
+        for _lid, _cid, row in self._rows:
+            row.retexts()
 
     # ── 主题 ──────────────────────────────────────────────
 
@@ -343,7 +365,15 @@ class TodayPopover(QWidget):
         else:
             done_label.hide()
         layout.addStretch(1)
-        h = min(_MAX_POP_H, _CHROME_H + _ROW_MIN_H * len(items)
+        def _row_height(card) -> int:
+            # 标题可换行：按显示宽度估算行数（ASCII 记 1、其他记 2，
+            # 13px 字号下约 14 单位/行），避免固定 42px/行把长标题裁掉
+            width = sum(2 if ord(ch) > 0x2E80 else 1 for ch in card.title)
+            lines = max(1, (width + 13) // 14)
+            return _ROW_MIN_H + (lines - 1) * 18
+
+        h = min(_MAX_POP_H, _CHROME_H
+                + sum(_row_height(card) for _lst, card in items)
                 + (24 if show_done else 0))
         self._set_pop_height(h, dismiss=current, keep=keep)
 
@@ -378,12 +408,19 @@ class TodayPopover(QWidget):
         self.set_items(self._items, done_count=self._done_count)
 
     def _on_quick_add(self) -> None:
-        """就地新建：输入框内容交给控制器解析速记并建卡（自动带星标）"""
+        """就地新建：输入框内容交给控制器解析速记并建卡（自动带星标）
+
+        不在 emit 前清空：没有列表时控制器会失败返回，先清会让用户
+        刚输入的文字永久丢失。成功后由 clear_add_edit() 清空。
+        """
         text = self._add_edit.text().strip()
         if not text:
             return
-        self._add_edit.clear()
         self.signal_quick_add.emit(text)
+
+    def clear_add_edit(self) -> None:
+        """新建成功：清空就地输入框"""
+        self._add_edit.clear()
 
     def _set_pop_height(self, h: int, dismiss: list[QWidget],
                         keep: set[int]) -> None:

@@ -144,7 +144,6 @@ _BADGE_TONE_COLORS = {
     "accent": ("accent_soft", "accent_text"),
     "text_secondary": ("neutral_soft", "neutral_text"),
 }
-_BADGE_TONES = tuple(_BADGE_TONE_COLORS)
 
 # 优先级徽标语义色：P1 红 / P2 橙 / P3 中性灰。
 # P3 此前取 accent（皮肤强调色），但 accent 在 warm / brutal 等皮肤里
@@ -153,10 +152,8 @@ _BADGE_TONES = tuple(_BADGE_TONE_COLORS)
 # 强调色漂移，10 份色表里都不会再和 P1 同色。
 _PRIORITY_TONES = {1: "danger", 2: "warning", 3: "text_secondary"}
 
-# 工作目录徽章的显示文本（真实路径放徽章 tooltip；收集/构建/事件过滤
-# 三处靠它识别是目录徽章）
-WORKDIR_BADGE_TEXT = "工作目录"
-ATTACH_BADGE_TEXT = "附件"
+# 工作目录 / 附件徽章的识别走 meta_items 的 kind 字段（"workdir"/"attach"），
+# 显示文本经 tr()——识别与显示解耦后英文界面不再显示中文徽章
 
 
 # ── 皮肤辅助：配色 / 造型 / 徽章形态 ────────────────────────────
@@ -710,6 +707,11 @@ class _CardCheckButton(QPushButton):
         self._done = False
         self._check_anim: QVariantAnimation | None = None
         self._check_progress = 1.0   # 对勾描画进度 0..1（1=完整对勾）
+
+    def retexts(self) -> None:
+        """语言切换：读屏名与 tooltip 是构造期定格的，需要重设"""
+        self.setToolTip(tr("点击切换完成状态"))
+        self.setAccessibleName(tr("切换完成状态"))
 
     def enterEvent(self, event) -> None:
         """悬停变色必须自己请求重绘
@@ -1270,16 +1272,18 @@ class CardWidget(QFrame):
                                False))
         if card.attachments:
             n = len(card.attachments)
-            meta_items.append((ATTACH_BADGE_TEXT if n == 1 else f"{ATTACH_BADGE_TEXT} ×{n}",
-                               "text_secondary", False))
+            attach_txt = tr("附件")
+            meta_items.append((attach_txt if n == 1
+                               else tr("附件") + f" ×{n}",
+                               "text_secondary", "attach"))
         if card.notes:
-            meta_items.append((tr("有备注"), "text_secondary", True))
+            meta_items.append((tr("有备注"), "text_secondary", "notes"))
         if card.pomodoros:
             meta_items.append((tr("番茄 ×{n}").format(n=card.pomodoros),
                                "text_secondary", False))
         if card.workdir:
             # 占位文本，真实路径放 tooltip；有目录才显示，点击打开
-            meta_items.append((WORKDIR_BADGE_TEXT, "text_secondary", False))
+            meta_items.append((tr("工作目录"), "text_secondary", "workdir"))
 
         if meta_items:
             meta_row = QHBoxLayout()
@@ -1304,23 +1308,23 @@ class CardWidget(QFrame):
             # 全部徽章先建出来，实际显示几个由 _fit_meta_badges() 按卡片
             # 真实宽度决定（"P1+逾期+重复+备注"最坏组合约 281px，已超出
             # 列内可用宽约 229px，写死数量仍会溢出裁切）
-            for text, key, is_notes in meta_items:
+            for text, key, kind in meta_items:
                 badge = make_badge(text, key)
-                if is_notes:
+                if kind == "notes":
                     # 备注徽章：悬停弹备注全文预览，点击固定展示（本卡事件过滤处理）
                     # 不设原生 tooltip：悬停约 700ms 后系统会再弹一个提示窗压在
                     # 自绘浮层上造成双重叠字；「点击固定」提示在浮层内呈现
                     self._notes_badge = badge
                     badge.setCursor(Qt.PointingHandCursor)
                     badge.installEventFilter(self)
-                elif text == WORKDIR_BADGE_TEXT:
+                elif kind == "workdir":
                     # 工作目录徽章：点击打开目录；完整路径走原生 tooltip
                     # （只拦截 press，Enter/Leave 放行，tooltip 正常弹出）
                     self._workdir_badge = badge
                     badge.setCursor(Qt.PointingHandCursor)
                     badge.setToolTip(card.workdir)
                     badge.installEventFilter(self)
-                elif text.startswith(ATTACH_BADGE_TEXT):
+                elif kind == "attach":
                     # 附件徽章：点击打开首个附件；全部附件名走 tooltip
                     self._attach_badge = badge
                     badge.setCursor(Qt.PointingHandCursor)
@@ -1515,8 +1519,11 @@ class CardWidget(QFrame):
                 badge = self._notes_badge
                 global_rect = QRect(badge.mapToGlobal(QPoint(0, 0)),
                                     badge.size())
-                # 卡片 tooltip 会压在自绘浮层上叠字：悬停徽章期间暂存清空
-                self._tooltip_backup = self.toolTip()
+                # 卡片 tooltip 会压在自绘浮层上叠字：悬停徽章期间暂存清空。
+                # 只暂存首次 Enter 的真值——Leave 漏投递（滚动/拖拽路径）
+                # 时 tooltip 可能已被上一轮清空，重复暂存会把 "" 存进备份
+                if self._tooltip_backup is None:
+                    self._tooltip_backup = self.toolTip()
                 self.setToolTip("")
                 # 徽章控件一并交给浮层：巡检按它的实时矩形判定"光标还在
                 # 徽章上"，这是漏投递 Leave（重建/滚动/拖拽）时的收口依据
@@ -1790,6 +1797,11 @@ class CardWidget(QFrame):
         drag.setHotSpot(QPoint(pixmap.width() // 2, 14))
         drag.exec(Qt.MoveAction)
         self._pressing = False
+        if not shiboken6.isValid(self):
+            # exec 的原生模态循环仍处理 Qt 事件：期间提醒/重复任务触发的
+            # 刷新可能已销毁本卡（refresh_cards → deleteLater），收尾逻辑
+            # 再碰 self 的 C++ 侧会抛 RuntimeError
+            return
         # 原生循环结束后保守复核一次（此时 underMouse 可信，光标若仍在
         # 本卡上则保持隐藏也无妨——下一次真实 Enter 会重新显示）
         self._revalidate_hover()
@@ -1797,8 +1809,10 @@ class CardWidget(QFrame):
     def _group_drag_ids(self) -> list[str]:
         """本卡属于当前多选、且选中不止一张时返回整组 id（否则空表）
 
-        返回顺序按列内实际顺序（不是点击顺序），落点插入后与拖拽前的
-        相对次序一致。
+        多选允许跨列，返回顺序按全板列序（不是点击顺序、也不止本列）：
+        落点插入后与拖拽前的相对次序一致，且拖影角标 /「归档」「今日」
+        按钮拿到的集合与"已选 N 张"计数一致——只收集源列成员会让跨列
+        选中时其余卡片原地不动、无任何提示。
         """
         bv = self._board_view()
         col = self._owning_column()
@@ -1808,7 +1822,12 @@ class CardWidget(QFrame):
         if len(selected) < 2 or self._card.id not in selected:
             return []
         sel = set(selected)
-        return [c.id for c in col.board_list().cards if c.id in sel]
+        ids: list[str] = []
+        for list_col in bv._columns:
+            for c in list_col.board_list().cards:
+                if c.id in sel:
+                    ids.append(c.id)
+        return ids
 
 
 def _with_group_badge(pixmap: QPixmap, count: int) -> QPixmap:
@@ -1970,7 +1989,7 @@ class ListHeader(QWidget):
         self.signal_fund_watch.emit(self._lst.id, checked)
 
     def _show_menu(self) -> None:
-        self._menu.exec(self._menu_btn.mapToGlobal(
+        _popup_menu(self._menu, self._menu_btn.mapToGlobal(
             QPoint(0, self._menu_btn.height() + 2)))
 
     def _on_collapse_clicked(self) -> None:
@@ -2035,6 +2054,7 @@ class ListHeader(QWidget):
         """语言切换：刷新列头菜单与提示文案"""
         self._act_rename.setText(tr("重命名"))
         self._act_delete.setText(tr("删除列表"))
+        self._act_duplicate.setText(tr("复制列表（含卡片）"))
         self._act_fund_watch.setText(tr("资金分配监视"))
         self._act_fund_export.setText(tr("导出 Excel…"))
         self._fund_mark.setToolTip(tr("资金分配监视泳道"))
@@ -3096,19 +3116,21 @@ class ListColumn(QFrame):
     def _raw_index_from_visible(self, vis_index: int) -> int:
         """可见序插入位 → 卡片列表 raw 序（含归档卡）插入位
 
-        列内可能含归档卡（仍在 lst.cards 里、不渲染）：控制器按 raw 序
-        插入，直接用可见序会在插入点之前有归档卡时落点整体错位。
+        列内可能含归档卡（仍在 lst.cards 里、不渲染，refresh_cards 同款
+        过滤）：控制器按 raw 序插入，插入点之前每有一张归档卡，用可见序
+        直接当 raw 序落点就整体前移一位。无过滤与过滤**两条路径都必须**
+        换算——vis_index 的基准是 _card_widgets（剔除归档卡的渲染序列）。
         """
-        visible = self._visible_cards
-        if visible is None:
-            return vis_index
         cards = self._lst.cards
-        if vis_index >= len(visible):
+        source = (cards if self._visible_cards is None
+                  else self._visible_cards)
+        rendered = [c for c in source if not c.archived]
+        if vis_index >= len(rendered):
             return len(cards)
         try:
-            return cards.index(visible[vis_index])
+            return cards.index(rendered[vis_index])
         except ValueError:
-            return vis_index   # 理论不可达：可见集取自 cards
+            return vis_index   # 理论不可达：渲染序列取自 cards
 
     # ── 拖拽落点指示线 + 视口边缘自动滚动 ───────────────────
 
@@ -3514,6 +3536,9 @@ class BoardView(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        # 键盘焦点：return_focus_from_search() 的 setFocus() 需要看板本身
+        # 可聚焦，否则 Esc 退出搜索后焦点仍留在输入框，方向键导航不可达
+        self.setFocusPolicy(Qt.StrongFocus)
         self._lists: list[BoardList] = []
         self._columns: list[ListColumn] = []
         # 当前被悬停的卡片（单光标 → 全局最多一张）。用于零成本自愈：
@@ -3962,6 +3987,9 @@ class BoardView(QWidget):
             col._header.reapply_theme()
             for cw in col._card_widgets:
                 cw.reapply_style()
+                cw._fit_width = None   # 字号/密度变了，徽章取舍必须重算
+        # 密度改变会改字号与按钮内边距，但窗口尺寸不变、resizeEvent 不触发
+        self._apply_toolbar_overflow()
 
     def reapply_skin(self) -> None:
         """皮肤切换：整块样式表 + 自绘骨架 + 卡片重建
@@ -3979,6 +4007,8 @@ class BoardView(QWidget):
             col.reapply_frame_style()
             for cw in col._card_widgets:
                 cw._fingerprint = ()
+        # 清指纹只会在下一次 refresh 时触发 rebuild；换肤当场就要生效
+        self.refresh(self._lists)
         self.update_stats(self._lists)
         self._sync_overflow_menu()
         self.update()
@@ -3988,8 +4018,10 @@ class BoardView(QWidget):
         self._set_board_name(self._board_name)
         self._search_edit.setPlaceholderText(tr("搜索卡片…"))
         self._search_edit.setAccessibleName(tr("搜索卡片"))
+        # tooltip 与构造处同款两行文案：拖放提示不能在语言切换后丢失
         self._today_btn.setToolTip(
-            tr("只显示未完成的：星标 / 已逾期 / 今天截止"))
+            tr("只显示未完成的：星标 / 已逾期 / 今天截止\n"
+               "（拖卡片到这里 = 加入今日）"))
         self._set_today_count(self._today_count)
         if self._label_filter:
             self._update_label_chip()
@@ -3998,7 +4030,8 @@ class BoardView(QWidget):
         self._bulk_add_btn.setToolTip(
             tr("批量添加卡片：每行一张，支持速记语法"))
         self._archive_btn.setText(tr("归档"))
-        self._archive_btn.setToolTip(tr("查看已归档卡片并恢复"))
+        self._archive_btn.setToolTip(
+            tr("查看已归档卡片并恢复\n（拖卡片到这里 = 直接归档）"))
         self._calendar_btn.setToolTip(tr("按截止日期在月历中查看与拖动卡片"))
         self._overflow_btn.setToolTip(tr("更多操作"))
         self._sel_done_btn.setText(tr("切换完成"))
@@ -4013,8 +4046,13 @@ class BoardView(QWidget):
         self._export_btn.setText(tr("导出"))
         self._export_btn.setToolTip(tr("导出为 Markdown / CSV"))
         self._theme_btn.setToolTip(tr("切换浅色 / 深色主题"))
+        self._theme_btn.setAccessibleName(tr("切换浅色 / 深色主题"))
         self._collapse_btn.setToolTip(tr("折叠为桌宠"))
+        self._collapse_btn.setAccessibleName(tr("折叠为桌宠"))
         self._settings_btn.setToolTip(tr("设置"))
+        self._settings_btn.setAccessibleName(tr("设置"))
+        self._calendar_btn.setAccessibleName(tr("日历视图"))
+        self._overflow_btn.setAccessibleName(tr("更多操作"))
         lights = getattr(self, "_traffic_lights", None)
         if lights is not None:
             lights.reapply_texts()
@@ -4027,6 +4065,8 @@ class BoardView(QWidget):
             for cw in col._card_widgets:
                 cw._fingerprint = ()   # 强制后续 refresh 时 rebuild
         self.update_stats(self._lists)
+        # 按钮文案宽度随语言变化，窗口尺寸不变时 resizeEvent 不会重算收纳
+        self._apply_toolbar_overflow()
 
     def _on_theme_clicked(self) -> None:
         self.signal_theme_selected.emit(
@@ -4335,13 +4375,18 @@ class BoardView(QWidget):
             self._columns = ordered_cols
 
         self.update_stats(lists, visibles=visibles, stats=stats)
-        self._set_today_count(self._today_count_from(visibles))
+        # stats 里已算好 focus_count：再走 _today_count_from 是全板第二遍扫描
+        self._set_today_count(
+            stats["focus_count"] if stats is not None
+            else self._today_count_from(visibles))
         self._update_empty_hint(lists)
         # 列/卡控件按 id 复用，选中态属性随控件保留；重建出的新卡默认
         # 未选中，这里统一重刷一次（集合没变时设置是幂等短路）
         # 先收窄集合到现存卡：单卡删除路径不清集合，否则"已选 N 张"虚报
         if self._selected_ids:
-            self._selected_ids &= {c.id for lst in lists for c in lst.cards}
+            # 归档卡不渲染也不该参与批量操作：收窄时一并剔除
+            self._selected_ids &= {c.id for lst in lists
+                                   for c in lst.cards if not c.archived}
             self._update_selection_bar()
         self._apply_selection_props()
         sb.setValue(scroll_pos)
@@ -4379,7 +4424,7 @@ class BoardView(QWidget):
         act_delete.setEnabled(len(self._board_meta) > 1)
         act_delete.triggered.connect(
             lambda: self.signal_board_delete.emit(self._current_board_id))
-        menu.exec(self._title_btn.mapToGlobal(
+        _popup_menu(menu, self._title_btn.mapToGlobal(
             QPoint(0, self._title_btn.height() + 2)))
         menu.deleteLater()
 
@@ -4389,12 +4434,6 @@ class BoardView(QWidget):
         for col in self._columns:
             for cw in col._card_widgets:
                 yield cw
-
-    def _find_card_widget(self, card_id: str) -> "CardWidget | None":
-        for cw in self._iter_card_widgets():
-            if cw.card().id == card_id:
-                return cw
-        return None
 
     def _apply_selection_props(self) -> None:
         selected = self._selected_ids
@@ -4409,11 +4448,11 @@ class BoardView(QWidget):
             bar.adjustSize()
             bar.move((self.width() - bar.width()) // 2,
                      self.height() - bar.height() - 14)
-            was_visible = bar.isVisible()
             bar.show()
             bar.raise_()
-            # 出现与卡片/列同一套淡入（此前是裸 show，浮层"啪"地跳出）
-            if not was_visible and motion.enabled():
+            # 无条件淡入：若此时旧的 fade_out 还在跑（160ms 内重新选中），
+            # 它结束时会把刚显示的栏 hide() 掉
+            if motion.enabled():
                 motion.fade_in(bar, AppConfig.POPOVER_ANIM_MS)
         elif bar.isVisible():
             if motion.enabled():
@@ -4444,7 +4483,12 @@ class BoardView(QWidget):
                 self._selected_ids.update(ids[lo:hi + 1])
                 break
         else:
+            # 跨列：清掉旧选中、单选该卡，并把锚点挪过来——只追加会让
+            # 注释宣称的"退化单选"名不副实，且旧锚点留在别列，后续
+            # Shift 的范围仍从错误的锚点起算
+            self._selected_ids.clear()
             self._selected_ids.add(card_id)
+            self._sel_anchor = card_id
         self._apply_selection_props()
         self._update_selection_bar()
 
@@ -4536,7 +4580,7 @@ class BoardView(QWidget):
             act.triggered.connect(
                 lambda _=False, k=key: (self.signal_batch_label.emit(ids, k),
                                         self.clear_selection()))
-        menu.exec(self._sel_label_btn.mapToGlobal(
+        _popup_menu(menu, self._sel_label_btn.mapToGlobal(
             QPoint(0, self._sel_label_btn.height() + 2)))
         menu.deleteLater()
 
@@ -4551,7 +4595,7 @@ class BoardView(QWidget):
                 lambda _=False, lid=lst.id:
                 (self.signal_batch_move.emit(ids, lid),
                  self.clear_selection()))
-        menu.exec(self._sel_move_btn.mapToGlobal(
+        _popup_menu(menu, self._sel_move_btn.mapToGlobal(
             QPoint(0, self._sel_move_btn.height() + 2)))
         menu.deleteLater()
 
@@ -4651,8 +4695,7 @@ class BoardView(QWidget):
     def _update_label_chip(self) -> None:
         """过滤 chip：过滤态显示「标签：红」，点它清除过滤"""
         if self._label_filter:
-            name = AppConfig.LABEL_NAMES.get(self._label_filter,
-                                             self._label_filter)
+            name = label_display(self._label_filter)
             self._label_chip.setText(tr("标签：{name}").format(name=name))
             self._label_chip.show()
         else:
@@ -4685,9 +4728,9 @@ class BoardView(QWidget):
         # 避免同一输入把全板文本再扫一遍。
         self.update_stats(self._lists, visibles=visibles)
         # 统计行是「匹配 N 张」的唯一渲染点，而它在窄窗收纳顺序里排第一——
-        # 搜索时最该看到的数字反而最先消失。过滤态下强制它可见。
-        if self._search_query() or self._label_filter:
-            self._stats_label.show()
+        # 搜索时最该看到的数字反而最先消失。过滤态把它钉出收纳候选
+        # （见 _apply_toolbar_overflow），由收纳统一裁决显隐——直接裸
+        # show() 会跟"hidden 集未变早退"的收纳机制互相打架。
         # 过滤态会显隐标签 chip、匹配数文案也会变宽，工具栏可用宽度随之变化：
         # 只在 resizeEvent 里重算，会让这些变化把工具栏挤出窗口，直到下次
         # 缩放才恢复。_apply_toolbar_overflow 在隐藏集未变时自身早退，很便宜。
@@ -4730,7 +4773,7 @@ class BoardView(QWidget):
         menu.addSeparator()
         act_trello = menu.addAction(tr("导入 Trello 看板（.json）…"))
         act_md_import = menu.addAction(tr("导入 Markdown（.md）…"))
-        chosen = menu.exec(self._export_btn.mapToGlobal(
+        chosen = _popup_menu(menu, self._export_btn.mapToGlobal(
             QPoint(0, self._export_btn.height() + 2)))
         menu.deleteLater()   # 常驻 BoardView 上的菜单不销毁会每次导出累积一个
         if chosen is act_md:
@@ -4852,8 +4895,7 @@ class BoardView(QWidget):
                 total = sum(len(self._visible_cards_for(l) or []) for l in lists)
             else:
                 total = sum(len(v or []) for v in visibles.values())
-            name = AppConfig.LABEL_NAMES.get(self._label_filter,
-                                             self._label_filter)
+            name = label_display(self._label_filter)
             self._stats_label.setText(
                 tr("标签 {name} · {n} 张").format(name=name, n=total))
             return
@@ -4862,8 +4904,12 @@ class BoardView(QWidget):
                 tr("{total} 张卡片 · 完成 {done}").format(
                     total=stats['total'], done=stats['done']))
             return
-        total = sum(len(l.cards) for l in lists)
-        done = sum(1 for l in lists for card in l.cards if card.done)
+        # 兜底口径与列头计数 / today_stats 一致：排除归档卡——含归档会让
+        # 统计数字在"控制器带 stats"与"本地兜底"两条路径间跳变
+        total = sum(1 for l in lists for card in l.cards
+                    if not card.archived)
+        done = sum(1 for l in lists for card in l.cards
+                   if card.done and not card.archived)
         self._stats_label.setText(
             tr("{total} 张卡片 · 完成 {done}").format(total=total, done=done))
 
@@ -4949,7 +4995,7 @@ class BoardView(QWidget):
         aux_w = sum(self._min_width_of(w)
                     for w in self._aux_toolbar_widgets())
 
-        def needed_width(hidden: set) -> int:
+        def needed_width(hidden: set, search_w: int | None = None) -> int:
             n = len(self._aux_toolbar_widgets())
             total = aux_w
             for key, widget in self._toolbar_items:
@@ -4962,12 +5008,20 @@ class BoardView(QWidget):
                 # minimumSizeHint 只有 80 / 56——按 hint 估算会低估 32px，
                 # 收纳判定于是以为"还放得下"，实际布局早已压到重叠
                 # （实测 900px 下搜索框与"+ 添加列表"叠了 15px）。
-                total += self._min_width_of(widget)
+                if key == "search" and search_w is not None:
+                    total += search_w
+                else:
+                    total += self._min_width_of(widget)
                 n += 1
             return total + spacing * max(0, n - 1)
 
         hidden: set = set()
+        stats_pinned = bool(self._search_query() or self._label_filter)
         for key in self._overflow_order:
+            if key == "stats" and stats_pinned:
+                # 过滤态：统计行是「匹配 N」的唯一出口，钉住不收纳
+                # （宽度压力由其余可收纳项消化）
+                continue
             if needed_width(hidden) <= avail:
                 break
             hidden.add(key)
@@ -4981,8 +5035,16 @@ class BoardView(QWidget):
         over = needed_width(hidden) - avail
         if over > 0:
             target = max(self._search_min_floor, self._search_min_w - over)
-            if target != self._search_edit.minimumWidth():
-                self._search_edit.setMinimumWidth(target)
+        else:
+            # 宽裕时恢复常态宽（压缩此前是单向棘轮）。必须按恢复后的宽度
+            # 复核：needed_width 以搜索框**当前**最小宽为输入，刚压缩过的
+            # 宽度会让下一次调用误判"宽裕"再弹回去，压缩-恢复反复横跳
+            # （最终停在常态宽，极窄窗口照样重叠）。
+            target = (self._search_min_w
+                      if needed_width(hidden, self._search_min_w) <= avail
+                      else self._search_edit.minimumWidth())
+        if target != self._search_edit.minimumWidth():
+            self._search_edit.setMinimumWidth(target)
         if needed_width(hidden) > avail:
             hidden.add("today")
 

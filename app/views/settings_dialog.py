@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.config import AppConfig
-from app.i18n import skin_display, tr
+from app.i18n import app_display_name, skin_display, tr
 from app.services.global_hotkey import GlobalHotkeyService
 from app.views import tokens
 from app.views.controls import ComboBox, SegmentedControl, ToggleSwitch
@@ -212,6 +212,8 @@ class SettingsDialog(QDialog):
             self._scale_seg)
         # 视觉皮肤：换的是一整套配色 + 造型（圆角/字重/徽章形态/板底纹理），
         # 与上面的深浅色正交——所以是单选的一排色板，不是嵌套菜单。
+        # 属性名与桌宠区的 _skin_row_* 区分：同名会互相覆盖，retexts 就
+        # 再也刷不到外观区这一行（语言切换后文案停留旧语言）
         self._ui_skin_row_title = QLabel(tr("视觉皮肤"))
         self._ui_skin_row_title.setObjectName("rowTitle")
         self._ui_skin_row_hint = QLabel(
@@ -530,7 +532,7 @@ class SettingsDialog(QDialog):
         self._dir_label.setText(str(AppConfig.DATA_DIR))
         self._sec_about.retexts(tr("关于"))
         self._about_label.setText(
-            f"{AppConfig.APP_NAME}  v{AppConfig.APP_VERSION}\n{tr(_ABOUT_LINE)}")
+            f"{app_display_name()}  v{AppConfig.APP_VERSION}\n{tr(_ABOUT_LINE)}")
         self._done_btn.setText(tr("完成"))
         # 读屏名与行标题同源：标题刚刷新过，这里补一次同步
         for section in (self._sec_appearance, self._sec_language, self._sec_pet,
@@ -560,7 +562,7 @@ class SettingsDialog(QDialog):
             self.resize(width, self.height())
 
     def _open_data_dir(self) -> None:
-        AppConfig.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        AppConfig.ensure_data_dir()
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(AppConfig.DATA_DIR)))
 
     @staticmethod

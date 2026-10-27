@@ -47,6 +47,12 @@ def load_json_doc(
     """
     if not path.exists():
         return {}
+    # 0 字节空文件更像占位（touch 创建/写前窗口），不当"损坏"复制隔离
+    try:
+        if path.stat().st_size == 0:
+            return {}
+    except OSError:
+        pass   # stat 失败（并发删除等）交给下方读取路径统一处理
 
     raw: str | None = None
     read_error: Exception | None = None
@@ -76,13 +82,18 @@ def load_json_doc(
 
     if raw is None:
         logger.error("数据文件读取失败，以空数据启动: %s (%s)", path, read_error)
+        # 暂时不可读（占用/权限）也尽力留一份隔离副本：否则随后的默认
+        # 看板首次落盘会把原文件轮转进 .prev，第二次保存就把它覆盖掉
+        backup_corrupted(path)
         if on_problem:
             on_problem("unreadable", path, str(read_error))
         return {}
 
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError as e:   # 输入已是 str，不会抛 UnicodeDecodeError
+    except (json.JSONDecodeError, RecursionError) as e:
+        # RecursionError：深嵌套畸形 JSON。只捕 JSONDecodeError 会让它
+        # 一路冒到 AppController.__init__，恢复 UI 来不及出现
         logger.warning("JSON 解析失败 (%s)，隔离备份文件: %s", e, path)
         backup_corrupted(path)
         if on_problem:
@@ -139,6 +150,11 @@ def atomic_write_json(path: Path, data, *, indent: int | None = 2,
             f.flush()
             if durable:
                 os.fsync(f.fileno())
+        if os.name != "nt":
+            try:
+                os.chmod(tmp_path, 0o600)   # replace 后即主文件权限
+            except OSError:
+                pass
         # 轮转 .prev：硬链接零拷贝，失败（平台差异/文件占用）降级复制；
         # 轮转失败只影响备份新鲜度，不阻断本次写入（主文件仍在）
         if rotate_prev and path.exists():
@@ -151,11 +167,14 @@ def atomic_write_json(path: Path, data, *, indent: int | None = 2,
                 except OSError as e:
                     logger.warning("轮转 .prev 失败（本次跳过）: %s", e)
         os.replace(tmp_path, path)
-    except OSError as e:
+    except (OSError, UnicodeError, TypeError) as e:
         try:
             tmp_path.unlink(missing_ok=True)
         except OSError:
             logger.warning("清理临时文件失败: %s", tmp_path)
+        # UnicodeError：孤立代理项（json 能读、UTF-8 不能写）；TypeError：
+        # 不可序列化对象。都必须转 StoreError，否则后台保存会无限重试却
+        # 不进入失败的提示/退避路径，还会遗留 .tmp
         raise StoreError(f"保存失败 ({path.name}): {e}") from e
 
 
@@ -193,7 +212,8 @@ def doc_has_cards(path: Path) -> bool:
     try:
         with path.open("r", encoding="utf-8") as f:
             doc = json.load(f)
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError,
+            RecursionError):
         return False
     lists = doc.get("lists") if isinstance(doc, dict) else None
     if not isinstance(lists, list):
@@ -266,11 +286,11 @@ def restore_from_backup(store_path: Path, backup: Path) -> bool:
             data = json.load(f)
         if not isinstance(data, dict):
             raise ValueError("备份内容不是对象")
-    except (OSError, json.JSONDecodeError, ValueError) as e:
+    except (OSError, json.JSONDecodeError, ValueError, RecursionError) as e:
         logger.error("备份文件无法解析，恢复失败: %s (%s)", backup, e)
         return False
     try:
-        atomic_write_json(store_path, data, rotate_prev=False)
+        atomic_write_json(store_path, data, rotate_prev=False, durable=True)
     except StoreError as e:
         logger.error("恢复落盘失败: %s", e)
         return False

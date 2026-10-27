@@ -48,16 +48,20 @@ def build_rows(board_list: BoardList) -> list[list[str]]:
     return rows
 
 
-def export_xlsx(board_list: BoardList, path: str | Path) -> int:
+def export_xlsx(board_list: BoardList, path: str | Path,
+                rows: list[list[str]] | None = None) -> int:
     """写入 Excel 工作簿，返回导出的卡片数。
 
     表头加粗、冻结首行与首列（滚动环节列时卡片标题恒可见）、列宽适配。
+    rows 传入调用方已用 build_rows 算好的结果（判空与导出共用一份，
+    不再全列重扫一遍）。
     """
     from openpyxl import Workbook
     from openpyxl.styles import Font
     from openpyxl.utils import get_column_letter
 
-    rows = build_rows(board_list)
+    if rows is None:
+        rows = build_rows(board_list)
     wb = Workbook()
     ws = wb.active
     ws.title = "资金分配监视"
@@ -66,6 +70,12 @@ def export_xlsx(board_list: BoardList, path: str | Path) -> int:
         cell.font = Font(bold=True)
     for row in rows:
         ws.append(row)
+        # 公式注入：标题/备注来自导入数据，以 = + - @ 开头会被 Excel 当公式。
+        # 直接前置 ' 会显示出来，强制单元格类型为字符串更干净
+        for cell in ws[ws.max_row]:
+            if (isinstance(cell.value, str)
+                    and cell.value[:1] in ("=", "+", "-", "@")):
+                cell.data_type = "s"
     widths = [28, 14, 32] + [14] * len(FUND_EXPORT_STEPS)
     for i, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = width

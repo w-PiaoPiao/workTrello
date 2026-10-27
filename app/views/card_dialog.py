@@ -375,9 +375,16 @@ class CardDialog(QDialog):
         # 截止日期可选：新建/无日期默认"未设置"，提交 due_date=None，不再默认今天。
         # 未设置态显示灰色"未设置"文字（而非禁用的日期框），设置后才是日期选择框
         has_due = card is not None and bool(card.due_date)
+        qdate = QDate()
+        if has_due:
+            qdate = QDate.fromString(card.due_date, "yyyy-MM-dd")
+            if not qdate.isValid():
+                # 非法日期按"未设置"处理：QDateEdit 会忽略 invalid 并保留
+                # 占位日期，保存时把原值改写成 2000-01-01
+                has_due = False
         self._due_cleared = not has_due
         if has_due:
-            self._due_edit.setDate(QDate.fromString(card.due_date, "yyyy-MM-dd"))
+            self._due_edit.setDate(qdate)
         else:
             self._due_edit.setDate(QDate.currentDate())  # 占位值，未设置态不显示
         self._due_none_label = QLabel(tr("未设置"))
@@ -686,8 +693,9 @@ class CardDialog(QDialog):
         check.toggled.connect(self._update_check_progress)
         edit = _CheckItemEdit(text)
         edit.setPlaceholderText(tr("清单项内容"))
+        # 空行上按 Enter 不再追加新空行（此前会无限叠加空行，收集时才被过滤）
         edit.returnPressed.connect(
-            lambda: self._add_check_row("", False, focus=True))
+            lambda e=edit: self._on_check_enter(e))
         remove = icons.IconButton("close", 16, "text_secondary", "danger")
         remove.setFixedSize(24, 24)          # 命中区 ≥24（原 22×22）
         remove.setFlat(True)
@@ -705,6 +713,11 @@ class CardDialog(QDialog):
         self._update_check_progress()
         if focus:
             edit.setFocus()
+
+    def _on_check_enter(self, edit: QLineEdit) -> None:
+        """清单行 Enter：内容非空才追加下一行（空行上视为结束输入）"""
+        if edit.text().strip():
+            self._add_check_row("", False, focus=True)
 
     def _remove_check_row(self, row: QWidget) -> None:
         pair = getattr(row, "_pair_index", None)
@@ -798,21 +811,18 @@ class CardDialog(QDialog):
     def _discard_paste_tmp(att: dict) -> None:
         """清掉粘贴产生、尚未入库的临时 PNG（用户原文件绝不触碰）
 
-        判定与控制器 _materialize_attachments 一致：pending 标记 +
-        系统临时目录 + petboard_paste_ 前缀三重限定。
+        只认显式的 paste 来源标记：此前按"临时目录 + 文件名前缀"判断，
+        用户手选的同前缀文件会被误删。
         """
-        if not att.get("pending"):
+        if not att.get("pending") or not att.get("paste"):
             return
         path = str(att.get("path", ""))
         if not path:
             return
-        p = Path(path)
-        if (p.parent == Path(tempfile.gettempdir())
-                and p.name.startswith("petboard_paste_")):
-            try:
-                p.unlink()
-            except OSError:
-                pass
+        try:
+            Path(path).unlink()
+        except OSError:
+            pass
 
     def _on_add_attachment(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -845,6 +855,9 @@ class CardDialog(QDialog):
                 os.unlink(tmp)
             except OSError:
                 pass
+            from PySide6.QtWidgets import QToolTip
+            QToolTip.showText(self.cursor().pos(),
+                              tr("无法保存粘贴图片（临时目录不可写或磁盘已满）"))
             return
         self._attachments.append({
             "id": uuid.uuid4().hex,
@@ -853,6 +866,7 @@ class CardDialog(QDialog):
             "path": tmp,
             "is_image": True,
             "pending": True,
+            "paste": True,   # 来源标记：取消/移除时只清这类临时文件
         })
         self._rebuild_attach_rows()
 
@@ -1037,7 +1051,8 @@ class CardDialog(QDialog):
             lay.setSpacing(6)
             check = QCheckBox()
             check.setChecked(bool(step.get("done")))
-            name = QLabel(step.get("name", ""))
+            # 环节名是随卡快照的中文模板名，显示层翻译（历史数据也能本地化）
+            name = QLabel(tr(step.get("name", "")))
             name.setObjectName("fundStepName")
             date_edit = DateEdit()   # 滚轮/触控板滑动不改值（防悬停误触）
             date_edit.setMinimumDate(_FUND_DATE_SENTINEL)

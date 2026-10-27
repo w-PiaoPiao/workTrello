@@ -123,7 +123,9 @@ class ToggleSwitch(QAbstractButton):
         # 滑块：左右各留 3px 边距，直径 = 高 - 6
         d = self.height() - 6
         x = 3 + self._pos * (self.width() - d - 6)
-        painter.setBrush(QColor("#FFFFFF"))
+        # 滑块取 accent_on：写死白色时，浅色皮肤关闭态（浅灰轨道）
+        # 对比度仅约 1.4:1，几乎看不见
+        painter.setBrush(to_qcolor(c["accent_on"]))
         painter.drawEllipse(QRectF(x, 3, d, d))
         # 焦点环：自绘控件没有系统焦点提示，键盘用户看不出焦点落在哪个开关
         if self.hasFocus():
@@ -143,9 +145,6 @@ class ToggleSwitch(QAbstractButton):
         self._anim.setStartValue(self._pos)
         self._anim.setEndValue(target)
         self._anim.start()
-
-    def nextCheckState(self) -> None:   # 点击时走这里（覆盖默认翻转）
-        self.setChecked(not self.isChecked())
 
     def setChecked(self, on: bool) -> None:   # type: ignore[override]
         # super() 在状态变化时自动 emit toggled，这里只负责滑动动画

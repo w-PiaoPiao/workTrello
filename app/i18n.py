@@ -22,8 +22,6 @@ from PySide6.QtCore import QLocale
 
 from app.config import AppConfig
 
-_zh_en: dict[str, str] = {}
-
 
 class _StrongRef:
     """非绑定回调（函数/lambda）的强引用包装（它们没有宿主，弱引用会立刻失效）"""
@@ -489,9 +487,6 @@ _zh_en: dict[str, str] = {
     "已从备份恢复看板数据": "Board restored from backup",
     "快照 {name} 无法解析，恢复失败。":
         "Snapshot {name} can't be parsed — restore failed.",
-    "备份文件 {name} 无法解析，恢复失败，本次以默认看板启动。":
-        "Backup {name} can't be parsed — restore failed; starting with the "
-        "default board.",
     "本次以默认看板启动。": "Starting with the default board.",
     "看板数据文件异常（{detail}），本次以默认看板启动。":
         "Board data file error ({detail}). Starting with the default board.",
@@ -820,6 +815,49 @@ _zh_en: dict[str, str] = {
         'Set card priority high/mid/low (0 clears)',
     '卡片移动到其他列表':
         'Move card to another list',
+    # ── 2026-10 全量审查修复补缺 ──
+    '看板数据文件异常（{detail}），本次以默认看板打开。':
+        'Board data file error ({detail}). Opening with the default board.',
+    '{detail}，且备份副本无法解析':
+        '{detail}; the backup copy could not be read either',
+    '看板仍在保存，请稍后重试':
+        'The board is still being saved — please try again shortly',
+    '看板已变更，操作取消':
+        'The board changed — operation cancelled',
+    '无法保存粘贴图片（临时目录不可写或磁盘已满）':
+        "Couldn't save the pasted image (temp folder not writable or disk full)",
+    '数据目录不可用：{path}\n{err}':
+        'Data folder unavailable: {path}\n{err}',
+    '上一月': 'Previous month',
+    '下一月': 'Next month',
+    # 资金分配监视环节名（模型里存中文模板名，显示层翻译）
+    '收集分配方案': 'Collect allocation plan',
+    '汇总上会材料': 'Compile meeting materials',
+    '上会': 'Submit to meeting',
+    '出会议纪要': 'Issue meeting minutes',
+    '财政去函': 'Letter to Finance',
+    '财政复函': 'Reply from Finance',
+    '报分管': 'Report to deputy head',
+    '分管批复': 'Deputy head approval',
+    '送律师': 'Send to lawyer',
+    '律师法律意见': 'Legal opinion from lawyer',
+    '法规处法律意见': 'Legal opinion from regulations office',
+    '征求司法局意见': 'Seek justice bureau opinion',
+    '司法局回复': 'Justice bureau reply',
+    '报政府常务会': 'Report to government executive meeting',
+    '商市财政局代上会': 'Coordinate with city finance bureau',
+    '会签下达文件': 'Jointly sign and issue document',
+    '资金文件下达': 'Issue funding document',
+    '资金入库追加': 'Fund receipt and addition',
+    '财政二次去函': 'Second letter to Finance',
+    '超出上限，仅保留前 {n} 行':
+        'over the limit, only the first {n} kept',
+    '超出上限，仅保留前 {n} 个':
+        'over the limit, only the first {n} kept',
+    '备份文件不是有效的数据结构':
+        'The backup file is not a valid data structure',
+    '当前卡片':
+        'the current card',
 
 }
 

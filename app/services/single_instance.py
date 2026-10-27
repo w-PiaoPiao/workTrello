@@ -21,6 +21,7 @@ UIPI 拦掉）时，用户只能去任务管理器杀进程。（v0.2.3 曾漏�
 from __future__ import annotations
 
 import logging
+import os
 import socket
 import time
 from pathlib import Path
@@ -68,6 +69,11 @@ class InstanceWaker(QObject):
             self._server.bind(str(self._path))
             self._server.listen(16)   # backlog 足量：连续快速 double-click 不丢唤醒
             self._server.setblocking(False)
+            if os.name != "nt":
+                try:
+                    os.chmod(self._path, 0o600)   # 仅同用户可唤醒/干扰
+                except OSError:
+                    pass
         except OSError as e:
             logger.warning("单实例唤醒通道不可用: %s", e)
             self._server = None

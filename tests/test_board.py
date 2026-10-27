@@ -833,6 +833,50 @@ class AttachmentPendingTest(unittest.TestCase):
             "is_image": False}]})
         self.assertNotIn("pending", card.attachments[0])
 
+    def test_apply_labels_none_keeps_old(self):
+        """apply 对 labels=None / 非法元素不炸（与 from_dict 同强度防御）"""
+        card = Card(title="卡")
+        card.labels = ["red"]
+        card.apply({"title": "改", "labels": None})
+        self.assertEqual(card.labels, ["red"])   # 不被 list(None) 炸掉
+        card.apply({"labels": ["blue", 3, None]})
+        self.assertEqual(card.labels, ["blue"])  # 非法元素被过滤
+
+
+class StaleSnapshotGuardTest(unittest.TestCase):
+    """回归：waitForDone 超时窗口内排队的旧快照不得覆盖主线程 flush 的新数据"""
+
+    def test_stale_flush_async_discarded_after_sync_flush(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "b.json"
+        store = BoardStore(path)
+        lst = BoardList(title="列")
+        lst.cards = [Card(title="旧")]
+        store.replace_board(Board(lists=[lst]))
+
+        # 假保存池：捕获任务不执行（模拟外接盘休眠/杀毒锁定导致的写挂起）
+        tasks: list = []
+
+        class _StuckPool:
+            def start(self, fn):
+                tasks.append(fn)
+
+        store.flush_async(_StuckPool())
+        self.assertEqual(len(tasks), 1)
+
+        # 防抖间隙用户继续编辑，随后主线程同步落盘（waitForDone 超时后）
+        store.load().lists[0].cards.append(Card(title="新"))
+        store.mark_dirty()
+        store.flush()
+
+        # 挂起的旧任务此刻才执行：代数守卫应放弃（旧快照回写会覆盖新数据）
+        for fn in tasks:
+            fn()
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        titles = [c["title"] for l in doc["lists"] for c in l["cards"]]
+        self.assertEqual(titles, ["旧", "新"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

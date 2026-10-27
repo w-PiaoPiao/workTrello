@@ -9,7 +9,8 @@
   含今天；"上周X/每周X"等前缀词不解析，保留原文）| 下周X（下周对应日）|
   M月D日 / M/D（今年已过则明年）| YYYY-MM-DD
 - 截止日（英）：today / tomorrow / day after tomorrow | in N days |
-  next mon…（缩写或全名）| mon/tue/…/fri…（未来最近一天）| M/D | YYYY-MM-DD
+  next mon…（缩写或全名）| monday…（全名）| mon/tue/thu/fri（裸缩写）|
+  wed/sat/sun 单独成行（避免 "I sat down"/"sun exposure" 被误吞）| M/D | YYYY-MM-DD
 - 优先级：!P1 !P2 !P3（大小写均可，1=高 3=低）
 - 标签：#红 #红色 #blue（LABEL_NAMES 中文名可只写前缀，或英文 key），
   去重
@@ -40,13 +41,16 @@ _RE_FULL_DATE = re.compile(r"(?<![0-9])(\d{4})-(\d{1,2})-(\d{1,2})(?![0-9])")
 # "M月D日" 已是强意图信号，允许紧贴汉字（"项目3月4日截止"）；
 # 斜杠形式与分数/比例同形（"进度1/2的人"），要求前面是行首或空白，
 # 且斜杠两侧不写空格——避免把正文里的分数静默吞成截止日
-_RE_MD = re.compile(r"(?<![0-9])(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?(?![0-9])")
+# 可选年份组：用户显式写的年份（"2026年3月5日"）按该年解析且不滚动；
+# 不识别年份时该组为 None，只剩「2026年」残留在标题里、日期被静默滚一年
+_RE_MD = re.compile(
+    r"(?<![0-9])(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?(?![0-9])")
 # 斜杠形式还要求位于行首或行尾（"日期习惯位置"）：句中斜杠一律当
 # 正文——"完成 3/4 后交付"的分数宁可漏识别（原文可见），也不能被
 # 静默吞掉（卡片凭空多出逾期截止日）
 _RE_MD_SLASH = re.compile(r"(?<!\S)(\d{1,2})/(\d{1,2})(?![0-9])")
 _RE_PRIORITY = re.compile(r"(?<![A-Za-z])![pP]([123])\b")
-_RE_TAG = re.compile(r"#([\u4e00-\u9fa5A-Za-z]+)")
+_RE_TAG = re.compile(r"(?<![/&#])#([\u4e00-\u9fa5A-Za-z]+)")
 _RE_NEXT_WEEKDAY = re.compile(r"下(?:周|星期|礼拜)([一二三四五六日天])")
 # "上周三/每周三/本周三"等前缀词不是"未来最近一天"语义（前者指过去，
 # 后者是周期性）：负向后视排除，保留原文不解析
@@ -59,9 +63,14 @@ _RE_RELATIVE_EN = re.compile(
 # "saturate" 之类普通单词误命中
 _RE_NEXT_WEEKDAY_EN = re.compile(
     r"\bnext\s+(mon|tue|wed|thu|fri|sat|sun)[a-z]*\b", re.IGNORECASE)
+# 英文周几：全名随时可识别；mon/tue/thu/fri 不是英文单词，裸缩写可夹在
+# 句中；wed/sat/sun 是常见单词（I sat down / sun exposure / we wed），
+# 裸缩写只接受"整行只有它"，避免静默吞正文
 _RE_WEEKDAY_EN = re.compile(
-    r"\b(mon|tue|wed|thu|fri|sat|sun)(?:day|sday|nesday|rsday|urday)?\b",
+    r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
     re.IGNORECASE)
+_RE_WEEKDAY_ABBR_EN = re.compile(r"\b(mon|tue|thu|fri)\b", re.IGNORECASE)
+_RE_WEEKDAY_AMBIG_EN = re.compile(r"^\s*(wed|sat|sun)\s*$", re.IGNORECASE)
 
 
 def _iso(d: date) -> str:
@@ -85,11 +94,12 @@ def _future_year_date(month: int, day: int, today: date) -> date | None:
 
     用户写"1月5日交材料"指的是即将到来的 1 月 5 日，不是八个多月前
     的过去日期（按今年解析会让卡片创建即"已逾期"并进今日聚焦）。
-    2/29 滚到平年不存在时退回今年的解析结果。
+    今年不存在该日期（平年 2/29）时尝试明年；两年都不存在（2/30）
+    才放弃解析。
     """
     d = _safe_date(today.year, month, day)
     if d is None:
-        return None
+        return _safe_date(today.year + 1, month, day)
     if d < today:
         return _safe_date(today.year + 1, month, day) or d
     return d
@@ -119,7 +129,10 @@ def _parse_due(text: str, today: date) -> tuple[str, str | None]:
             monday + timedelta(days=7 + _WEEKDAY_CH[m.group(1)]))
     m = _RE_MD.search(text)
     if m:
-        d = _future_year_date(int(m.group(1)), int(m.group(2)), today)
+        if m.group(1):   # 显式年份：按该年解析，不滚动
+            d = _safe_date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        else:
+            d = _future_year_date(int(m.group(2)), int(m.group(3)), today)
         return (_cut(text, m), _iso(d)) if d else (text, None)
     m = _RE_MD_SLASH.search(text)
     if m:
@@ -133,26 +146,34 @@ def _parse_due(text: str, today: date) -> tuple[str, str | None]:
         ahead = (_WEEKDAY_CH[m.group(1)] - today.weekday()) % 7
         return _cut(text, m), _iso(today + timedelta(days=ahead))
     # ── 英文速记兜底（与界面语言无关：中英两种语法恒可用）──
-    # lower 副本只做定位/匹配，长度与原文一致，_cut 用原文安全
-    low = text.lower()
-    m = _RE_RELATIVE_EN.search(low)
+    # 全部正则带 IGNORECASE，直接匹配原文：不用 lower 副本定位——
+    # 个别字符（土耳其 İ）lower 后长度变化，索引错位会切错原文
+    m = _RE_RELATIVE_EN.search(text)
     if m:
-        word = m.group(1).lower()
-        offset = _RELATIVE_DAYS_EN[word]
-        i = m.start()
-        return text[:i] + " " + text[i + len(word):], _iso(
-            today + timedelta(days=offset))
-    m = _RE_IN_N_DAYS.search(low)
+        offset = _RELATIVE_DAYS_EN[m.group(1).lower()]
+        return _cut(text, m), _iso(today + timedelta(days=offset))
+    m = _RE_IN_N_DAYS.search(text)
     if m:
         return _cut(text, m), _iso(today + timedelta(days=int(m.group(1))))
-    m = _RE_NEXT_WEEKDAY_EN.search(low)
+    m = _RE_NEXT_WEEKDAY_EN.search(text)
     if m:
         monday = today - timedelta(days=today.weekday())
+        # group(1) 是捕获的三字母缩写，但保留原大小写（IGNORECASE 只影响
+        # 匹配），查表前必须 lower，否则 "Next Monday" 抛 KeyError("Mon")
         return _cut(text, m), _iso(
-            monday + timedelta(days=7 + _WEEKDAY_EN[m.group(1)]))
-    m = _RE_WEEKDAY_EN.search(low)
+            monday + timedelta(days=7 + _WEEKDAY_EN[m.group(1).lower()]))
+    m = _RE_WEEKDAY_EN.search(text)
     if m:
-        ahead = (_WEEKDAY_EN[m.group(1)] - today.weekday()) % 7
+        key = m.group(1)[:3].lower()   # 全名取前三个字母查表
+        ahead = (_WEEKDAY_EN[key] - today.weekday()) % 7
+        return _cut(text, m), _iso(today + timedelta(days=ahead))
+    m = _RE_WEEKDAY_ABBR_EN.search(text)   # mon/tue/thu/fri 无歧义
+    if m:
+        ahead = (_WEEKDAY_EN[m.group(1).lower()] - today.weekday()) % 7
+        return _cut(text, m), _iso(today + timedelta(days=ahead))
+    m = _RE_WEEKDAY_AMBIG_EN.search(text)  # wed/sat/sun 仅整行
+    if m:
+        ahead = (_WEEKDAY_EN[m.group(1).lower()] - today.weekday()) % 7
         return _cut(text, m), _iso(today + timedelta(days=ahead))
     return text, None
 

@@ -122,7 +122,13 @@ class NotesPopover(QFrame):
         self.update()
 
     def retexts(self) -> None:
-        """语言切换：标题与提示行取当前语言（固定态隐藏提示行）"""
+        """语言切换：标题与提示行取当前语言（固定态隐藏提示行）
+
+        面板尺寸是按旧文案锁定的：可见时直接改文本会裁字/留白，先收起，
+        下次悬停按新文案重新计算
+        """
+        if self.isVisible():
+            self.hide_now()
         self._title.setText(tr("备注"))
         self._hint.setText(tr("点击徽章固定"))
         self._hint.setVisible(self._pin_card_id is None)

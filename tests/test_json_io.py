@@ -51,6 +51,17 @@ class NonUtf8FileTest(unittest.TestCase):
         ok.write_text(json.dumps({"v": 1}), encoding="utf-8")
         self.assertEqual(json_io.load_json_doc(ok), {"v": 1})
 
+    def test_empty_file_is_placeholder_not_corrupted(self):
+        """0 字节空文件（touch 创建/写前窗口）不当损坏复制隔离"""
+        empty = self.dir / "empty.json"
+        empty.write_bytes(b"")
+        problems = []
+        doc = json_io.load_json_doc(
+            empty, on_problem=lambda kind, _p, _d: problems.append(kind))
+        self.assertEqual(doc, {})
+        self.assertEqual(problems, [])
+        self.assertFalse(list(self.dir.glob("empty.json.corrupt.*.bak")))
+
 
 class RestoreDoesNotPollutePrevTest(unittest.TestCase):
     """回归：restore_from_backup 不得把坏主文件轮转进 .prev 槽位"""
