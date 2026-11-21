@@ -863,6 +863,19 @@ class ControllerFeatureTest(unittest.TestCase):
         self.assertIsNotNone(card)
         self.assertEqual(card.priority, 1)
 
+    def test_calendar_due_same_day_notifies(self):
+        """D-1：日历拖回同一天给反馈（落点高亮已在格子侧复位）"""
+        self._reset()
+        self.c._on_card_add(self._list().id, "日历卡")
+        card_id = self._list().cards[0].id
+        self.c._store.load().find_card(card_id)[1].due_date = "2026-01-10"
+        with patch.object(self.c, "_notify") as notify:
+            self.c._on_calendar_due_change(card_id, "2026-01-10")
+        notify.assert_called_once()
+        with patch.object(self.c, "_notify") as notify2:
+            self.c._on_calendar_due_change(card_id, "2026-01-11")
+        notify2.assert_called_once()
+
     def test_import_backup_activate_failure_rolls_back_current(self):
         """B-3：备份导入激活失败时回滚 current_id（防索引与 store 脱钩）"""
         self._reset()

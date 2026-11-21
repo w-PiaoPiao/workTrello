@@ -553,6 +553,13 @@ class MainWindow(QWidget):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        # 边缘光标轮询补启（C-3）：桌宠禁用时显隐不走 expand()（mode 保持
+        # expanded，expand 首行提前返回），hideEvent 停掉的轮询会从此停摆；
+        # 正常展开路径此处 mode 还是 collapsed（expand 先 show 后切模式），
+        # 由 expand() 自己启动
+        if (AppConfig.IS_WINDOWS and self._mode == "expanded"
+                and not self._animation_running):
+            self._edge_cursor_timer.start()
         if self._visible_cb is not None:
             self._visible_cb(True)
 

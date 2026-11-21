@@ -90,6 +90,18 @@ class DayCellTest(unittest.TestCase):
         self.cell.dropEvent(_card_drag_event("drop", "c1"))
         self.assertEqual(got, [("c1", "2026-09-13")])
 
+    def test_drop_resets_highlight(self):
+        """D-1：drop 后落点高亮复位
+
+        同日改期走控制器早退、不触发格子重建，复位必须在 dropEvent
+        就地完成——否则 accent 高亮永久残留，用户无法判断改期是否生效。
+        """
+        fresh = _DayCell(13, in_month=True, is_today=True, iso="2026-09-13")
+        self.cell.dragEnterEvent(_card_drag_event("dragEnter"))
+        self.assertNotEqual(self.cell.styleSheet(), fresh.styleSheet())
+        self.cell.dropEvent(_card_drag_event("drop", "c1"))
+        self.assertEqual(self.cell.styleSheet(), fresh.styleSheet())
+
     def test_drop_accepts_board_drag_too(self):
         """看板拖来的卡（同 MIME）落在日历上同样改期——共享 MIME 的红利"""
         event = _card_drag_event("drop", "from-board")

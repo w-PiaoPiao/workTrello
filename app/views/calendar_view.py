@@ -38,7 +38,7 @@ from app.config import AppConfig
 from app.i18n import tr, weekday_short
 from app.models.board import Card
 from app.views import icons, tokens
-from app.views.board_view import MIME_CARD
+from app.views.board_view import MIME_CARD, _decode_mime_id
 from app.views.theme import AppTheme
 
 # 每格最多渲染的条目数（含"还有 N 项…"按钮共 4 行，正好塞进最小行高；
@@ -465,8 +465,12 @@ class _DayCell(QFrame):
         # 否则松手后日历会自己再翻一个月
         self.signal_drag_leave.emit()
         if event.mimeData().hasFormat(MIME_CARD) and self._iso:
-            card_id = bytes(event.mimeData().data(MIME_CARD)).decode("utf-8")
-            self.signal_drop_card.emit(card_id, self._iso)
+            # 落点样式必须复位（D-1）：控制器同日改期会早退、不触发重建，
+            # 不复位则 accent 高亮永久残留；畸形载荷同样按"没接到"处理
+            self._apply_style()
+            card_id = _decode_mime_id(event.mimeData(), MIME_CARD)
+            if card_id:
+                self.signal_drop_card.emit(card_id, self._iso)
             event.acceptProposedAction()
 
     def dragLeaveEvent(self, event) -> None:

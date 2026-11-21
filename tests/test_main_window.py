@@ -535,6 +535,56 @@ class HomeGeoPersistenceTest(unittest.TestCase):
         self.assertEqual(QPoint(saved.x(), saved.y()), home_pos)
 
 
+class PetNudgeCelebrationTest(unittest.TestCase):
+    """C-2：nudge 与 celebrate 并发竞态——庆祝进行中 nudge 不再起动画组"""
+
+    def setUp(self):
+        self.pet = PetView()
+
+    def tearDown(self):
+        if self.pet._celebrating is not None:
+            self.pet._celebrating.stop()
+        self.pet.hide()
+        self.pet.deleteLater()
+
+    def test_nudge_during_celebration_is_noop(self):
+        """庆祝动画进行中：nudge 早退，两组动画不并发逐帧互覆盖"""
+        self.pet.show()
+        self.pet.celebrate()
+        self.assertIsNotNone(self.pet._celebrating)
+        self.pet.nudge()
+        self.assertIsNone(self.pet._active_action,
+                          "庆祝进行中 nudge 不得再起第二动画组")
+
+    def test_nudge_without_celebration_starts_action(self):
+        """无庆祝时 nudge 照常起跳（护栏：早退条件不误伤正常路径）"""
+        self.pet.show()
+        self.pet.nudge()
+        self.assertIsNotNone(self.pet._active_action)
+        self.pet._active_action.stop()
+
+
+class EdgeCursorRestartTest(unittest.TestCase):
+    """C-3：桌宠禁用（Windows）隐藏→重显后边缘光标轮询重启"""
+
+    @unittest.skipUnless(AppConfig.IS_WINDOWS, "仅 Windows 启用边缘缩放")
+    def test_show_restarts_edge_cursor_when_pet_disabled(self):
+        motion.set_enabled(False)   # 显隐瞬时落位，状态断言可靠
+        w = MainWindow()
+        w.set_views(PetView(), QWidget())
+        w.show()
+        try:
+            w.set_pet_enabled(False)   # 显隐不再走 expand()（mode 保持 expanded）
+            w.hide()                   # hideEvent 停掉轮询
+            w.show()
+            self.assertTrue(w._edge_cursor_timer.isActive(),
+                            "重显后轮询必须补启")
+        finally:
+            w.hide()
+            w.deleteLater()
+            motion.set_enabled(True)
+
+
 class PetEnabledStateTest(unittest.TestCase):
     """桌宠显示总开关：禁用后"折叠形态"不存在
 

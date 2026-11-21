@@ -89,6 +89,18 @@ MIME_CARD = "application/x-petboard-card"
 # 多选成组时另发这条，落点侧优先取它
 MIME_CARDS = "application/x-petboard-cards"
 
+
+def _decode_mime_id(mime, name: str) -> str:
+    """自定义 MIME 载荷的 UTF-8 解码；畸形字节一律空串（A-2）
+
+    MIME 名无认证，任意外部进程可携带畸形字节拖入；异常在原生拖拽
+    循环中逸出会打断拖放会话，必须收口成"不认识这个载荷"。
+    """
+    try:
+        return bytes(mime.data(name)).decode("utf-8")
+    except (UnicodeDecodeError, ValueError):
+        return ""
+
 _MAX_WIDGET_H = 16777215    # QWIDGETSIZE_MAX：清除动画期固定高度用
 
 
@@ -2326,8 +2338,10 @@ class ListColumn(QFrame):
         # 列几何指纹：(卡片 id 序, 各卡内容指纹, 折叠态)。未变化时
         # refresh_cards 跳过 updateGeometry 与双重列高同步
         self._geom_key: tuple | None = None
-        # 拖拽落点快照（host 内 y 中点，升序）：dragEnter 时重建
+        # 拖拽落点快照（host 内 y 中点，升序）：dragEnter 时重建；
+        # _drop_mids_widgets 记录快照对应的控件序列，refresh 后失效重建
         self._drop_mids: list[int] | None = None
+        self._drop_mids_widgets: list | None = None
         # 落点指示线当前指向的插入位（overlay 不占布局，见 _update_drop_indicator_at）
         self._drop_indicator_index: int | None = None
         # 整列拖拽起点（列身空白处按下；None=未按下）
@@ -2940,16 +2954,23 @@ class ListColumn(QFrame):
 
         用 host 相对坐标：拖拽期间纵向自动滚动只改视口偏移，host 内
         布局不变，快照始终有效；dragMove（60-125Hz）与自动滚动 tick
-        （30ms）不再逐卡 mapToGlobal。
+        （30ms）不再逐卡 mapToGlobal。快照与控件序列对象绑定，refresh
+        （换新列表对象）后由 _drop_index_from_y 检出并就地重建。
         """
         self._drop_mids = [
             cw.mapTo(self._cards_host, QPoint(0, 0)).y() + cw.height() // 2
             for cw in self._card_widgets
         ]
+        self._drop_mids_widgets = self._card_widgets
 
     def _drop_index_from_y(self, y_global: int) -> int:
         """根据全局 y 坐标计算插入位置（卡片序号；对快照二分）"""
-        if self._drop_mids is None:
+        if (self._drop_mids is None
+                or getattr(self, "_drop_mids_widgets", None)
+                is not self._card_widgets):
+            # 拖拽期间 refresh（跨天自动归档/拖拽中 Ctrl+Z，exec 的原生
+            # 模态循环仍派发事件）会重建控件序列——过期快照让二分落点
+            # 整体偏一位（A-3），就地重建
             self._rebuild_drop_mids()
         host_y = self._cards_host.mapFromGlobal(QPoint(0, y_global)).y()
         # 与原逐卡扫描等价：返回第一个「y < 中点」的卡片位置
@@ -3091,7 +3112,7 @@ class ListColumn(QFrame):
         if event.mimeData().hasFormat(MIME_CARD) or event.mimeData().hasFormat(
                 MIME_CARDS):
             self._drag_hovering = True
-            self._rebuild_drop_mids()   # 拖拽期间布局不变，快照全程有效
+            self._rebuild_drop_mids()   # 快照与控件序列绑定，过期自动重建
             self._update_drop_indicator_at(self._column_y_from_event(event))
             self._auto_scroll_timer.start()
             event.acceptProposedAction()
@@ -3188,7 +3209,12 @@ class ListColumn(QFrame):
         if mime.hasFormat(MIME_CARD):
             self._drag_hovering = False
             self._auto_scroll_timer.stop()
-            card_id = bytes(mime.data(MIME_CARD)).decode("utf-8")
+            card_id = _decode_mime_id(mime, MIME_CARD)
+            if not card_id:
+                self._set_drop_highlight(False)
+                self._hide_drop_indicator()
+                event.acceptProposedAction()
+                return
             # 落点计算仍用现快照（布局此刻未变），算完再作废
             index = self._drop_index_from_y(
                 event.position().toPoint().y()
@@ -3203,7 +3229,10 @@ class ListColumn(QFrame):
         if mime.hasFormat(MIME_LIST):
             self._set_drop_highlight(False)
             self._hide_list_drop_indicator()
-            moved_id = bytes(mime.data(MIME_LIST)).decode("utf-8")
+            moved_id = _decode_mime_id(mime, MIME_LIST)
+            if not moved_id:
+                event.acceptProposedAction()
+                return
             # 落点 x 相对本列中心：左半=插到本列前，右半=插到本列后
             insert_before = event.position().toPoint().x() < self.width() // 2
             self.signal_list_move.emit(moved_id, self._lst.id, insert_before)
@@ -3253,7 +3282,8 @@ class _CardDropButton(QPushButton):
             except (ValueError, UnicodeDecodeError):
                 return []
         if mime.hasFormat(MIME_CARD):
-            return [bytes(mime.data(MIME_CARD)).decode("utf-8")]
+            card_id = _decode_mime_id(mime, MIME_CARD)
+            return [card_id] if card_id else []
         return []
 
     def dragEnterEvent(self, event) -> None:

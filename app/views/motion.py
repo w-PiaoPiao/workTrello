@@ -46,12 +46,12 @@ def _drop_effect(widget) -> None:
     新动画的 effect 摘掉（悬停/搜索这类高频交互会连续触发淡入淡出）。
     """
     def _do() -> None:
-        if getattr(widget, "_motion_fade", None) is not None:
-            return          # 已被新的动画接管，别动
         try:
+            if getattr(widget, "_motion_fade", None) is not None:
+                return      # 已被新的动画接管，别动
             widget.setGraphicsEffect(None)
         except RuntimeError:
-            pass            # 控件已销毁
+            pass            # 控件已销毁（getattr 一样会抛，须同在 try 内）
     QTimer.singleShot(0, _do)
 
 

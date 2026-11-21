@@ -31,6 +31,7 @@ from app.models.board import BoardList, Card
 from app.views.board_view import (
     MIME_CARD,
     MIME_CARDS,
+    MIME_LIST,
     BoardView,
     _CardDropButton,
 )
@@ -109,6 +110,83 @@ class GroupDragPayloadTest(unittest.TestCase):
         self.view._selected_ids = {ids_a[2], ids_a[0], ids_b[0]}
         self.assertEqual(self._card_widget("A")._group_drag_ids(),
                          [ids_a[0], ids_a[2], ids_b[0]])
+
+
+class MalformedPayloadTest(unittest.TestCase):
+    """A-2：畸形 MIME 载荷不炸拖拽循环（单卡/整列/按钮/日历四处收口）"""
+
+    def setUp(self):
+        self.view = BoardView()
+        self.lists = make_lists([("待办", ["A", "B"]),
+                                 ("进行中", ["C"])])
+        self.view.refresh(self.lists)
+        self.col = self.view._columns[0]
+
+    def tearDown(self):
+        self.view.deleteLater()
+
+    def test_bad_utf8_card_payload_ignored(self):
+        """单卡 MIME 带非法 UTF-8 字节：不发 move 信号、不留拖拽残迹"""
+        mime = QMimeData()
+        mime.setData(MIME_CARD, b"\xff\xfe\xff")
+        got = []
+        self.view.signal_card_move.connect(lambda c, t, i: got.append(c))
+        self.col.dropEvent(_drag_event(mime))
+        self.assertEqual(got, [])
+        self.assertFalse(self.col._drag_hovering)
+
+    def test_bad_utf8_list_payload_ignored(self):
+        """整列 MIME 带非法 UTF-8 字节：不发列表移动信号"""
+        mime = QMimeData()
+        mime.setData(MIME_LIST, b"\xff\xfe\xff")
+        got = []
+        self.view.signal_list_move.connect(got.append)
+        self.col.dropEvent(_drag_event(mime))
+        self.assertEqual(got, [])
+
+    def test_bad_utf8_button_payload_ignored(self):
+        """拖到「归档」按钮的单卡载荷畸形：不触发批量归档"""
+        mime = QMimeData()
+        mime.setData(MIME_CARD, b"\xc3\x28")   # 非法 UTF-8 序列
+        got = []
+        self.view.signal_batch_archive.connect(got.append)
+        self.view._archive_btn.dropEvent(_drag_event(mime))
+        self.assertEqual(got, [])
+
+    def test_decode_mime_id_helper_guards_bad_bytes(self):
+        """统一解码助手（board_view 与 calendar_view 共用）：
+        畸形字节返回空串、合法载荷原样透出"""
+        from app.views.board_view import _decode_mime_id
+        mime = QMimeData()
+        mime.setData(MIME_CARD, b"\xff")
+        self.assertEqual(_decode_mime_id(mime, MIME_CARD), "")
+        mime.setData(MIME_CARD, "ok-id".encode("utf-8"))
+        self.assertEqual(_decode_mime_id(mime, MIME_CARD), "ok-id")
+
+
+class DropSnapshotInvalidationTest(unittest.TestCase):
+    """A-3：拖拽期间 refresh 重建控件序列后，落点快照自动失效重建"""
+
+    def setUp(self):
+        self.view = BoardView()
+        self.lists = make_lists([("待办", ["A", "B", "C"]),
+                                 ("进行中", ["D"])])
+        self.view.refresh(self.lists)
+        self.col = self.view._columns[0]
+
+    def tearDown(self):
+        self.view.deleteLater()
+
+    def test_snapshot_rebuilt_after_refresh(self):
+        """dragEnter 建快照 → refresh 换控件序列 → 落点按新序列计算"""
+        self.col.dragEnterEvent(_drag_event(_card_mime("x"), "dragEnter"))
+        self.assertIsNotNone(self.col._drop_mids)
+        # 模拟拖拽中的 refresh（跨天自动归档/拖拽中 Ctrl+Z）：控件序列
+        # 被整体换成新列表对象
+        self.view.refresh(self.lists)
+        self.assertIsNot(self.col._drop_mids_widgets, self.col._card_widgets)
+        self.col._drop_index_from_y(0)   # 触发校验并重建
+        self.assertIs(self.col._drop_mids_widgets, self.col._card_widgets)
 
 
 class GroupDropTest(unittest.TestCase):

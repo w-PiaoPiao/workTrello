@@ -1868,7 +1868,10 @@ class AppController(QObject):
         if card is None:
             return
         if card.due_date == iso_date:
-            return   # 拖回同一天：不留空撤销步
+            # 拖回同一天：不留空撤销步；但必须有反馈（D-1）——拖拽本身
+            # 已有落点高亮，静默早退让用户无法判断改期是否生效
+            self._notify(tr("截止日期本来就是 {date}").format(date=iso_date))
+            return
         self._push_undo()
         card.due_date = iso_date
         self._after_data_change(

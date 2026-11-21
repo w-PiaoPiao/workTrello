@@ -757,6 +757,8 @@ class PetView(QWidget):
             return
         if self._active_action is not None:
             return
+        if self._celebrating is not None:
+            return    # 庆祝动画进行中：再起一组跳会逐帧互覆盖、视觉抖动（C-2）
         if self._idle_timer.isActive():
             self._float_frozen = True
         group = self._make_jump_action()

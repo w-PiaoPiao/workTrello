@@ -978,6 +978,21 @@ class BoardViewRefreshTest(unittest.TestCase):
         self.assertGreater(len(calls), 0)
         self.assertEqual(self.widget_titles(col), ["B", "A"])
 
+    def test_drop_effect_after_destroy_no_crash(self):
+        """A-1：fade 完成→deleteLater→一轮事件循环，_drop_effect 不抛
+
+        shiboken 包装器 C++ 对象销毁后 _motion_fade 属性访问抛
+        RuntimeError，getattr 默认值兜不住——守卫必须整体在 try 内。
+        """
+        from PySide6.QtWidgets import QWidget
+        from app.views import motion
+        w = QWidget()
+        w.resize(50, 20)
+        motion.fade(w, 1.0, 40)   # 淡入：结束后 _drop_effect 经 singleShot(0)
+        w.deleteLater()           # 摘 effect 前销毁（160ms 过滤切换的真实窗口）
+        w.destroy()
+        self._settle(120)         # 跑掉 singleShot 回调，异常会让测试红
+
     def test_double_click_title_starts_rename(self):
         """标题双击经子类覆写进入重命名（替代实例 monkeypatch）"""
         from PySide6.QtCore import QEvent, QPointF, Qt
