@@ -478,6 +478,63 @@ class CollapseInterruptTest(unittest.TestCase):
             self.assertFalse(self.w._resize_grip.isVisible())
 
 
+class HomeGeoPersistenceTest(unittest.TestCase):
+    """C-1：折叠落点与位置持久化都以桌宠原位（_pet_home_geo）为准
+
+    展开态拖动的是看板，期间释放鼠标保存的窗口位置是看板左上角——
+    若照旧持久化，重启后桌宠出现在看板旧址；隐藏路径不落位则重显时
+    桌宠停在看板左上角而非原位。
+    """
+
+    def setUp(self):
+        motion.set_enabled(False)   # 展开/折叠瞬时落位，状态断言可靠
+        self.w = MainWindow()
+        self.w.set_views(PetView(), QWidget())
+        self.w.show()
+        _qapp.processEvents()
+
+    def tearDown(self):
+        self.w.hide()
+        self.w.deleteLater()
+        motion.set_enabled(True)
+
+    def test_hide_from_expanded_after_drag_returns_to_home(self):
+        """展开→拖动→隐藏→重显：桌宠回到原位而非看板左上角"""
+        home_pos = self.w.pos()
+        self.w.expand()
+        self.w.move(home_pos + QPoint(120, 80))   # 模拟拖动看板
+        self.w.hide()
+        self.w.show()
+        _qapp.processEvents()
+        self.assertEqual(self.w.mode, "collapsed")
+        self.assertEqual(self.w.pos(), home_pos)
+
+    def test_collapse_after_drag_saves_home_pos(self):
+        """展开→拖动→折叠：save_window_pos 收到桌宠原位"""
+        home_pos = self.w.pos()
+        self.w.expand()
+        self.w.move(home_pos + QPoint(120, 80))
+        self.w.collapse()
+        saved = AppConfig.get_window_pos()
+        self.assertIsNotNone(saved)
+        self.assertEqual(QPoint(saved.x(), saved.y()), home_pos)
+
+    def test_drag_when_expanded_does_not_save_board_pos(self):
+        """展开态拖动释放不持久化窗口位置（防止看板坐标污染桌宠存档）"""
+        home_pos = self.w.pos()
+        self.w.expand()
+        self.w.move(home_pos + QPoint(120, 80))
+        from PySide6.QtGui import QMouseEvent
+        from PySide6.QtCore import QPointF, QEvent
+        release = QMouseEvent(QEvent.MouseButtonRelease,
+                              QPointF(10, 10), QPointF(10, 10),
+                              Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        self.w.mouseReleaseEvent(release)
+        saved = AppConfig.get_window_pos()
+        self.assertIsNotNone(saved)
+        self.assertEqual(QPoint(saved.x(), saved.y()), home_pos)
+
+
 class PetEnabledStateTest(unittest.TestCase):
     """桌宠显示总开关：禁用后"折叠形态"不存在
 

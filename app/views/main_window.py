@@ -521,12 +521,15 @@ class MainWindow(QWidget):
                 self._snap_to_screen_edge()
                 self._refresh_edge_cursor()
                 QTimer.singleShot(0, self._refresh_edge_cursor)
-                self._save_position()
                 event.accept()
                 return
             self._is_dragging = False
             self._snap_to_screen_edge()
-            self._save_position()
+            if self._mode == "collapsed":
+                # 仅折叠态（桌宠拖动）持久化位置：展开态拖的是看板，此时
+                # 存看板左上角会污染"启动恢复桌宠位置"的语义（C-1 路径②）；
+                # 看板落点由折叠动画回到 _pet_home_geo 时统一保存
+                self._save_position()
             self._set_pet_idle(True)
             event.accept()
 
@@ -586,10 +589,21 @@ class MainWindow(QWidget):
         # 动画可能被 hide 打断：finished 不再触发，_on_animation_finished
         # 不会执行 → 无论当前模式都强制回到折叠态（切回桌宠视图 + 固定尺寸
         # + 收起缩放把手），避免再次显示时窗口停在展开尺寸、grip 残留
+        was_expanded = self._mode != "collapsed"
         self._mode = "collapsed"
         if self._collapsed_view is not None:
             self._stack.setCurrentWidget(self._collapsed_view)
             self.setFixedSize(self._collapsed_size)
+        if was_expanded or anim_was_running:
+            # 折叠落点按桌宠原位（137-139 设计意图，C-1 路径①③）：展开态/
+            # 动画中隐藏时几何停在看板位置或中间帧——不落位的话重显时桌宠
+            # 出现在看板左上角而非原位。已是折叠态的隐藏（拖动桌宠后托盘
+            # 隐藏）不动几何：当前位置就是用户刚拖到的位置
+            home = self._pet_home_geo
+            if home is not None and home.isValid():
+                self.move(home.topLeft())
+            self._snap_to_screen_edge()
+        self._save_position()
         self.unsetCursor()
         self._update_grip_visibility()
         super().hideEvent(event)
@@ -632,6 +646,7 @@ class MainWindow(QWidget):
             self.setFixedSize(self._collapsed_size)
             self.unsetCursor()
             self._snap_to_screen_edge()   # 双保险：落点出屏时收回可用区
+            self._save_position()   # C-1 路径②：折叠落位持久化，重启回到原位
             self._set_pet_idle(True)
         elif self._pending_min_size is not None:
             # 展开完成才施加最小尺寸（见 expand：动画起点不能被钳制）
