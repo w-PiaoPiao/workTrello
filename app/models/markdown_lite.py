@@ -31,6 +31,19 @@ _RE_URL = re.compile(
     r"(?<![\"'>=\w])(https?://[^\s<>\"']+)")
 
 
+def _safe_link(m: re.Match) -> str:
+    """行内链接协议白名单：仅 http(s) 渲染为链接（E-01）
+
+    与 CSV 导入的公式注入防护同一强度；当前调用方（QLabel）不开
+    openExternalLinks 无点击面，但任何调用方将来一行开启即变攻击面，
+    白名单在此收口。其余协议剥壳留文字。
+    """
+    label, url = m.group(1), m.group(2)
+    if url.lower().startswith(("http://", "https://")):
+        return f'<a href="{url}">{label}</a>'
+    return label
+
+
 def _inline(text: str) -> str:
     """行内元素替换（输入已 HTML 转义）
 
@@ -47,7 +60,7 @@ def _inline(text: str) -> str:
         part = _RE_BOLD.sub(r"<b>\1</b>", part)
         part = _RE_ITALIC.sub(r"<i>\1</i>", part)
         part = _RE_STRIKE.sub(r"<s>\1</s>", part)
-        part = _RE_LINK.sub(r'<a href="\2">\1</a>', part)
+        part = _RE_LINK.sub(_safe_link, part)
         part = _RE_URL.sub(r'<a href="\1">\1</a>', part)
         out.append(part)
     return "".join(out)

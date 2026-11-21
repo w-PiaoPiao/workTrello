@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from PySide6.QtCore import QDate, QPoint, QSize, Qt
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
@@ -35,6 +36,52 @@ _qapp = QApplication.instance() or QApplication([])
 from app.config import AppConfig
 from app.models.board import Card
 from app.views.card_dialog import CardDialog
+
+
+class DirtyCheckTest(unittest.TestCase):
+    """D-3：拒绝路径脏检查——Esc 不再静默丢弃清单/备注，无改动不打扰"""
+
+    def test_no_change_closes_without_confirm(self):
+        """打开即取消（无改动）：不弹确认直接关"""
+        dlg = CardDialog(Card(title="原题"))
+        with patch("app.views.card_dialog.QMessageBox") as box:
+            dlg.done(QDialog.Rejected)
+        box.assert_not_called()
+        self.assertEqual(dlg.result(), QDialog.Rejected)
+        dlg.deleteLater()
+
+    def test_changed_reject_asks_confirm_then_keep_open(self):
+        """有改动 Esc：弹确认，选 No 留在对话框（基类 done 不被调用）"""
+        from PySide6.QtWidgets import QMessageBox
+        dlg = CardDialog(Card(title="原题"))
+        dlg._title_edit.setText("改过的题")
+        with patch("app.views.card_dialog.QMessageBox") as box_cls, \
+                patch.object(QDialog, "done") as base_done:
+            box_cls.return_value.exec.return_value = QMessageBox.No
+            dlg.done(QDialog.Rejected)
+        box_cls.assert_called_once()
+        base_done.assert_not_called()   # No → 短路，对话框未关
+        dlg.deleteLater()
+
+    def test_changed_reject_confirm_yes_discards(self):
+        """有改动 Esc：确认 Yes 后关闭（粘贴临时文件路径不受影响）"""
+        from PySide6.QtWidgets import QMessageBox
+        dlg = CardDialog(Card(title="原题"))
+        dlg._title_edit.setText("改过的题")
+        with patch.object(QMessageBox, "exec",
+                          return_value=QMessageBox.Yes), \
+                patch.object(QDialog, "done") as base_done:
+            dlg.done(QDialog.Rejected)
+        base_done.assert_called_once()
+        dlg.deleteLater()
+
+    def test_new_card_untouched_closes_without_confirm(self):
+        """新建卡打开即 Esc（无输入）：不打扰"""
+        dlg = CardDialog(None)
+        with patch("app.views.card_dialog.QMessageBox") as box:
+            dlg.done(QDialog.Rejected)
+        box.assert_not_called()
+        dlg.deleteLater()
 
 
 class DueDateOptionalTest(unittest.TestCase):

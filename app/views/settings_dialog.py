@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QStyle,
@@ -618,8 +619,16 @@ class SettingsDialog(QDialog):
             self.resize(width, self.height())
 
     def _open_data_dir(self) -> None:
-        AppConfig.ensure_data_dir()
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(AppConfig.DATA_DIR)))
+        """打开数据目录（D-2：mkdir 权限/磁盘异常与 openUrl 失败都要有反馈）"""
+        try:
+            AppConfig.ensure_data_dir()
+        except OSError as e:
+            QMessageBox.warning(self, tr("错误"),
+                                tr("数据目录无法访问：{err}").format(err=e))
+            return
+        if not QDesktopServices.openUrl(
+                QUrl.fromLocalFile(str(AppConfig.DATA_DIR))):
+            QMessageBox.warning(self, tr("错误"), tr("无法打开数据目录"))
 
     def _open_license_dialog(self) -> None:
         """打开「开源许可」面板（延迟导入：设置页打开路径不必加载许可全文）"""

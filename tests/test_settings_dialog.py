@@ -148,6 +148,25 @@ class SettingsDialogTest(unittest.TestCase):
     def tearDown(self):
         i18n.set_lang("zh")
 
+    def test_open_data_dir_mkdir_failure_shows_error(self):
+        """D-2：数据目录创建失败（权限/磁盘）给错误框，不裸抛"""
+        from unittest.mock import patch
+        with patch.object(AppConfig, "ensure_data_dir",
+                          side_effect=OSError("只读磁盘")), \
+                patch("app.views.settings_dialog.QMessageBox.warning") as warn:
+            self.dlg._open_data_dir()
+        warn.assert_called_once()
+        self.assertIn("只读磁盘", warn.call_args[0][2])
+
+    def test_open_data_dir_openurl_failure_shows_error(self):
+        """D-2：openUrl 失败（桌面环境无法打开目录）同样有反馈"""
+        from unittest.mock import patch
+        from PySide6.QtGui import QDesktopServices
+        with patch.object(QDesktopServices, "openUrl", return_value=False), \
+                patch("app.views.settings_dialog.QMessageBox.warning") as warn:
+            self.dlg._open_data_dir()
+        warn.assert_called_once()
+
     def test_sync_from_prefs(self):
         self.dlg.sync_from_prefs("dark", "en", "choco", False, True)
         self.assertEqual(self.dlg._theme_seg.value(), "dark")

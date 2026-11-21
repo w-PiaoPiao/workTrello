@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import uuid
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
@@ -578,6 +580,10 @@ class CardDialog(QDialog):
         self.reapply_theme()
         AppTheme.register(self.reapply_theme)
 
+        # D-3 脏检查基线：初始表单指纹在全部控件就位后记录——拒绝路径
+        # （Esc/X/取消）有差异弹确认，Esc 不再静默丢弃整份清单与长备注
+        self._initial_fingerprint = self._form_fingerprint()
+
     # ── 主题 ──────────────────────────────────────────────
 
     def reapply_theme(self) -> None:
@@ -667,10 +673,34 @@ class CardDialog(QDialog):
         return (max(AppConfig.CARD_DIALOG_MIN_WIDTH, w),
                 max(AppConfig.CARD_DIALOG_MIN_HEIGHT, h))
 
+    def _form_fingerprint(self) -> str:
+        """当前表单内容的指纹（脏检查用；result_card 纯读无副作用）"""
+        try:
+            return json.dumps(self.result_card(), sort_keys=True,
+                              ensure_ascii=False)
+        except (TypeError, ValueError):
+            return ""
+
+    def _has_unsaved_changes(self) -> bool:
+        return self._form_fingerprint() != self._initial_fingerprint
+
     def done(self, result: int) -> None:
-        """关闭/确定/取消统一出口：记住当前尺寸（X 关闭走 closeEvent → reject）"""
+        """关闭/确定/取消统一出口：记住当前尺寸（X 关闭走 closeEvent → reject）
+
+        D-3：拒绝路径先过脏检查——Esc 是高频键，整份清单/长备注被静默
+        丢弃且不入撤销栈、无从恢复；有改动弹确认，无改动（打开即关）
+        不打扰。
+        """
         AppConfig.save_card_dialog_size(self.size())
         if result != QDialog.Accepted:
+            if self._has_unsaved_changes():
+                box = QMessageBox(
+                    QMessageBox.Question, tr("放弃更改？"),
+                    tr("有未保存的修改，确定丢弃吗？"),
+                    QMessageBox.Yes | QMessageBox.No, self)
+                box.setDefaultButton(QMessageBox.No)
+                if box.exec() != QMessageBox.Yes:
+                    return    # 反悔：留在对话框继续编辑
             # 取消/关闭：本轮粘贴的临时 PNG 无人认领（保存路径由控制器
             # 复制入库并删源），留在临时目录会随"粘贴+取消"反复累积
             for att in self._attachments:

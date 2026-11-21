@@ -53,6 +53,21 @@ class MarkdownLiteTest(unittest.TestCase):
         self.assertNotIn('onmouseover="alert', html)
         self.assertIn("&quot;", html)
 
+    def test_link_protocol_whitelist(self):
+        """E-01：行内链接仅放行 http(s)，其余协议剥壳留纯文本
+
+        与 CSV 公式注入防护同强度：javascript:/file: 等不许进入渲染
+        结果——当前 QLabel 无点击面，白名单防的是将来一行 openExternalLinks。
+        """
+        html = render_markdown(
+            "[点我](javascript:doEvil) [文件](file:///etc/passwd) "
+            "[好链](https://ok.example.com)")
+        self.assertNotIn('<a href="javascript', html)
+        self.assertNotIn('<a href="file:', html)
+        self.assertIn("点我", html)          # 文字保留、链接壳剥掉
+        self.assertIn("文件", html)
+        self.assertIn('<a href="https://ok.example.com">好链</a>', html)
+
     def test_unclosed_brackets_are_linear(self):
         """未闭合 [a](b 反复出现曾触发平方级回溯（50KB 近 10s）"""
         import time
