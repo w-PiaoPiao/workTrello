@@ -188,8 +188,13 @@ class ControllerFeatureTest(unittest.TestCase):
         board = self.c._store.load()
         m1 = board.lists[0].cards[0]
         self.c._on_card_move(m1.id, board.lists[0].id, 0)
-        self.c._on_language_changed("en")
-        self.c._on_language_changed("zh")
+        try:
+            self.c._on_language_changed("en")
+            self.c._on_language_changed("zh")
+        finally:
+            # 撤销 save_language 的落盘：test_i18n 的"无记录时按系统语言
+            # 探测"以注册表无 app/language 为前提，模块间共享进程状态
+            AppConfig.settings().remove(AppConfig.KEY_LANGUAGE)
         self.assertTrue(self.c._redo_stack, "切语言不应清空重做栈")
         self.c._on_redo_requested(False)
         board = self.c._store.load()
@@ -1923,7 +1928,10 @@ class CardDialogRoundTripTest(unittest.TestCase):
         self.assertEqual(lst.cards[0].notes, "备注正文")
 
     def test_cancel_dialog_keeps_card_untouched(self):
-        """取消（含 X 关闭）不落任何改动"""
+        """取消（含 X 关闭）不落任何改动
+
+        D-3 后有改动的拒绝路径先弹确认：选「丢弃」照常关、卡片不动。
+        """
         self._reset()
         lst = self._list()
         card = Card(title="原标题", notes="原备注")
@@ -1933,7 +1941,14 @@ class CardDialogRoundTripTest(unittest.TestCase):
         def act(dlg: CardDialog) -> None:
             dlg._title_edit.setText("改了但不保存")
             dlg._notes_edit.setPlainText("改了但不保存")
-            dlg.reject()
+            # 脏确认框选「丢弃」：真弹 exec 在离屏下永不返回。
+            # Yes/No 必须补成真常量——done 里与 MagicMock.Yes 比较永不相等
+            # 会静默走"保留打开"分支，对话框关不上、exec 挂死
+            with patch("app.views.card_dialog.QMessageBox") as box_cls:
+                box_cls.return_value.exec.return_value = QMessageBox.Yes
+                box_cls.Yes = QMessageBox.Yes
+                box_cls.No = QMessageBox.No
+                dlg.reject()
 
         self._drive(act)
         self.c._on_card_edit(lst.id, card.id)

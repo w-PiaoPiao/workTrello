@@ -212,7 +212,7 @@ bash tools/build.sh
 ## 测试
 
 ```bash
-python -m unittest discover -s tests -t .   # 全量（约 930 项，需离屏环境）
+python -m unittest discover -s tests -t .   # 全量（约 970 项，需离屏环境）
 python tests/test_board.py                  # 数据层单元测试
 python smoke_test.py                        # 离屏渲染冒烟测试（生成 smoke_*.png 截图）
 ```

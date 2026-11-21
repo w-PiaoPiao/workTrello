@@ -57,7 +57,10 @@ class DirtyCheckTest(unittest.TestCase):
         dlg._title_edit.setText("改过的题")
         with patch("app.views.card_dialog.QMessageBox") as box_cls, \
                 patch.object(QDialog, "done") as base_done:
+            # Yes/No 补真常量：done 里与 MagicMock.Yes 比较永不相等
             box_cls.return_value.exec.return_value = QMessageBox.No
+            box_cls.Yes = QMessageBox.Yes
+            box_cls.No = QMessageBox.No
             dlg.done(QDialog.Rejected)
         box_cls.assert_called_once()
         base_done.assert_not_called()   # No → 短路，对话框未关
