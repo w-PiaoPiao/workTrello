@@ -188,7 +188,7 @@ class AppConfig:
 
     # 应用信息
     APP_NAME = _APP_NAME
-    APP_VERSION = "1.0.0"
+    APP_VERSION = "1.0.6"
     APP_ORG = "Personal"
 
     @classmethod
