@@ -887,15 +887,15 @@ class ControllerFeatureTest(unittest.TestCase):
         small = Path(tempfile.mkdtemp()) / "small.txt"
         small.write_text("正常内容", encoding="utf-8")
         self.assertEqual(
-            AppController._import_text(types.SimpleNamespace(), str(small)),
-            "正常内容")
+            AppController._import_text(AppController, str(small)),
+            "正常内容")   # self 仅用于类常量，传类本身即可
         big = Path(tempfile.mkdtemp()) / "big.json"
         big.write_text("", encoding="utf-8")
         with patch.object(Path, "stat") as st:
             st.return_value = types.SimpleNamespace(
                 st_size=65 * 1024 * 1024)
             with self.assertRaises(ValueError):
-                AppController._import_text(types.SimpleNamespace(), str(big))
+                AppController._import_text(AppController, str(big))
 
     def test_import_backup_activate_failure_rolls_back_current(self):
         """B-3：备份导入激活失败时回滚 current_id（防索引与 store 脱钩）"""
