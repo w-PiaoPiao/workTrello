@@ -10,6 +10,7 @@ import os
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
 os.environ["PET_BOARD_DATA_DIR"] = tempfile.mkdtemp()
@@ -291,6 +292,54 @@ class UnreadableStartupTest(unittest.TestCase):
             [("unreadable", "pd"), ("corrupted", "pd2")])
         h._load_data()
         self.assertEqual(calls["mark_dirty"], 1)
+
+
+class QuarantineCountTest(unittest.TestCase):
+    """E-03：损坏板文件被隔离出列时计数，启动后控制器据此提示；
+    E-09：重命名的文件同步失败以返回值标记（调用方标脏自愈）"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.data_dir = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_corrupt_orphan_counted_during_absorb(self):
+        """孤儿收编遇损坏文件：不进索引、quarantined_boards 计数"""
+        ws = Workspace(self.data_dir)
+        ws.load()
+        good = ws.create_board("好板")
+        # 一块合法孤儿 + 一块损坏孤儿
+        orphan = self.data_dir / BOARDS_DIR_NAME / (uuid.uuid4().hex + ".json")
+        orphan.write_text(json.dumps(
+            {"id": orphan.stem, "name": "孤儿", "lists": []}),
+            encoding="utf-8")
+        corrupt = self.data_dir / BOARDS_DIR_NAME / (uuid.uuid4().hex + ".json")
+        corrupt.write_bytes(b"\x80\x81 broken \xff")
+
+        ws2 = Workspace(self.data_dir)
+        ws2.load()
+        self.assertEqual(ws2.quarantined_boards, 1)
+        self.assertIsNotNone(ws2.meta(good.id))
+        self.assertIsNotNone(ws2.meta(orphan.stem))   # 合法孤儿照常收编
+        self.assertIsNone(ws2.meta(corrupt.stem))
+        self.assertTrue(list(self.data_dir.glob("*.json.corrupt.*.bak")) or
+                        list((self.data_dir / BOARDS_DIR_NAME)
+                             .glob("*.json.corrupt.*.bak")))
+
+    def test_rename_file_sync_failure_returns_false(self):
+        """E-09：重命名的文件同步失败返回 False（调用方标脏自愈）"""
+        from unittest import mock
+        ws = Workspace(self.data_dir)
+        ws.load()
+        ws.create_board("改名板")
+        bid = ws.current_id
+        with mock.patch("app.models.workspace.atomic_write_json",
+                        side_effect=OSError("磁盘满")):
+            ok = ws.rename_board(bid, "新名字")
+        self.assertFalse(ok)
+        self.assertEqual(ws.meta(bid).name, "新名字")   # 索引侧已改名
 
 
 if __name__ == "__main__":

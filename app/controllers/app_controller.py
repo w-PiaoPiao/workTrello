@@ -194,6 +194,13 @@ class AppController(QObject):
         # 启动检查只走上方 2s 延迟那一次（等窗口就绪，避免提醒弹在
         # 启动瞬间）；此处不再立即调用，否则重复全板扫描且提醒抢跑
         self._load_data()
+        # 索引失联重建/孤儿收编时损坏板被隔离出列（E-03）：给一次可见
+        # 提示，隔离副本在数据目录里可人工救回
+        quarantined = self._workspace.quarantined_boards
+        if quarantined:
+            QTimer.singleShot(0, lambda: self._tray.show_notification(
+                tr("{n} 块看板文件损坏已隔离，数据目录留有副本").format(
+                    n=quarantined)))
 
         # ── 连接信号 ──────────────────────────────────────
         self._connect_signals()
@@ -695,9 +702,14 @@ class AppController(QObject):
             self._store.flush()
         except json_io.StoreError:
             pass   # 落盘失败不阻断改名（索引已改，下次保存自然补上）
-        self._workspace.rename_board(meta.id, name)
+        file_synced = self._workspace.rename_board(meta.id, name)
         board = self._store.load()
         board.name = name
+        if not file_synced:
+            # E-09 自愈：磁盘 name 与索引脱节（文件同步失败），标脏让下次
+            # 看板数据落盘全量重写补上 name——否则重命名只活到下次重启前
+            self._store.mark_dirty()
+            self._schedule_save()
         self._apply_board_to_ui()
         self._notify(tr("看板已重命名"))
 
@@ -770,6 +782,22 @@ class AppController(QObject):
         self._refresh_calendar()
         self._notify(tr("已删除看板"))
 
+    # 导入文件大小上限（E-10）：误选数 GB 文件全量载入会拖死 UI 线程甚至
+    # OOM。看板/清单文本千卡量级 <1MB，64MB 已是数量级冗余
+    IMPORT_SIZE_LIMIT = 64 * 1024 * 1024
+
+    def _import_text(self, path: str, *, sig: bool = False) -> str:
+        """读导入文件文本，带大小预检（E-10）；超限抛 ValueError"""
+        p = Path(path)
+        try:
+            size = p.stat().st_size
+        except OSError:
+            raise   # 交给调用方的 OSError 收口给用户提示
+        if size > self.IMPORT_SIZE_LIMIT:
+            raise ValueError(tr("文件过大（{mb} MB），导入上限 64 MB").format(
+                mb=size // (1024 * 1024)))
+        return p.read_text(encoding="utf-8-sig" if sig else "utf-8")
+
     def _on_import_trello(self) -> None:
         """导入外部看板 JSON（Trello 导出格式）→ 生成新看板"""
         path, _ = QFileDialog.getOpenFileName(
@@ -778,10 +806,10 @@ class AppController(QObject):
         if not path:
             return
         try:
-            doc = json.loads(Path(path).read_text(encoding="utf-8"))
+            doc = json.loads(self._import_text(path))
             board, report = board_from_trello(doc)
         except (OSError, json.JSONDecodeError, ValueError,
-                AttributeError, TypeError, RecursionError) as e:
+                AttributeError, TypeError, RecursionError, MemoryError) as e:
             self._show_error(tr("导入失败：{err}").format(err=e))
             return
         self._activate_imported_board(board, Path(path).stem, report)
@@ -794,10 +822,11 @@ class AppController(QObject):
         if not path:
             return
         try:
-            text = Path(path).read_text(encoding="utf-8")
+            text = self._import_text(path)
             board, report = board_from_markdown(text,
                                                 fallback_title=Path(path).stem)
-        except (OSError, ValueError, AttributeError, TypeError) as e:
+        except (OSError, ValueError, AttributeError, TypeError,
+                MemoryError) as e:
             self._show_error(tr("导入失败：{err}").format(err=e))
             return
         self._activate_imported_board(board, Path(path).stem, report)
@@ -810,9 +839,10 @@ class AppController(QObject):
             return
         try:
             # utf-8-sig 兼容带 BOM 的导出文件（与 _write_export_csv 对齐）
-            text = Path(path).read_text(encoding="utf-8-sig")
+            text = self._import_text(path, sig=True)
             board, report = board_from_csv(text, fallback_title=Path(path).stem)
-        except (OSError, ValueError, AttributeError, TypeError, csv.Error) as e:
+        except (OSError, ValueError, AttributeError, TypeError, csv.Error,
+                MemoryError) as e:
             # csv.Error：超长字段（>128KB）/NUL 字节等结构性畸形，ValueError
             # 接不住它（继承自 Exception）——不捕获会让导入直接炸出全局钩子
             self._show_error(tr("导入失败：{err}").format(err=e))
@@ -3456,12 +3486,13 @@ class AppController(QObject):
         if not path:
             return
         try:
-            doc = json.loads(Path(path).read_text(encoding="utf-8"))
+            doc = json.loads(self._import_text(path))
             if not isinstance(doc, dict):
                 raise ValueError(tr("备份文件不是有效的数据结构"))
             new_board = Board.from_dict(doc)
         except (OSError, ValueError, AttributeError, TypeError,
-                RecursionError) as e:   # RecursionError：深嵌套恶意 JSON
+                RecursionError, MemoryError) as e:
+            # RecursionError：深嵌套恶意 JSON；MemoryError：超大文件兜底（E-10）
             self._show_error(tr("备份文件无法读取：{err}").format(err=e))
             return
         name = new_board.name or Path(path).stem

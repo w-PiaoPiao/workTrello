@@ -188,6 +188,24 @@ class TrelloImportTest(unittest.TestCase):
         board, _ = board_from_trello(doc)
         self.assertIsNone(board.lists[0].cards[0].due_date)
 
+    def test_dirty_and_duplicate_ids_are_sanitized(self):
+        """E-05：透传 id 过白名单归一，重复 card id 去重
+
+        Card.id 会拼进附件目录，路径分隔符/点号必须洗掉；病态导出的
+        重复 id 会让 find_card 与附件目录错位。
+        """
+        doc = self._doc()
+        doc["cards"][0]["id"] = "../../evil"
+        doc["cards"][1]["id"] = doc["cards"][0]["id"]   # 重复 + 非法
+        board, _ = board_from_trello(doc)
+        cards = [c for l in board.lists for c in l.cards]
+        ids = [c.id for c in cards]
+        # 白名单 [A-Za-z0-9_-]{1,64}：路径分隔符/点号必须被洗掉
+        self.assertTrue(all(
+            __import__("re").fullmatch(r"[A-Za-z0-9_-]{1,64}", i)
+            for i in ids), f"id 必须是白名单形式，实际：{ids}")
+        self.assertEqual(len(ids), len(set(ids)), "重复 id 必须去重")
+
 
 class MarkdownImportTest(unittest.TestCase):
     def test_app_export_format_roundtrip(self):
@@ -277,6 +295,21 @@ class ExportMarksRoundTripTest(unittest.TestCase):
         parent = board.lists[0].cards[0]
         self.assertEqual(parent.checklist,
                          [{"text": "子任务", "done": False}])
+
+    def test_semantically_invalid_due_not_stored(self):
+        """E-06：📅 标记形状合法但语义非法（2026-13-45）不当有效日期"""
+        md = "## 列表\n- [ ] 任务 📅 2026-13-45\n"
+        board, _ = board_from_markdown(md)
+        self.assertIsNone(board.lists[0].cards[0].due_date)
+        md2 = "## 列表\n- [ ] 任务 📅 2026-11-22\n"
+        board2, _ = board_from_markdown(md2)
+        self.assertEqual(board2.lists[0].cards[0].due_date, "2026-11-22")
+
+    def test_pomodoro_mark_clamped(self):
+        """E-06：🍅×N 无上限标记被夹紧（99 口径），不再任意大落库"""
+        md = "## 列表\n- [ ] 任务 🍅×99999\n"
+        board, _ = board_from_markdown(md)
+        self.assertEqual(board.lists[0].cards[0].pomodoros, 99)
 
 
 if __name__ == "__main__":

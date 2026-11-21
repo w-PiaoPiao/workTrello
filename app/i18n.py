@@ -499,6 +499,11 @@ _zh_en: dict[str, str] = {
         "board.",
     "已损坏并隔离": "was corrupted and quarantined",
     "暂时无法读取": "can't be read right now",
+    "{n} 块看板文件损坏已隔离，数据目录留有副本":
+        "{n} board file(s) were corrupted and quarantined — "
+        "copies are kept in the data folder",
+    "文件过大（{mb} MB），导入上限 64 MB":
+        "File is too large ({mb} MB) — import limit is 64 MB",
     "原文件已自动隔离备份。\n": "The original file has been quarantined.\n",
     "原文件仍保留在原位置。\n": "The original file is kept in place.\n",
     "看板数据为空": "Board Data Is Empty",

@@ -270,6 +270,15 @@ class Card:
     _due_cache: tuple[str, int, int | None] | None = field(
         default=None, repr=False, compare=False)
 
+    def __post_init__(self):
+        # 番茄数夹紧（E-06）：手改导出文件可写出任意大数字。99 上限 =
+        # 41 小时纯专注，超出必是数据事故；构造期收口使 from_dict 与
+        # 三条导入路径（含不经 from_dict 的直构）同口径
+        if self.pomodoros < 0:
+            self.pomodoros = 0
+        elif self.pomodoros > 99:
+            self.pomodoros = 99
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -329,7 +338,10 @@ class Card:
             done=_as_bool(data.get("done", False)),
             created_at=_clean_str(data.get("created_at")) or _now_iso(),
             starred=_as_bool(data.get("starred", False)),
-            pomodoros=max(0, pomodoros),
+            # 夹紧（E-06）：手改的导出文件可写出任意大数字，两位数口径
+            # 上限 99（= 41 小时纯专注，超出必是数据事故）——与
+            # repeat_interval/priority 的 min/max 同范式，所有读盘路径收口
+            pomodoros=max(0, min(99, pomodoros)),
             done_at=_clean_str(done_at).strip() or None,
             archived=_as_bool(data.get("archived", False)),
             repeat=repeat,

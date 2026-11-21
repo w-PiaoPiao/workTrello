@@ -79,6 +79,9 @@ class Workspace:
         # 的幽灵条目，静默吞掉等于"不静默丢写"的承诺只盖了看板文件——
         # 由控制器接同一通知通道提示用户；启动端另有失效条目剔除兜底
         self.save_failed_cb = None
+        # 本次加载中因损坏被隔离、无法进索引的板文件数（E-03）：静默出列
+        # 等于看板从切换器无痕消失，控制器启动后据此提示
+        self.quarantined_boards = 0
 
     # ── 路径 ──────────────────────────────────────────────
 
@@ -225,7 +228,10 @@ class Workspace:
                 continue
             doc = load_json_doc(path)
             if not doc:
-                continue   # 损坏文件已被 load_json_doc 隔离，跳过
+                # 损坏文件已被 load_json_doc 隔离（E-03）：计数供启动提示，
+                # 板不在切换器里但隔离副本在盘上可救
+                self.quarantined_boards += 1
+                continue
             try:
                 mtime = path.stat().st_mtime
             except OSError:
@@ -246,6 +252,7 @@ class Workspace:
                 continue
             doc = load_json_doc(path)
             if not doc:
+                self.quarantined_boards += 1   # E-03：损坏孤儿也计入提示
                 continue
             self.boards.append(BoardMeta(
                 id=bid,
@@ -303,13 +310,19 @@ class Workspace:
         return meta
 
     def rename_board(self, board_id: str, name: str) -> bool:
-        """重命名看板：索引与看板文件同步更新"""
+        """重命名看板：索引与看板文件同步更新
+
+        文件同步失败（E-09）时返回值标记为 False——磁盘上的 name 与
+        索引脱节，调用方据此外通知并 mark_dirty()，下次看板数据落盘
+        自愈（board 文件由 BoardStore 全量重写，name 一并补上）。
+        """
         meta = self._meta(board_id)
         if meta is None:
             return False
         meta.name = name.strip()
         # 看板文件里的 name 字段一并改掉（文件可能尚未有 id/name 旧结构，
         # 读回再写最稳）；文件缺失时只改索引，下次 flush 自然补上
+        file_synced = True
         path = self.board_path(board_id)
         if path.exists():
             from app.models.json_io import load_json_doc as _load
@@ -320,8 +333,9 @@ class Workspace:
                     atomic_write_json(path, doc, indent=None)
                 except Exception as e:   # noqa: BLE001 — 改名失败不致命
                     logger.warning("重命名看板文件同步失败: %s", e)
+                    file_synced = False
         self._save()
-        return True
+        return file_synced
 
     def delete_board(self, board_id: str) -> bool:
         """删除看板（文件 + 同族备份）；至少保留一块看板

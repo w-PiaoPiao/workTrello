@@ -1042,6 +1042,9 @@ class CardWidget(QFrame):
         title = QLabel(card.title)
         title.setObjectName("cardTitle")
         title.setWordWrap(True)
+        # 标题来自速记/Trello/MD/CSV 导入直通，以 "<" 开头时 QLabel 默认
+        # 按富文本渲染：吞字/加粗/伪链接（E-04，与备注/清单同一防线）
+        title.setTextFormat(Qt.PlainText)
         self._title_label = title
         self._style_title()
         root.addWidget(title)
@@ -1736,6 +1739,8 @@ class _TitleLabel(QLabel):
 
     def __init__(self, text: str, header: "ListHeader", parent=None):
         super().__init__(text, parent)
+        # 列名同样可含 "<"（导入直通）：按纯文本渲染（E-04）
+        self.setTextFormat(Qt.PlainText)
         self._header = header
 
     def mouseDoubleClickEvent(self, event) -> None:

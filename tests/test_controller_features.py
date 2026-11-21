@@ -881,6 +881,22 @@ class ControllerFeatureTest(unittest.TestCase):
             self.c._on_calendar_due_change(card_id, "2026-01-11")
         notify2.assert_called_once()
 
+    def test_import_text_size_limit(self):
+        """E-10：导入文件超 64MB 上限拒绝载入（误选数 GB 文件不拖死 UI）"""
+        import types
+        small = Path(tempfile.mkdtemp()) / "small.txt"
+        small.write_text("正常内容", encoding="utf-8")
+        self.assertEqual(
+            AppController._import_text(types.SimpleNamespace(), str(small)),
+            "正常内容")
+        big = Path(tempfile.mkdtemp()) / "big.json"
+        big.write_text("", encoding="utf-8")
+        with patch.object(Path, "stat") as st:
+            st.return_value = types.SimpleNamespace(
+                st_size=65 * 1024 * 1024)
+            with self.assertRaises(ValueError):
+                AppController._import_text(types.SimpleNamespace(), str(big))
+
     def test_import_backup_activate_failure_rolls_back_current(self):
         """B-3：备份导入激活失败时回滚 current_id（防索引与 store 脱钩）"""
         self._reset()

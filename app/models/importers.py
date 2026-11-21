@@ -25,6 +25,7 @@ from datetime import date as _date, datetime
 from app.i18n import tr
 from app.config import AppConfig
 from app.models.board import Board, BoardList, Card, normalize_checklist
+from app.models.board import _new_id   # 导入端 id 去重（见 board_from_trello）
 
 # Trello 标签色 → 本应用色板 key（超集颜色就近归并）
 _TRELLO_COLOR_MAP = {
@@ -174,6 +175,16 @@ def board_from_trello(doc: dict) -> tuple[Board, str]:
 
     board = Board(lists=[lists_by_id[lid] for lid in order if lid in lists_by_id],
                   name=board_name)
+    # E-05：Trello 的卡/列 id 透传绕过 _clean_id 白名单（Card.id 会拼进
+    # 附件目录，路径分隔符必须拒绝）——导入结果统一过一遍 from_dict 归一，
+    # 脏 id 洗成新 id（导入场景无既有引用，安全）；重复 id 再去重
+    board = Board.from_dict(board.to_dict())
+    seen_ids: set[str] = set()
+    for lst in board.lists:
+        for card in lst.cards:
+            if card.id in seen_ids:
+                card.id = _new_id()
+            seen_ids.add(card.id)
     total = sum(len(l.cards) for l in board.lists)
     archived = sum(1 for l in board.lists for c in l.cards if c.archived)
     report = f"列表 {len(board.lists)} · 卡片 {total}（含归档 {archived}）"
@@ -429,7 +440,15 @@ def _strip_export_marks(title: str) -> tuple[str, dict]:
             continue
         m = _RE_MARK_DUE.search(out)
         if m:
-            fields["due_date"] = m.group(1)
+            raw = m.group(1)
+            # 形状 + 语义双校验（E-06，对齐 CSV 路径）：2026-13-45 形状
+            # 合法但不是真日期，不当有效截止日
+            try:
+                _date.fromisoformat(raw)
+            except ValueError:
+                pass
+            else:
+                fields["due_date"] = raw
             out = out[:m.start()]
             continue
         m = _RE_MARK_POMO.search(out)
