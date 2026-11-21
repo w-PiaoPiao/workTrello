@@ -99,6 +99,9 @@ class AppController(QObject):
 
         # ── 数据层（多看板工作区 + 当前看板存储）──────────
         self._workspace = Workspace(AppConfig.DATA_DIR)
+        # 索引落盘失败走与看板数据同一通知通道（E-02）：delete 后索引写
+        # 失败若静默，重启会出现幽灵条目（启动端另有剔除兜底）
+        self._workspace.save_failed_cb = self._on_workspace_save_failed
         self._workspace.load()
         self._store = BoardStore(
             self._workspace.board_path(self._workspace.current_id))
@@ -535,6 +538,22 @@ class AppController(QObject):
         """退避到点：仅当仍是本轮失败（期间没有成功/新失败）才重试"""
         if seq == self._save_retry_seq:
             self._flush_store()
+
+    def _on_workspace_save_failed(self, err: Exception) -> None:
+        """工作区索引落盘失败（E-02）：走同一用户可见通知，不重试
+
+        索引只在增删/切换看板时写，下次这类操作会自然重写；重试反而
+        会在失败现场反复写索引。看板数据本身的失败仍走 _on_save_failed
+        （带退避重试）。
+        """
+        logger.error("工作区索引保存失败: %s", err)
+        now = time.monotonic()
+        last = self._last_save_error_notify
+        if last is not None and now - last < 30:
+            return               # 气泡 30s 去重（与看板数据失败共用）
+        self._last_save_error_notify = now
+        self._tray.show_notification(
+            tr("看板数据保存失败，请检查磁盘空间或文件权限"))
 
     # ── 多看板管理 ────────────────────────────────────────
 

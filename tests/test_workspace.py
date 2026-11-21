@@ -170,6 +170,50 @@ class DeleteFailureTest(unittest.TestCase):
         self.assertFalse(path.exists())
 
 
+class GhostEntryPurgeTest(unittest.TestCase):
+    """E-02：delete 后索引写失败 → 重启不得出现幽灵空板；失败要通知"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.data_dir = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_save_failure_notifies_callback(self):
+        """索引落盘失败回调 save_failed_cb（与看板数据同一通知通道）"""
+        from unittest import mock
+        ws = Workspace(self.data_dir)
+        ws.load()
+        seen = []
+        ws.save_failed_cb = lambda e: seen.append(e)
+        with mock.patch("app.models.workspace.atomic_write_json",
+                        side_effect=OSError("磁盘满")):
+            ws._save()   # 直接驱动索引写入（create_board 还含板文件写）
+        self.assertEqual(len(seen), 1)
+        self.assertIsInstance(seen[0], OSError)
+
+    def test_ghost_entry_purged_on_reload(self):
+        """索引指向已删除的板文件：重启加载时剔除该条目，不复活空板"""
+        ws = Workspace(self.data_dir)
+        ws.load()
+        second = ws.create_board("会被删的板")
+        first = ws.boards[0].id
+        self.assertTrue(ws.delete_board(second.id))
+        # 模拟"delete 后 _save 失败"：手改索引文件把已删板加回去
+        doc = json.loads((self.data_dir / WORKSPACE_FILE).read_text("utf-8"))
+        doc["boards"].append(second.to_dict())
+        (self.data_dir / WORKSPACE_FILE).write_text(
+            json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+
+        ws2 = Workspace(self.data_dir)
+        ws2.load()
+        self.assertIsNone(ws2.meta(second.id),
+                          "幽灵条目必须被剔除，否则空板复活")
+        self.assertIsNotNone(ws2.meta(first))
+        self.assertEqual(ws2.current_id, first)
+
+
 class CorruptLegacyMigrationTest(unittest.TestCase):
     """回归：损坏的旧看板文件不得被静默迁移成空板"""
 

@@ -75,6 +75,10 @@ class Workspace:
         self._data_dir = data_dir
         self.boards: list[BoardMeta] = []
         self.current_id: str = ""
+        # 索引落盘失败回调（E-02）：delete 后索引写失败会留下指向已删板
+        # 的幽灵条目，静默吞掉等于"不静默丢写"的承诺只盖了看板文件——
+        # 由控制器接同一通知通道提示用户；启动端另有失效条目剔除兜底
+        self.save_failed_cb = None
 
     # ── 路径 ──────────────────────────────────────────────
 
@@ -116,6 +120,16 @@ class Workspace:
             self._archive_workspace_index()
 
         self._ensure_dirs()
+        if metas:
+            # 剔除指向不存在板文件的条目（E-02 兜底）：上次会话 delete 后
+            # 索引写失败会留下幽灵条目——文件已不在，保留它会在下次 flush
+            # 以空板"复活"已删看板
+            alive = [m for m in metas if self.board_path(m.id).exists()]
+            dropped = len(metas) - len(alive)
+            if dropped:
+                logger.warning("工作区索引含 %d 条指向不存在文件的条目，已剔除",
+                               dropped)
+            metas = alive
         if metas:
             self.boards = metas
             current = str(doc.get("current", "") or "")
@@ -370,6 +384,11 @@ class Workspace:
             atomic_write_json(self.workspace_path, doc, indent=None)
         except Exception as e:   # noqa: BLE001 — 索引写失败不阻断会话
             logger.error("工作区索引保存失败: %s", e)
+            if self.save_failed_cb is not None:
+                try:
+                    self.save_failed_cb(e)
+                except Exception:   # noqa: BLE001 — 通知通道自身不可再抛
+                    logger.exception("workspace 落盘失败通知回调异常")
 
 
 def _new_board_id() -> str:
