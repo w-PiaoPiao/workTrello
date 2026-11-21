@@ -74,7 +74,9 @@ def safe(fn, label):
 def grab_to(path: str) -> None:
     window.repaint()
     pix = window.grab()
-    pix.save(path)
+    if not pix.save(path):
+        # F-03：save 静默失败（磁盘满/路径不可写）不得算作截图成功
+        raise OSError(f"save failed: {path}")
     print(f"[smoke] {Path(path).name}: saved={pix.width()}x{pix.height()}")
 
 def take_dark_en() -> None:
@@ -84,7 +86,10 @@ def take_dark_en() -> None:
     QTimer.singleShot(300, take_board_en)
 
 def take_board_en() -> None:
-    grab_to(str(Path(__file__).parent / "smoke_board_en.png"))
+    # F-03：en 阶段同样包 safe——裸抛会一路跑进硬超时，failures 为空、
+    # 退出码 0，en 链任何异常都成了"假绿"
+    safe(lambda: grab_to(str(Path(__file__).parent / "smoke_board_en.png")),
+         "board_en")
     QTimer.singleShot(200, take_settings_en)
 
 def take_settings_en() -> None:
@@ -97,7 +102,9 @@ def take_settings_en() -> None:
         dlg = controller._settings_dialog
         dlg.retexts()
         dlg.repaint()
-        dlg.grab().save(str(Path(__file__).parent / "smoke_settings_en.png"))
+        if not dlg.grab().save(
+                str(Path(__file__).parent / "smoke_settings_en.png")):
+            raise OSError("save failed: smoke_settings_en.png")
         print("[smoke] smoke_settings_en.png saved")
         dlg.close()
     except Exception:
@@ -143,7 +150,8 @@ QTimer.singleShot(12000, lambda: (print("[smoke] TIMEOUT"), app.quit()))
 app.exec()
 
 print("[smoke] FAILURES:", failures if failures else "none")
-pngs = ["smoke_pet.png", "smoke_board.png", "smoke_board_dark.png"]
+pngs = ["smoke_pet.png", "smoke_board.png", "smoke_board_dark.png",
+        "smoke_board_en.png", "smoke_settings_en.png"]   # F-03：en 两图入门槛
 missing = [p for p in pngs if not (Path(__file__).parent / p).exists()]
 print("[smoke] missing:", missing if missing else "none")
 sys.exit(0 if not failures and not missing else 1)

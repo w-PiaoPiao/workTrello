@@ -234,12 +234,14 @@ class SettingsDialog(QDialog):
         self._ui_skin_group.setExclusive(True)
         self._ui_skin_buttons: dict[str, QPushButton] = {}
         for key, spec in AppConfig.UI_SKINS.items():
-            btn = QPushButton(spec.get("name", key))
+            # 显示名统一走 skin_display（F-01）：直出 spec["name"] 会让
+            # 英文界面整排露中文，双语宣称失效
+            btn = QPushButton(skin_display(key))
             btn.setObjectName("skinBtn")
             btn.setCheckable(True)
             btn.setCursor(Qt.PointingHandCursor)
             btn.setIcon(_skin_swatch_icon(key))
-            btn.setToolTip(spec.get("name", key))
+            btn.setToolTip(skin_display(key))
             btn.clicked.connect(
                 lambda _=False, k=key: self.signal_ui_skin_selected.emit(k))
             self._ui_skin_group.addButton(btn)
@@ -534,10 +536,9 @@ class SettingsDialog(QDialog):
         self._ui_skin_row_hint.setText(
             tr("整套配色与造型（圆角 / 字重 / 徽章形态），深浅色在其之上生效"))
         for key, btn in self._ui_skin_buttons.items():
-            # 皮肤名是产品名词，不翻译：翻译后用户在两台机器上会看到
-            # 同一套皮肤的不同名字，反而更难确认"是不是同一个"
-            spec = AppConfig.UI_SKINS.get(key) or {}
-            btn.setText(spec.get("name", key))
+            # 与桌宠皮肤同一范式：显示名经 skin_display 随语言走
+            #（旧注释"产品名词不翻译"被 _SKIN_EN 已译桌宠名的事实推翻）
+            btn.setText(skin_display(key))
         self._sec_language.retexts(tr("语言 / Language"))
         self._t_lang.setText(tr("界面语言"))
         self._h_lang.setText(tr("切换后立即生效"))

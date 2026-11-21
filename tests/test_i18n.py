@@ -123,12 +123,33 @@ class TrTest(unittest.TestCase):
         i18n.set_lang("zh")
         self.assertEqual(i18n.skin_display("milk"), "奶糖")
 
-    def test_app_display_name_keeps_data_identity(self):
-        """数据身份 APP_NAME 恒为中文常量（数据目录定位），仅显示名随语言"""
+    def test_display_functions_follow_lang(self):
+        self.assertEqual(i18n.label_display("red"), "红色")
         i18n.set_lang("en")
-        self.assertEqual(i18n.app_display_name(), "Pet Board")
-        self.assertEqual(AppConfig.APP_NAME, "桌宠看板")
+        self.assertEqual(i18n.label_display("red"), "Red")
+        self.assertEqual(i18n.repeat_display("daily"), "Daily")
+        self.assertEqual(i18n.skin_display("milk"), "Milk")
+        self.assertEqual(i18n.priority_name(1), "High")
         i18n.set_lang("zh")
+        self.assertEqual(i18n.skin_display("milk"), "奶糖")
+
+    def test_ui_skin_names_have_entries_in_both_langs(self):
+        """F-01：UI_SKINS 每套皮肤的中英文名都有着落
+
+        英文界面下五枚皮肤按钮整排露中文即双语宣称失效；词条缺失时
+        skin_display 退 key——护栏先在词表层面挡住。
+        """
+        for key, spec in AppConfig.UI_SKINS.items():
+            zh_name = spec.get("name", "")
+            self.assertTrue(zh_name, f"UI_SKINS[{key}] 缺中文名")
+            self.assertEqual(i18n.skin_display(key), zh_name)
+            i18n.set_lang("en")
+            en_name = i18n.skin_display(key)
+            i18n.set_lang("zh")
+            self.assertNotEqual(en_name, key,
+                                f"UI_SKINS[{key}] 缺英文词条（退回了 key）")
+            self.assertFalse(any("\u4e00" <= ch <= "\u9fff" for ch in en_name),
+                             f"英文皮肤名仍含中文：{en_name}")
 
 
 class LanguagePrefTest(unittest.TestCase):

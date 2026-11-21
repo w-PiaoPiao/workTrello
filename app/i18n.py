@@ -57,7 +57,12 @@ _REPEAT_EN = {"daily": "Daily", "weekly": "Weekly", "weekdays": "Weekdays",
               "monthly": "Monthly", "yearly": "Yearly", "custom": "Custom"}
 _PRIORITY_EN = {1: "High", 2: "Medium", 3: "Low"}
 _SKIN_EN = {"milk": "Milk", "snow": "Snow", "choco": "Cocoa",
-            "midnight": "Midnight"}
+            "midnight": "Midnight",
+            # 视觉皮肤（UI_SKINS）：英文名与 config.py 注释里的产品名一致；
+            # 词条缺失会在英文界面下整排露中文（F-01）
+            "editorial": "Editorial", "warm": "Warm Paper",
+            "terminal": "Terminal", "brutal": "Neubrutalism",
+            "frosted": "Frosted"}
 
 
 def label_display(key: str) -> str:
@@ -80,9 +85,16 @@ def priority_name(priority: int) -> str:
 
 
 def skin_display(key: str) -> str:
-    """皮肤显示名（桌宠右键菜单 / 设置界面）"""
+    """皮肤显示名（桌宠右键菜单 / 设置界面；桌宠与视觉两族皮肤共用）"""
+    spec = AppConfig.UI_SKINS.get(key)
     if _lang == "en":
-        return _SKIN_EN.get(key, AppConfig.SKIN_NAMES.get(key, key))
+        en = _SKIN_EN.get(key)
+        if en is not None:
+            return en
+        # 新增皮肤漏词条时退 key（可读的拼音式 id），不露中文
+        return key if spec is None else key.replace("_", " ").title()
+    if spec is not None:
+        return spec.get("name", key)
     return AppConfig.SKIN_NAMES.get(key, key)
 
 
@@ -505,6 +517,8 @@ _zh_en: dict[str, str] = {
         "Board data file error ({detail}). Starting with the default board.",
     "看板数据保存失败，请检查磁盘空间或文件权限":
         "Failed to save board data — check disk space or file permissions",
+    "数据目录无法访问：{err}": "Data folder is inaccessible: {err}",
+    "无法打开数据目录": "Could not open the data folder",
     "应用已在运行，请查看系统托盘。":
         "The app is already running — check the system tray.",
     "数据目录不可写：{path}\n\n请把应用放到可写目录，"
@@ -677,6 +691,10 @@ _zh_en: dict[str, str] = {
     "已清除标签筛选": "Label filter cleared",
     "已按标签「{name}」筛选": "Filtered by label “{name}”",
     "已改为 {date} 截止": "Due date set to {date}",
+    "放弃更改？": "Discard changes?",
+    "有未保存的修改，确定丢弃吗？":
+        "You have unsaved changes. Discard them?",
+    "截止日期本来就是 {date}": "Due date is already {date}",
     # ── 快捷键速查 ──
     "快捷键": "Keyboard Shortcuts",
     "快捷键…": "Keyboard Shortcuts…",
