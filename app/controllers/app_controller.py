@@ -494,6 +494,7 @@ class AppController(QObject):
         except json_io.StoreError as e:
             # 这是生命周期最后一次落盘机会：异常逃出 aboutToQuit 槽只会
             # 被 Qt 吞进 stderr（打包版不可见）——失败必须留日志并尽力通知
+            # （托盘此时尚未隐藏，气泡可见）
             logger.error("退出时落盘失败: %s", e)
             self._tray.show_notification(
                 tr("看板数据保存失败，请检查磁盘空间或文件权限"))
@@ -501,6 +502,7 @@ class AppController(QObject):
             # 按旧引用集回收会删掉刚入库、只在内存里的附件
             return
         self._gc_orphan_attachments()   # 撤销窗口随会话结束，回收孤儿附件
+        self._tray.hide()   # 落盘收口成功后才摘托盘（B-1：先通知后隐藏）
 
     def _on_save_recovered(self) -> None:
         """落盘恢复成功（worker 线程经信号 queued 回主线程）：重置退避"""
@@ -1121,6 +1123,7 @@ class AppController(QObject):
             created.append(card)
         if not created:
             self._undo_stack.pop()   # 全失败：不留空撤销步
+            self._cancel_pending_undo()
             self._notify(tr("没有可添加的文件"))
             return
         if target.fund_watch:
@@ -1452,6 +1455,7 @@ class AppController(QObject):
             board.invalidate_index()
             if self._undo_stack:
                 self._undo_stack.pop()
+                self._cancel_pending_undo()
             return
         if target is None:
             target = board.lists[0]
@@ -1469,6 +1473,7 @@ class AppController(QObject):
             board.invalidate_index()
             if self._undo_stack:
                 self._undo_stack.pop()
+                self._cancel_pending_undo()
             return
         if target.fund_watch and moved.fund is None:
             moved.ensure_fund()   # 拖入资金监视泳道的普通卡自动补配置
@@ -1589,6 +1594,7 @@ class AppController(QObject):
             n += 1
         if n == 0:
             self._undo_stack.pop()   # 全是已星标：不留空撤销步
+            self._cancel_pending_undo()
             return
         self._after_data_change(
             tr("已加入今日 {n} 张卡片").format(n=n))
@@ -1610,6 +1616,7 @@ class AppController(QObject):
                 card.roll_repeat()
         if n == 0:
             self._undo_stack.pop()   # 空操作不留撤销快照
+            self._cancel_pending_undo()
             return
         self._after_data_change(tr("已更新 {n} 张卡片").format(n=n))
 
@@ -1631,6 +1638,7 @@ class AppController(QObject):
         target.cards[0:0] = moved
         if not moved:
             self._undo_stack.pop()
+            self._cancel_pending_undo()
             return
         if target.fund_watch:
             for card in moved:
@@ -1653,6 +1661,7 @@ class AppController(QObject):
                 n += 1
         if n == 0:
             self._undo_stack.pop()
+            self._cancel_pending_undo()
             return
         self._after_data_change(
             tr("已为 {n} 张卡片添加标签").format(n=n))
@@ -1669,6 +1678,7 @@ class AppController(QObject):
             self._pomo_stop()
         if n == 0:
             self._undo_stack.pop()
+            self._cancel_pending_undo()
             return
         self._after_data_change(
             tr("已删除 {n} 张卡片 · {hint}").format(
@@ -1689,6 +1699,7 @@ class AppController(QObject):
             self._pomo_stop()
         if n == 0:
             self._undo_stack.pop()
+            self._cancel_pending_undo()
             return
         self._after_data_change(tr("已归档 {n} 张卡片").format(n=n))
 
@@ -1723,6 +1734,7 @@ class AppController(QObject):
             self._pomo_stop()
         if n == 0:
             self._undo_stack.pop()
+            self._cancel_pending_undo()
             return
         self._after_data_change(
             tr("已归档 {n} 张已完成卡片").format(n=n))
@@ -2671,6 +2683,15 @@ class AppController(QObject):
         self._undo_stack.append(doc)
         self._pending_undo_doc = doc
 
+    def _cancel_pending_undo(self) -> None:
+        """空操作收场：撤销预告随快照一并作废（12 处 pop 站点统一收口）
+
+        不清的话，下一个恰好不先 _push_undo 的 _after_data_change 调用方
+        （语言切换是唯一）会把这份旧 pending 误判成"确有变化"，连带清空
+        重做栈 + 一次无意义落盘。
+        """
+        self._pending_undo_doc = None
+
     def _stop_pomo_if_card_gone(self) -> None:
         """整板替换（撤销/重做）或整列删除后专注卡可能已不存在
 
@@ -3167,6 +3188,19 @@ class AppController(QObject):
         dlg.deleteLater()
         if not accepted or not changes:
             return
+        # exec 是嵌套事件循环：期间可能撤销/切板，旧 cards 已脱离当前
+        # 看板——照旧写入是孤儿写、toast 却报成功。按 id 重新定位
+        # （_on_card_edit / 批量归档同款守卫）
+        board = self._store.load()
+        relocated = []
+        for cid in [c.id for c in cards]:
+            _lst, card = board.find_card(cid)
+            if card is not None and not card.archived:
+                relocated.append(card)
+        if not relocated:
+            self._notify(tr("看板已变更，操作取消"))
+            return
+        cards = relocated
         self._push_undo()
         n = 0
         for card in cards:
@@ -3189,6 +3223,7 @@ class AppController(QObject):
                 n += 1
         if n == 0:
             self._undo_stack.pop()   # 无实际变化不留空撤销步
+            self._cancel_pending_undo()
             return
         self._after_data_change(
             tr("已编辑 {n} 张卡片").format(n=n))
@@ -3308,6 +3343,7 @@ class AppController(QObject):
             self._pomo_stop()
         if n == 0:
             self._undo_stack.pop()
+            self._cancel_pending_undo()
             return
         self._after_data_change(
             tr("已清空 {n} 张归档 · {hint}").format(
@@ -3405,10 +3441,14 @@ class AppController(QObject):
         except json_io.StoreError as e:
             self._show_error(tr("看板创建失败：{err}").format(err=e))
             return
-        self._activate_board(
-            meta.id,
-            notify=tr("已导入为新看板「{name}」").format(
-                name=name or tr("我的看板")))
+        # create_board 已把 current_id 指向新板；激活失败（如看板 UI 构建
+        # 异常）时索引与 store 脱钩——后续编辑会写进错误归属，必须回滚
+        # （_activate_imported_board 同款，B-3）
+        if not self._activate_board(
+                meta.id,
+                notify=tr("已导入为新看板「{name}」").format(
+                    name=name or tr("我的看板"))):
+            self._workspace.set_current(self._store_board_id)
 
     @staticmethod
     def _write_export_md(path: Path, board) -> None:
@@ -3567,7 +3607,8 @@ class AppController(QObject):
         self._save_timer.stop()
         # 全局热键是系统级独占资源：显式注销，别留给下一个进程
         self._hotkeys.dispose()
-        self._tray.hide()
+        # 托盘隐藏交给 _on_about_to_quit：落盘失败的通知要趁托盘还在时
+        # 发出（先 hide 再通知，Windows 上气泡不显示，等于静默丢编辑）
         QApplication.quit()
 
     def _show_error(self, message: str) -> None:

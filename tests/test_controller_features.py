@@ -169,6 +169,32 @@ class ControllerFeatureTest(unittest.TestCase):
             self.c._on_card_add(self._list().id, f"卡{i}")
         self.assertLessEqual(len(self.c._undo_stack), AppConfig.UNDO_LIMIT)
 
+    def test_noop_pop_keeps_redo_through_language_switch(self):
+        """B-2：undo→空操作（拖回原位）→切语言，重做栈不被误清
+
+        空操作 pop 只弹撤销栈；若 _pending_undo_doc 不一并清空，下一个
+        不先 push 的 _after_data_change（语言切换）会把它误判成新变更，
+        连带清空重做栈。
+        """
+        self._reset()
+        board = self.c._store.load()
+        board.lists[0].cards.append(Card(title="R1"))
+        self.c._after_data_change(None)
+        card_id = self._list().cards[0].id
+        self.c._on_card_move(card_id, board.lists[1].id, 0)
+        self.c._on_undo_requested(False)
+        self.assertTrue(self.c._redo_stack)
+        # 空操作：同列表拖回原位（索引不变 → 快照回滚短路）
+        board = self.c._store.load()
+        m1 = board.lists[0].cards[0]
+        self.c._on_card_move(m1.id, board.lists[0].id, 0)
+        self.c._on_language_changed("en")
+        self.c._on_language_changed("zh")
+        self.assertTrue(self.c._redo_stack, "切语言不应清空重做栈")
+        self.c._on_redo_requested(False)
+        board = self.c._store.load()
+        self.assertEqual([x.title for x in board.lists[1].cards], ["R1"])
+
     # ── 列表删除 ──────────────────────────────────────────
 
     def test_delete_empty_list_without_dialog(self):
@@ -791,6 +817,76 @@ class ControllerFeatureTest(unittest.TestCase):
         titles = [c["title"] for lst in doc["lists"] for c in lst["cards"]]
         self.assertEqual(titles, ["退出兜底"])
         self.assertFalse(self.c._store._dirty)
+
+    def test_quit_flush_failure_notifies_while_tray_visible(self):
+        """B-1：退出落盘失败的通知趁托盘未隐藏发出（成功后才摘托盘）"""
+        self._reset()
+        self.c._on_card_add(self._list().id, "退出失败兜底")
+        from app.models.json_io import StoreError
+        order = []
+        with patch.object(self.c._store, "flush",
+                          side_effect=StoreError("磁盘满")), \
+             patch.object(self.c._tray, "show_notification",
+                          side_effect=lambda *_: order.append("notify")), \
+             patch.object(self.c._tray, "hide",
+                          side_effect=lambda: order.append("hide")):
+            self.c._on_about_to_quit()
+        self.assertEqual(order, ["notify"])   # 失败路径：只通知、不摘托盘
+
+    def test_quit_success_hides_tray_after_flush(self):
+        """B-1：正常退出在落盘收口之后才隐藏托盘"""
+        self._reset()
+        order = []
+        with patch.object(self.c._tray, "hide",
+                          side_effect=lambda: order.append("hide")):
+            self.c._on_about_to_quit()
+        self.assertEqual(order, ["hide"])
+
+    def test_batch_edit_relocates_cards_after_exec(self):
+        """B-4：批量编辑对话框 exec 期间看板被整体替换后按 id 重定位写入"""
+        self._reset()
+        self.c._on_card_add(self._list().id, "批量A")
+        card_id = self._list().cards[0].id
+        with patch("app.views.batch_edit_dialog.BatchEditDialog") as dlg_cls:
+            dlg = dlg_cls.return_value
+            dlg.changes.return_value = {"priority": 1}
+
+            def _exec():
+                # exec 嵌套事件循环期间旧看板被整体替换（撤销/导入路径）
+                from app.models.board import Board
+                self.c._store.replace_board(
+                    Board.from_dict(self.c._store.load().to_dict()))
+                return QDialog.Accepted
+            dlg.exec.side_effect = _exec
+            self.c._on_batch_edit([card_id])
+        _lst, card = self.c._store.load().find_card(card_id)
+        self.assertIsNotNone(card)
+        self.assertEqual(card.priority, 1)
+
+    def test_import_backup_activate_failure_rolls_back_current(self):
+        """B-3：备份导入激活失败时回滚 current_id（防索引与 store 脱钩）"""
+        self._reset()
+        old_board_id = self.c._store_board_id
+        tmp = Path(tempfile.mkdtemp()) / "import_fail.json"
+        tmp.write_text(json.dumps({
+            "id": "b-import-fail", "name": "导入失败板", "lists": [],
+        }), encoding="utf-8")
+        from PySide6.QtWidgets import QFileDialog
+        try:
+            with patch.object(QFileDialog, "getOpenFileName",
+                              return_value=(str(tmp), "JSON (*.json)")), \
+                    patch.object(self.c, "_activate_board",
+                                 return_value=False):
+                self.c._on_import_backup()
+            # create_board 已把 current_id 指向新板，激活失败必须回滚
+            self.assertEqual(self.c._workspace.current_id, old_board_id)
+            self.assertEqual(self.c._store_board_id, old_board_id)
+        finally:
+            # 清理 create_board 留下的新看板（导入板文件已落盘）
+            stray = [m.id for m in self.c._workspace.boards
+                     if m.id != old_board_id]
+            for sid in stray:
+                self.c._workspace.delete_board(sid)
 
     # ── 窗口 ✕：最小化到托盘（不退出） ────────────────────
 
