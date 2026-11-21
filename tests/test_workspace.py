@@ -237,5 +237,61 @@ class CorruptLegacyMigrationTest(unittest.TestCase):
         self.assertEqual(doc["lists"][0]["cards"], [])
 
 
+class UnreadableStartupTest(unittest.TestCase):
+    """E-07：数据文件暂时不可读（同步盘锁文件/权限抖动）的启动分流
+
+    拒绝恢复后不能置脏落盘——否则一次瞬时锁读就以空板覆盖原文件。
+    借用真实的 AppController._load_data（未绑定方法挂到最小骨架上），
+    不起完整启动链（完整构造在离屏下有段错误风险，且与本分支无关）。
+    """
+
+    @staticmethod
+    def _harness(problems):
+        import types
+        from app.controllers.app_controller import AppController
+        calls = {"mark_dirty": 0, "schedule": 0, "errors": []}
+        store = types.SimpleNamespace(
+            load=lambda: Board.from_dict({}),
+            problems=list(problems),
+            mark_dirty=lambda: calls.__setitem__(
+                "mark_dirty", calls["mark_dirty"] + 1),
+        )
+
+        class _Harness:
+            _load_data = AppController._load_data
+            _offer_restore = lambda self, kinds: False   # 无备份候选
+            _preserve_good_copy = lambda self: None
+            _show_error = lambda self, msg: calls["errors"].append(msg)
+            _apply_board_to_ui = lambda self, board: None
+            _schedule_save = lambda self: calls.__setitem__(
+                "schedule", calls["schedule"] + 1)
+
+        h = _Harness()
+        h._store = store
+        return h, calls
+
+    def test_unreadable_only_skips_mark_dirty(self):
+        """纯 unreadable：告知用户但不置脏不落盘（原文件原样存活）"""
+        h, calls = self._harness([("unreadable", "pd")])
+        h._load_data()
+        self.assertEqual(calls["mark_dirty"], 0)
+        self.assertEqual(calls["schedule"], 0)
+        self.assertEqual(len(calls["errors"]), 1)   # 有告知
+
+    def test_corrupted_still_overwrites(self):
+        """损坏路径维持既有语义：默认看板置脏落盘，好副本在隔离副本里"""
+        h, calls = self._harness([("corrupted", "pd")])
+        h._load_data()
+        self.assertEqual(calls["mark_dirty"], 1)
+        self.assertEqual(calls["schedule"], 1)
+
+    def test_mixed_still_overwrites(self):
+        """混合（损坏 + 不可读）：按损坏处理覆盖——文件至少有一份确实坏了"""
+        h, calls = self._harness(
+            [("unreadable", "pd"), ("corrupted", "pd2")])
+        h._load_data()
+        self.assertEqual(calls["mark_dirty"], 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

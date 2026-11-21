@@ -280,7 +280,14 @@ class AppController(QObject):
                 tr("看板数据文件异常（{detail}），本次以默认看板启动。").format(
                     detail=detail_txt))
             self._apply_board_to_ui(board)
-            # 异常路径必须把默认看板落盘，覆盖掉损坏或不可读的旧文件
+            if all(k == "unreadable" for k in kinds):
+                # E-07 分流：文件暂时不可读（同步盘锁文件/权限抖动）时
+                # 原文件本身没坏——置脏落盘会用空板覆盖它，一次瞬时锁读
+                # 就毁掉整块看板。以内存空态启动、不落盘，等真实编辑再写
+                # （隔离副本已在 load_json_doc 里留好）
+                return
+            # 损坏（或混合）路径才覆盖：原文件确实坏了，默认看板落盘让
+            # 会话可继续，好副本在 .prev/隔离副本里
             self._store.mark_dirty()
             self._schedule_save()
             return
